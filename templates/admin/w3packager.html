@@ -1,0 +1,545 @@
+{% extends "base_admin.html" %}
+{% load static %}
+
+{% block title %}W3Packager — Software & Stack Provisioner — W3Host Manager{% endblock %}
+{% block page_title %}W3Packager — Software & Stack Provisioner{% endblock %}
+
+{% block content %}
+<div x-data="{
+    tab: '{{ active_tab|default:'runtimes' }}',
+    extSearch: '{{ search_query|default:'' }}',
+    selectedPhp: '{{ selected_php }}'
+}" class="space-y-6">
+
+    <!-- Header -->
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+            <div class="flex items-center gap-2 text-xs text-slate-500 mb-1">
+                <a href="{% url 'admin_settings' %}" class="hover:text-blue-600 transition">Configuration</a>
+                <i class="ti ti-chevron-right text-[10px]"></i>
+                <span class="text-slate-800 font-semibold">Software & Provisioning</span>
+            </div>
+            <h2 class="text-xl font-bold text-slate-900 flex items-center gap-2">
+                <i class="ti ti-package text-blue-600"></i>
+                W3Packager
+                <span class="text-xs px-2.5 py-0.5 rounded-full font-bold bg-blue-50 text-blue-700 border border-blue-200">EasyApache Parity</span>
+            </h2>
+            <p class="text-xs text-slate-500 mt-0.5">Provision and customize PHP runtimes, PECL/native extensions, Nginx modules, and CLI runtimes</p>
+        </div>
+
+        <div class="flex items-center gap-2">
+            <a href="{% url 'admin_php_settings' %}" class="inline-flex items-center gap-1.5 px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-lg border border-slate-300 transition shadow-xs">
+                <i class="ti ti-versions text-sm"></i> MultiPHP Manager
+            </a>
+            <a href="{% url 'admin_php_settings' %}?tab=ini&mode=editor" class="inline-flex items-center gap-1.5 px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-lg border border-slate-300 transition shadow-xs">
+                <i class="ti ti-code text-sm"></i> Raw php.ini Editor
+            </a>
+        </div>
+    </div>
+
+    <!-- PPA Repository Status Notice -->
+    {% if ppa_enabled %}
+    <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-4 flex items-center justify-between gap-3 text-xs text-emerald-800 shadow-xs">
+        <div class="flex items-center gap-2.5">
+            <div class="size-7 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center text-sm shrink-0 font-bold">
+                <i class="ti ti-check"></i>
+            </div>
+            <div>
+                <span class="font-bold">Ondřej Surý Multi-PHP PPA Repository Active:</span>
+                <span class="text-emerald-700 ml-1">Upstream Debian/Ubuntu packages for PHP 7.4, 8.1, 8.2, 8.3, and 8.4 are ready for instant provisioning.</span>
+            </div>
+        </div>
+        <span class="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 text-[11px] font-bold shrink-0 font-mono">ppa:ondrej/php</span>
+    </div>
+    {% else %}
+    <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-900 shadow-xs">
+        <div class="flex items-center gap-2.5">
+            <div class="size-8 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center text-base shrink-0 font-bold">
+                <i class="ti ti-alert-triangle"></i>
+            </div>
+            <div>
+                <span class="font-bold">Multi-PHP Repository (ppa:ondrej/php) is not enabled on this server.</span>
+                <p class="text-amber-700 mt-0.5">Ubuntu 24.04 only includes PHP 8.3 by default. Enable the official Ondřej Surý repository to install PHP 8.1, 8.2, or 8.4.</p>
+            </div>
+        </div>
+        <form method="post" action="{% url 'admin_w3packager' %}" class="shrink-0">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="enable_ppa">
+            <button type="submit" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-bold transition shadow-xs flex items-center gap-1.5 whitespace-nowrap">
+                <i class="ti ti-cloud-download text-sm"></i>
+                Enable Ondřej PHP PPA
+            </button>
+        </form>
+    </div>
+    {% endif %}
+
+    <!-- EasyApache 4 Style Step Navigation Tabs -->
+    <div class="flex items-center border-b border-slate-200 overflow-x-auto">
+        <div class="flex space-x-6 text-xs font-bold whitespace-nowrap">
+            <button @click="tab = 'runtimes'"
+                    :class="tab === 'runtimes' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500 hover:text-slate-700'"
+                    class="pb-3 flex items-center gap-2 transition outline-none">
+                <i class="ti ti-versions text-sm"></i>
+                <span>1. PHP Runtimes</span>
+                <span class="px-1.5 py-0.5 rounded-full text-[10px] bg-slate-100 text-slate-700 font-mono">{{ installed_versions|length }} installed</span>
+            </button>
+
+            <button @click="tab = 'extensions'"
+                    :class="tab === 'extensions' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500 hover:text-slate-700'"
+                    class="pb-3 flex items-center gap-2 transition outline-none">
+                <i class="ti ti-puzzle text-sm"></i>
+                <span>2. PHP Extensions</span>
+                <span class="px-1.5 py-0.5 rounded-full text-[10px] bg-blue-50 text-blue-700 font-mono">PHP {{ selected_php }}</span>
+            </button>
+
+            <button @click="tab = 'webserver'"
+                    :class="tab === 'webserver' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500 hover:text-slate-700'"
+                    class="pb-3 flex items-center gap-2 transition outline-none">
+                <i class="ti ti-server text-sm"></i>
+                <span>3. Web &amp; Proxy Modules</span>
+            </button>
+
+            <button @click="tab = 'cli'"
+                    :class="tab === 'cli' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500 hover:text-slate-700'"
+                    class="pb-3 flex items-center gap-2 transition outline-none">
+                <i class="ti ti-terminal-2 text-sm"></i>
+                <span>4. CLI Tools &amp; Extra Runtimes</span>
+            </button>
+
+            <button @click="tab = 'review'"
+                    :class="tab === 'review' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500 hover:text-slate-700'"
+                    class="pb-3 flex items-center gap-2 transition outline-none">
+                <i class="ti ti-file-check text-sm"></i>
+                <span>5. Review & Stack Profiles</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- STEP 1: PHP RUNTIMES (EasyApache 4 PHP Versions)                      -->
+    <!-- ===================================================================== -->
+    <div x-show="tab === 'runtimes'" class="space-y-4">
+        <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-100 gap-2">
+                <div>
+                    <h3 class="font-bold text-sm text-slate-900">Available PHP Runtimes</h3>
+                    <p class="text-xs text-slate-500">Install parallel PHP versions or remove unneeded stacks. Sockets and systemd daemons are automatically created.</p>
+                </div>
+                <div class="flex items-center gap-2 text-xs font-semibold text-slate-600">
+                    <span>Default:</span>
+                    <span class="px-2.5 py-0.5 rounded-full font-bold font-mono bg-blue-50 text-blue-700 border border-blue-200">PHP {{ default_php }}</span>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 gap-3.5">
+                {% for r in runtimes %}
+                <div class="p-4 rounded-xl border {% if r.installed %}border-slate-200 bg-white hover:border-blue-200{% else %}border-slate-200/60 bg-slate-50/50{% endif %} transition flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div class="flex items-start sm:items-center gap-3.5">
+                        <div class="size-11 rounded-xl {% if r.installed %}bg-blue-50 text-blue-600 border border-blue-100{% else %}bg-slate-100 text-slate-400{% endif %} flex items-center justify-center text-lg font-bold shrink-0">
+                            {{ r.version }}
+                        </div>
+                        <div class="space-y-1">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <h4 class="font-bold text-sm text-slate-900">PHP {{ r.version }}</h4>
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600">{{ r.release_status }}</span>
+
+                                {% if r.is_default %}
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                                    <i class="ti ti-star"></i> System Default
+                                </span>
+                                {% endif %}
+
+                                {% if r.installed %}
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                    <i class="ti ti-check"></i> Installed & Active
+                                </span>
+                                {% else %}
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-200/70 text-slate-600">
+                                    Not Installed
+                                </span>
+                                {% endif %}
+                            </div>
+                            <p class="text-xs text-slate-500">{{ r.description }}</p>
+                            {% if r.installed %}
+                            <div class="text-[11px] font-mono text-slate-400 flex items-center gap-2">
+                                <span>/etc/php/{{ r.version }}/fpm</span>
+                                <span>•</span>
+                                <span>php{{ r.version }}-fpm.service</span>
+                                {% if r.domain_count > 0 %}
+                                <span>•</span>
+                                <span class="text-blue-600 font-sans font-semibold">Active on {{ r.domain_count }} domain{% if r.domain_count != 1 %}s{% endif %}</span>
+                                {% endif %}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-2 shrink-0">
+                        {% if r.installed %}
+                            <a href="{% url 'admin_w3packager' %}?tab=extensions&php_version={{ r.version }}"
+                               class="px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition flex items-center gap-1.5">
+                                <i class="ti ti-puzzle text-sm"></i> Extensions
+                            </a>
+
+                            {% if r.is_default %}
+                            <button type="button" disabled class="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-400 text-xs font-semibold cursor-not-allowed">
+                                System Default
+                            </button>
+                            {% elif r.domain_count > 0 %}
+                            <button type="button" disabled title="In use by {{ r.domain_count }} domain(s)" class="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-400 text-xs font-semibold cursor-not-allowed">
+                                In Use ({{ r.domain_count }})
+                            </button>
+                            {% else %}
+                            <form method="post" action="{% url 'admin_w3packager' %}" onsubmit="return confirm('Are you sure you want to uninstall PHP {{ r.version }}?');">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="uninstall_runtime">
+                                <input type="hidden" name="php_version" value="{{ r.version }}">
+                                <button type="submit" class="px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 text-xs font-semibold transition">
+                                    Uninstall
+                                </button>
+                            </form>
+                            {% endif %}
+                        {% else %}
+                            <form method="post" action="{% url 'admin_w3packager' %}">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="install_runtime">
+                                <input type="hidden" name="php_version" value="{{ r.version }}">
+                                <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition shadow-xs flex items-center gap-1.5">
+                                    <i class="ti ti-download text-sm"></i>
+                                    Install PHP {{ r.version }} Stack
+                                </button>
+                            </form>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- STEP 2: PHP EXTENSIONS (EasyApache 4 Extension Catalog)               -->
+    <!-- ===================================================================== -->
+    <div x-show="tab === 'extensions'" class="space-y-4" x-cloak>
+        <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
+            <!-- Selector and Search Bar -->
+            <div class="flex flex-col md:flex-row md:items-center justify-between pb-4 border-b border-slate-100 gap-3">
+                <div class="flex items-center gap-3">
+                    <div class="size-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center text-lg shrink-0">
+                        <i class="ti ti-puzzle"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-bold text-sm text-slate-900">PHP Extensions & PECL Modules</h3>
+                        <p class="text-xs text-slate-500">Enable or remove database drivers, caching modules, and graphics libraries</p>
+                    </div>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-3">
+                    <!-- Version Switcher -->
+                    <form method="get" action="{% url 'admin_w3packager' %}" class="flex items-center gap-1.5">
+                        <input type="hidden" name="tab" value="extensions">
+                        <span class="text-xs font-semibold text-slate-600">Configuring:</span>
+                        <select name="php_version" onchange="this.form.submit()"
+                                class="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-800 bg-white font-bold focus:border-blue-600 outline-none">
+                            {% for v in installed_versions %}
+                            <option value="{{ v }}" {% if selected_php == v %}selected{% endif %}>PHP {{ v }}</option>
+                            {% endfor %}
+                        </select>
+                    </form>
+
+                    <!-- Search Input -->
+                    <form method="get" action="{% url 'admin_w3packager' %}" class="flex items-center gap-2">
+                        <input type="hidden" name="tab" value="extensions">
+                        <input type="hidden" name="php_version" value="{{ selected_php }}">
+                        <div class="relative">
+                            <i class="ti ti-search absolute left-2.5 top-2 text-slate-400 text-xs"></i>
+                            <input type="text" name="q" value="{{ search_query }}" placeholder="Filter extensions (e.g. redis, gd)..."
+                                   class="rounded-lg border border-slate-300 pl-8 pr-3 py-1.5 text-xs text-slate-800 bg-white placeholder-slate-400 focus:border-blue-600 outline-none w-52">
+                        </div>
+                        {% if search_query %}
+                        <a href="{% url 'admin_w3packager' %}?tab=extensions&php_version={{ selected_php }}" class="text-xs text-blue-600 hover:underline">Clear</a>
+                        {% endif %}
+                    </form>
+                </div>
+            </div>
+
+            <!-- Extensions Table -->
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-slate-50/60 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                        <tr>
+                            <th class="px-4 py-3">Package / Extension</th>
+                            <th class="px-4 py-3">Category</th>
+                            <th class="px-4 py-3">Description</th>
+                            <th class="px-4 py-3">Status</th>
+                            <th class="px-4 py-3 text-right">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 font-sans text-xs">
+                        {% for ext in extensions %}
+                        <tr class="hover:bg-slate-50/60 transition">
+                            <td class="px-4 py-3.5 font-bold font-mono text-slate-900 whitespace-nowrap">
+                                <div class="flex items-center gap-2">
+                                    <i class="ti ti-puzzle text-blue-600"></i>
+                                    <span>{{ ext.pkg_name }}</span>
+                                </div>
+                            </td>
+                            <td class="px-4 py-3.5 whitespace-nowrap">
+                                <span class="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-700">
+                                    {{ ext.category }}
+                                </span>
+                            </td>
+                            <td class="px-4 py-3.5 text-slate-600">
+                                {{ ext.description }}
+                            </td>
+                            <td class="px-4 py-3.5 whitespace-nowrap">
+                                {% if ext.installed %}
+                                <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                    <i class="ti ti-check"></i> Installed
+                                </span>
+                                {% else %}
+                                <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-500">
+                                    Available
+                                </span>
+                                {% endif %}
+                            </td>
+                            <td class="px-4 py-3.5 text-right whitespace-nowrap">
+                                {% if ext.installed %}
+                                <form method="post" action="{% url 'admin_w3packager' %}" class="inline">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="action" value="uninstall_extension">
+                                    <input type="hidden" name="php_version" value="{{ selected_php }}">
+                                    <input type="hidden" name="extension" value="{{ ext.name }}">
+                                    <button type="submit" class="px-3 py-1 rounded border border-red-200 text-red-600 hover:bg-red-50 text-xs font-semibold transition">
+                                        Remove
+                                    </button>
+                                </form>
+                                {% else %}
+                                <form method="post" action="{% url 'admin_w3packager' %}" class="inline">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="action" value="install_extension">
+                                    <input type="hidden" name="php_version" value="{{ selected_php }}">
+                                    <input type="hidden" name="extension" value="{{ ext.name }}">
+                                    <button type="submit" class="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-bold transition shadow-xs">
+                                        Install
+                                    </button>
+                                </form>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="5" class="px-4 py-8 text-center text-slate-400">
+                                No extensions matched "{{ search_query }}".
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- STEP 3: WEB SERVER & REVERSE PROXY                                    -->
+    <!-- ===================================================================== -->
+    <div x-show="tab === 'webserver'" class="space-y-4" x-cloak>
+        <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
+            <div class="pb-3 border-b border-slate-100">
+                <h3 class="font-bold text-sm text-slate-900">Web Server & Reverse Proxy Components</h3>
+                <p class="text-xs text-slate-500">Manage Nginx HTTP server modules, next-gen compression, and automated SSL/TLS engines</p>
+            </div>
+
+            <div class="grid grid-cols-1 gap-3.5">
+                {% for w in web_components %}
+                <div class="p-4 rounded-xl border border-slate-200 bg-white flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div class="flex items-start sm:items-center gap-3.5">
+                        <div class="size-11 rounded-xl bg-blue-50 text-blue-600 border border-blue-100 flex items-center justify-center text-xl shrink-0">
+                            <i class="ti ti-server"></i>
+                        </div>
+                        <div class="space-y-1">
+                            <div class="flex items-center gap-2">
+                                <h4 class="font-bold text-sm text-slate-900">{{ w.name }}</h4>
+                                <code class="font-mono text-[11px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded">{{ w.pkg_name }}</code>
+                                {% if w.installed %}
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                    <i class="ti ti-check"></i> Installed
+                                </span>
+                                {% else %}
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-500">
+                                    Not Installed
+                                </span>
+                                {% endif %}
+                            </div>
+                            <p class="text-xs text-slate-500">{{ w.description }}</p>
+                        </div>
+                    </div>
+
+                    <div class="shrink-0">
+                        {% if w.installed %}
+                        <span class="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 font-bold text-xs">
+                            <i class="ti ti-circle-check"></i> Active
+                        </span>
+                        {% else %}
+                        <form method="post" action="{% url 'admin_w3packager' %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="install_component">
+                            <input type="hidden" name="component" value="{{ w.key }}">
+                            <input type="hidden" name="return_tab" value="webserver">
+                            <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition shadow-xs flex items-center gap-1.5">
+                                <i class="ti ti-download text-sm"></i> Install Component
+                            </button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- STEP 4: CLI TOOLS & EXTRA RUNTIMES (Node.js, Composer, WP-CLI, Redis) -->
+    <!-- ===================================================================== -->
+    <div x-show="tab === 'cli'" class="space-y-4" x-cloak>
+        <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
+            <div class="pb-3 border-b border-slate-100">
+                <h3 class="font-bold text-sm text-slate-900">CLI Tools & Extra Application Runtimes</h3>
+                <p class="text-xs text-slate-500">Manage modern developer runtimes, command-line frameworks, and background caching servers</p>
+            </div>
+
+            <div class="grid grid-cols-1 gap-3.5">
+                {% for c in cli_runtimes %}
+                <div class="p-4 rounded-xl border border-slate-200 bg-white flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div class="flex items-start sm:items-center gap-3.5">
+                        <div class="size-11 rounded-xl bg-purple-50 text-purple-600 border border-purple-100 flex items-center justify-center text-xl shrink-0">
+                            {% if c.key == 'nodejs' %}
+                            <i class="ti ti-brand-nodejs"></i>
+                            {% elif c.key == 'composer' %}
+                            <i class="ti ti-cube"></i>
+                            {% elif c.key == 'wp-cli' %}
+                            <i class="ti ti-brand-wordpress"></i>
+                            {% else %}
+                            <i class="ti ti-database"></i>
+                            {% endif %}
+                        </div>
+                        <div class="space-y-1">
+                            <div class="flex items-center gap-2">
+                                <h4 class="font-bold text-sm text-slate-900">{{ c.name }}</h4>
+                                {% if c.installed %}
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                    <i class="ti ti-check"></i> {{ c.version_str }}
+                                </span>
+                                {% else %}
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-500">
+                                    Not Installed
+                                </span>
+                                {% endif %}
+                            </div>
+                            <p class="text-xs text-slate-500">{{ c.description }}</p>
+                        </div>
+                    </div>
+
+                    <div class="shrink-0">
+                        {% if c.installed %}
+                        <span class="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 font-bold text-xs">
+                            <i class="ti ti-circle-check"></i> Installed & Ready
+                        </span>
+                        {% else %}
+                        <form method="post" action="{% url 'admin_w3packager' %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="install_component">
+                            <input type="hidden" name="component" value="{{ c.key }}">
+                            <input type="hidden" name="return_tab" value="cli">
+                            <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition shadow-xs flex items-center gap-1.5">
+                                <i class="ti ti-download text-sm"></i> Install {{ c.key }}
+                            </button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- STEP 5: REVIEW & STACK PROFILES (EasyApache 4 Profiles)                -->
+    <!-- ===================================================================== -->
+    <div x-show="tab === 'review'" class="space-y-4" x-cloak>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <!-- Current Server Stack Summary -->
+            <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
+                <div class="flex items-center gap-3 pb-3 border-b border-slate-100">
+                    <div class="size-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center text-lg">
+                        <i class="ti ti-clipboard-list"></i>
+                    </div>
+                    <div>
+                        <h4 class="font-bold text-sm text-slate-900">Current Server Stack Summary</h4>
+                        <p class="text-xs text-slate-500">Currently active runtimes, sockets, and web proxy</p>
+                    </div>
+                </div>
+
+                <div class="space-y-2.5 text-xs">
+                    <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50">
+                        <span class="font-semibold text-slate-600">Default PHP Runtime:</span>
+                        <span class="font-bold font-mono text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">PHP {{ default_php }}</span>
+                    </div>
+                    <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50">
+                        <span class="font-semibold text-slate-600">Installed PHP Stacks:</span>
+                        <div class="flex items-center gap-1">
+                            {% for v in installed_versions %}
+                            <span class="font-bold font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">{{ v }}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50">
+                        <span class="font-semibold text-slate-600">PPA Upstream Repository:</span>
+                        {% if ppa_enabled %}
+                        <span class="font-bold text-emerald-700 flex items-center gap-1"><i class="ti ti-circle-check"></i> Enabled</span>
+                        {% else %}
+                        <span class="font-bold text-amber-700 flex items-center gap-1"><i class="ti ti-alert-triangle"></i> Not Configured</span>
+                        {% endif %}
+                    </div>
+                    <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50">
+                        <span class="font-semibold text-slate-600">Reverse Proxy & Web Server:</span>
+                        <span class="font-bold text-slate-800">Nginx (Event-Driven)</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recommended Stack Profiles -->
+            <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
+                <div class="flex items-center gap-3 pb-3 border-b border-slate-100">
+                    <div class="size-9 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center text-lg">
+                        <i class="ti ti-sparkles"></i>
+                    </div>
+                    <div>
+                        <h4 class="font-bold text-sm text-slate-900">Recommended Stacks</h4>
+                        <p class="text-xs text-slate-500">Popular full-stack configurations ready for deployment</p>
+                    </div>
+                </div>
+
+                <div class="space-y-3">
+                    <div class="p-3 rounded-lg border border-slate-200 bg-slate-50/50 space-y-1.5">
+                        <div class="flex items-center justify-between">
+                            <span class="font-bold text-xs text-slate-900">WordPress High-Performance Stack</span>
+                            <span class="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">Recommended</span>
+                        </div>
+                        <p class="text-[11px] text-slate-500">PHP 8.3 + OPcache + Redis Cache + Imagick + WP-CLI + Nginx</p>
+                    </div>
+
+                    <div class="p-3 rounded-lg border border-slate-200 bg-slate-50/50 space-y-1.5">
+                        <div class="flex items-center justify-between">
+                            <span class="font-bold text-xs text-slate-900">Laravel Full-Stack Profile</span>
+                            <span class="text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">Modern</span>
+                        </div>
+                        <p class="text-[11px] text-slate-500">PHP 8.4 + Redis Queue + Composer 2.x + Node.js LTS (Vite) + Nginx</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>
+{% endblock %}

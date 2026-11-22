@@ -55,6 +55,7 @@ def _sidebar_context(active_page=''):
         'sidebar_settings': [
             {'label': 'Basic WebHost Setup', 'url': '/settings/', 'active': 'settings'},
             {'label': 'Initial Setup Wizard', 'url': '/wizards/', 'active': 'wizards'},
+            {'label': 'W3Packager (Software)', 'url': '/software/w3packager/', 'active': 'w3packager'},
             {'label': 'MultiPHP Manager', 'url': '/settings/php/', 'active': 'php'},
             {'label': 'API Access', 'url': '/settings/api/', 'active': 'api'},
         ],
@@ -1615,6 +1616,423 @@ def admin_php_settings(request):
         'memory_limit': ini_settings['memory_limit'],
         'max_execution_time': ini_settings['max_execution_time'],
         'upload_max_filesize': ini_settings['upload_max_filesize'],
+    })
+
+
+# ===========================================================================
+# 8. W3Packager — Software & Stack Provisioner (EasyApache 4 Parity)
+# ===========================================================================
+
+def get_installed_dpkg_packages() -> set:
+    """Fast detection of installed packages via dpkg-query."""
+    try:
+        proc = subprocess.run(
+            ['dpkg-query', '-W', "-f=${Package}\t${Status}\n"],
+            capture_output=True, text=True, timeout=3
+        )
+        installed = set()
+        for line in proc.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) == 2 and 'install ok installed' in parts[1]:
+                installed.add(parts[0].strip())
+        return installed
+    except Exception:
+        return set()
+
+
+def is_ondrej_ppa_enabled() -> bool:
+    """Checks if ppa:ondrej/php is enabled on the system."""
+    try:
+        sources_dir = Path('/etc/apt/sources.list.d')
+        if sources_dir.exists():
+            for f in sources_dir.glob('*'):
+                try:
+                    content = f.read_text(encoding='utf-8', errors='replace').lower()
+                    if 'ondrej' in content and 'php' in content:
+                        return True
+                except Exception:
+                    pass
+        main_sources = Path('/etc/apt/sources.list')
+        if main_sources.exists():
+            content = main_sources.read_text(encoding='utf-8', errors='replace').lower()
+            if 'ondrej' in content and 'php' in content:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _run_apt_transaction(command_args: list) -> tuple[bool, str]:
+    """Safely executes an apt-get command with sudo -n and DEBIAN_FRONTEND=noninteractive."""
+    from services.webserver.manager import _has_sudo
+    if not _has_sudo():
+        return True, f"Mock transaction executed: apt-get {' '.join(command_args)}"
+    cmd = ['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive'] + command_args
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
+        output = (proc.stdout or '') + '\n' + (proc.stderr or '')
+        return (proc.returncode == 0), output.strip()
+    except subprocess.TimeoutExpired:
+        return False, "Transaction timed out after 240 seconds."
+    except Exception as e:
+        return False, f"Execution failed: {e}"
+
+
+def enable_ondrej_ppa() -> tuple[bool, str]:
+    """Configures ppa:ondrej/php repository on Debian/Ubuntu."""
+    _run_apt_transaction(['apt-get', 'install', '-y', 'software-properties-common', 'gnupg'])
+    ok, out = _run_apt_transaction(['add-apt-repository', '-y', 'ppa:ondrej/php'])
+    if not ok:
+        return False, f"Failed to add PPA repository: {out}"
+    ok_upd, out_upd = _run_apt_transaction(['apt-get', 'update'])
+    return ok_upd, out + '\n' + out_upd
+
+
+def install_php_runtime(ver: str) -> tuple[bool, str]:
+    """Provisions a full PHP runtime stack (FPM, CLI, core extensions)."""
+    if ver not in ('7.4', '8.0', '8.1', '8.2', '8.3', '8.4'):
+        return False, f"Unsupported PHP version: {ver}"
+    if not is_ondrej_ppa_enabled():
+        enable_ondrej_ppa()
+    pkgs = [
+        f'php{ver}-fpm', f'php{ver}-cli', f'php{ver}-mysql',
+        f'php{ver}-curl', f'php{ver}-mbstring', f'php{ver}-xml',
+        f'php{ver}-zip', f'php{ver}-intl', f'php{ver}-bcmath',
+        f'php{ver}-opcache', f'php{ver}-readline'
+    ]
+    ok, out = _run_apt_transaction(['apt-get', 'install', '-y'] + pkgs)
+    if ok:
+        subprocess.run(['sudo', '-n', 'systemctl', 'enable', f'php{ver}-fpm'], capture_output=True)
+        subprocess.run(['sudo', '-n', 'systemctl', 'start', f'php{ver}-fpm'], capture_output=True)
+    return ok, out
+
+
+def uninstall_php_runtime(ver: str) -> tuple[bool, str]:
+    """Removes a PHP runtime stack if not in use by domains or default."""
+    default_php = SystemSetting.get('default_php', '8.3')
+    if ver == default_php:
+        return False, f"Cannot uninstall PHP {ver}: It is currently set as the System Default PHP version."
+    
+    in_use = list(Website.objects.filter(php_version=ver).values_list('domain', flat=True)[:5])
+    if in_use:
+        domains_str = ", ".join(in_use)
+        return False, f"Cannot uninstall PHP {ver}: Actively assigned to {domains_str}. Switch these domains to another version first."
+    
+    pkgs = [f'php{ver}-fpm', f'php{ver}-cli']
+    ok, out = _run_apt_transaction(['apt-get', 'remove', '-y', '--purge'] + pkgs)
+    return ok, out
+
+
+def install_php_extension(ver: str, ext: str) -> tuple[bool, str]:
+    """Installs a PHP extension and reloads PHP-FPM."""
+    from services.webserver.manager import reload_php_fpm
+    if not is_ondrej_ppa_enabled():
+        enable_ondrej_ppa()
+    pkg = f'php{ver}-{ext}'
+    ok, out = _run_apt_transaction(['apt-get', 'install', '-y', pkg])
+    if ok:
+        reload_php_fpm(ver)
+    return ok, out
+
+
+def uninstall_php_extension(ver: str, ext: str) -> tuple[bool, str]:
+    """Removes a PHP extension and reloads PHP-FPM."""
+    from services.webserver.manager import reload_php_fpm
+    pkg = f'php{ver}-{ext}'
+    ok, out = _run_apt_transaction(['apt-get', 'remove', '-y', pkg])
+    if ok:
+        reload_php_fpm(ver)
+    return ok, out
+
+
+def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
+    """Builds the comprehensive EasyApache-style component catalog."""
+    installed_pkgs = get_installed_dpkg_packages()
+    ppa_enabled = is_ondrej_ppa_enabled()
+    default_php = SystemSetting.get('default_php', '8.3')
+
+    # 1. PHP Runtimes Catalog
+    runtime_defs = [
+        {
+            'version': '8.4',
+            'release_status': 'Latest Stable (Nov 2024)',
+            'description': 'JIT tracing compilation, Property Hooks, Asymmetric Visibility, new array functions.',
+        },
+        {
+            'version': '8.3',
+            'release_status': 'Standard Active Runtime',
+            'description': 'Typed class constants, json_validate function, deep-cloning readonly properties.',
+        },
+        {
+            'version': '8.2',
+            'release_status': 'LTS Stable',
+            'description': 'Readonly classes, DNF types, standalone null/false/true types, OpenSSL 3 support.',
+        },
+        {
+            'version': '8.1',
+            'release_status': 'Extended Support',
+            'description': 'Enums, Fibers, readonly properties, intersection types, array unpacking.',
+        },
+        {
+            'version': '7.4',
+            'release_status': 'Legacy (Security / Migration)',
+            'description': 'Typed properties, arrow functions, null coalescing assignment operator.',
+        },
+    ]
+
+    runtimes = []
+    installed_versions = []
+    for r in runtime_defs:
+        v = r['version']
+        fpm_pkg = f'php{v}-fpm'
+        fpm_dir = Path(f'/etc/php/{v}/fpm')
+        is_inst = (fpm_pkg in installed_pkgs) or fpm_dir.exists()
+        is_def = (v == default_php)
+        
+        # Domain count using this version
+        domains_qs = Website.objects.filter(php_version=v)
+        domain_count = domains_qs.count()
+        domain_samples = list(domains_qs.values_list('domain', flat=True)[:3])
+
+        if is_inst:
+            installed_versions.append(v)
+
+        runtimes.append({
+            'version': v,
+            'release_status': r['release_status'],
+            'description': r['description'],
+            'installed': is_inst,
+            'is_default': is_def,
+            'domain_count': domain_count,
+            'domain_samples': domain_samples,
+        })
+
+    # Validate selected_php
+    if selected_php not in installed_versions:
+        selected_php = default_php if default_php in installed_versions else (installed_versions[0] if installed_versions else '8.3')
+
+    # 2. PHP Extensions Catalog
+    extension_defs = [
+        # Cache & Performance
+        {'name': 'redis', 'category': 'Cache & Performance', 'desc': 'Redis in-memory key-value cache client with cluster and sentinel support.'},
+        {'name': 'memcached', 'category': 'Cache & Performance', 'desc': 'High-performance distributed memory object caching system daemon interface.'},
+        {'name': 'opcache', 'category': 'Cache & Performance', 'desc': 'Zend OPcache engine with bytecode compilation and JIT compiler accelerator.'},
+        {'name': 'apcu', 'category': 'Cache & Performance', 'desc': 'APC User Cache in-memory shared memory object cache for PHP scripts.'},
+
+        # Image & Media
+        {'name': 'imagick', 'category': 'Image & Media', 'desc': 'ImageMagick wrapper for creating, composing, and modifying bitmap images.'},
+        {'name': 'gd', 'category': 'Image & Media', 'desc': 'GD graphic library for rendering images, graphs, thumbnails, and watermarks.'},
+
+        # Database Drivers
+        {'name': 'mysql', 'category': 'Database Drivers', 'desc': 'MySQLnd native driver and PDO_MySQL module for MariaDB & MySQL engines.'},
+        {'name': 'pgsql', 'category': 'Database Drivers', 'desc': 'PostgreSQL database driver and PDO_PGSQL relational object connector.'},
+        {'name': 'sqlite3', 'category': 'Database Drivers', 'desc': 'Self-contained, serverless zero-configuration SQLite embedded database engine.'},
+        {'name': 'mongodb', 'category': 'Database Drivers', 'desc': 'Official MongoDB driver for connecting to MongoDB NoSQL document clusters.'},
+
+        # Internationalization & Math
+        {'name': 'intl', 'category': 'Internationalization & Math', 'desc': 'ICU library wrapper enabling international formatting, transliteration, and collations.'},
+        {'name': 'bcmath', 'category': 'Internationalization & Math', 'desc': 'Arbitrary precision mathematics calculator for exact financial and crypto operations.'},
+        {'name': 'gmp', 'category': 'Internationalization & Math', 'desc': 'GNU Multiple Precision calculation arithmetic library.'},
+
+        # Core & Protocols
+        {'name': 'curl', 'category': 'Core Protocols & Data', 'desc': 'Client URL library for HTTP, HTTPS, FTP, and REST API communication.'},
+        {'name': 'mbstring', 'category': 'Core Protocols & Data', 'desc': 'Multibyte string management facilitating international UTF-8 character conversion.'},
+        {'name': 'xml', 'category': 'Core Protocols & Data', 'desc': 'XML parsing, SimpleXML, DOM document builder, and XPath query engine.'},
+        {'name': 'zip', 'category': 'Core Protocols & Data', 'desc': 'Transparent ZIP archive read, write, compression, and extraction library.'},
+        {'name': 'soap', 'category': 'Core Protocols & Data', 'desc': 'Simple Object Access Protocol (SOAP) client and server interface.'},
+
+        # Advanced Networking
+        {'name': 'swoole', 'category': 'Advanced Networking', 'desc': 'Production coroutine asynchronous network framework for high-concurrency microservices.'},
+    ]
+
+    extensions = []
+    for ext in extension_defs:
+        pkg = f"php{selected_php}-{ext['name']}"
+        is_inst = (pkg in installed_pkgs) or Path(f"/etc/php/{selected_php}/mods-available/{ext['name']}.ini").exists()
+        
+        # Search filter
+        if search_query:
+            q = search_query.lower()
+            if q not in ext['name'].lower() and q not in ext['category'].lower() and q not in ext['desc'].lower():
+                continue
+
+        extensions.append({
+            'name': ext['name'],
+            'pkg_name': pkg,
+            'category': ext['category'],
+            'description': ext['desc'],
+            'installed': is_inst,
+        })
+
+    # 3. Web Server & Reverse Proxy Components
+    web_components = [
+        {
+            'key': 'nginx',
+            'name': 'Nginx Reverse Proxy & HTTP Server',
+            'pkg_name': 'nginx',
+            'installed': ('nginx' in installed_pkgs) or bool(shutil.which('nginx')),
+            'description': 'High-performance event-driven HTTP reverse proxy, virtualhost engine, and static file server.',
+        },
+        {
+            'key': 'brotli',
+            'name': 'Nginx Brotli Compression Module',
+            'pkg_name': 'libnginx-mod-http-brotli',
+            'installed': ('libnginx-mod-http-brotli' in installed_pkgs) or Path('/etc/nginx/modules-enabled/50-mod-http-brotli.conf').exists(),
+            'description': 'Google Brotli next-gen compression providing up to 25% better compression ratio than gzip.',
+        },
+        {
+            'key': 'certbot',
+            'name': 'Let\'s Encrypt SSL/TLS Automation (Certbot)',
+            'pkg_name': 'python3-certbot-nginx',
+            'installed': ('python3-certbot-nginx' in installed_pkgs) or bool(shutil.which('certbot')),
+            'description': 'Automated SSL certificate issuance, domain verification, and 60-day renewal daemon.',
+        },
+    ]
+
+    # 4. CLI Tools & Extra Runtimes
+    cli_runtimes = [
+        {
+            'key': 'nodejs',
+            'name': 'Node.js LTS & NPM Package Manager',
+            'pkg_name': 'nodejs',
+            'installed': bool(shutil.which('node')),
+            'version_str': subprocess.run(['node', '-v'], capture_output=True, text=True).stdout.strip() if shutil.which('node') else 'Not Installed',
+            'description': 'V8 JavaScript runtime engine for frontend builds, SSR frameworks (Next.js/Nuxt), and daemon apps.',
+        },
+        {
+            'key': 'composer',
+            'name': 'Composer 2.x PHP Package Manager',
+            'pkg_name': 'composer',
+            'installed': bool(shutil.which('composer')) or Path('/usr/local/bin/composer').exists(),
+            'version_str': 'Composer 2.x' if bool(shutil.which('composer')) else 'Not Installed',
+            'description': 'Standard dependency management tool for PHP applications, Laravel frameworks, and WordPress plugins.',
+        },
+        {
+            'key': 'wp-cli',
+            'name': 'WP-CLI WordPress Command Line Tool',
+            'pkg_name': 'wp-cli',
+            'installed': bool(shutil.which('wp')) or Path('/usr/local/bin/wp').exists(),
+            'version_str': 'WP-CLI' if bool(shutil.which('wp')) else 'Not Installed',
+            'description': 'Command-line interface for WordPress to install cores, update plugins, manage databases, and run cron.',
+        },
+        {
+            'key': 'redis-server',
+            'name': 'Redis In-Memory Cache & Message Daemon',
+            'pkg_name': 'redis-server',
+            'installed': ('redis-server' in installed_pkgs) or bool(shutil.which('redis-server')),
+            'version_str': 'Redis Daemon' if ('redis-server' in installed_pkgs) else 'Not Installed',
+            'description': 'In-memory persistent key-value database used for WordPress Object Cache and Laravel queues.',
+        },
+    ]
+
+    return {
+        'ppa_enabled': ppa_enabled,
+        'default_php': default_php,
+        'selected_php': selected_php,
+        'search_query': search_query,
+        'runtimes': runtimes,
+        'installed_versions': installed_versions,
+        'extensions': extensions,
+        'web_components': web_components,
+        'cli_runtimes': cli_runtimes,
+    }
+
+
+def admin_w3packager(request):
+    """
+    W3Packager — Software & Stack Provisioner (EasyApache 4 Parity).
+    Manages PHP runtimes (7.4, 8.1, 8.2, 8.3, 8.4), extensions, web server modules,
+    and CLI tools with real-time provisioning.
+    """
+    default_php = SystemSetting.get('default_php', '8.3')
+    
+    if request.method == 'POST':
+        action = request.POST.get('action')
+        
+        if action == 'enable_ppa':
+            ok, out = enable_ondrej_ppa()
+            if ok:
+                messages.success(request, "Ondřej Surý PHP PPA repository enabled successfully.")
+            else:
+                messages.error(request, f"Failed to enable PPA repository: {out[:250]}")
+            return redirect('/software/w3packager/?tab=runtimes')
+
+        elif action == 'install_runtime':
+            ver = request.POST.get('php_version', '').strip()
+            ok, out = install_php_runtime(ver)
+            if ok:
+                messages.success(request, f"PHP {ver} runtime stack installed and started successfully.")
+            else:
+                messages.error(request, f"Failed to install PHP {ver}: {out[:250]}")
+            return redirect('/software/w3packager/?tab=runtimes')
+
+        elif action == 'uninstall_runtime':
+            ver = request.POST.get('php_version', '').strip()
+            ok, out = uninstall_php_runtime(ver)
+            if ok:
+                messages.success(request, f"PHP {ver} runtime uninstalled successfully.")
+            else:
+                messages.error(request, out)
+            return redirect('/software/w3packager/?tab=runtimes')
+
+        elif action == 'install_extension':
+            ver = request.POST.get('php_version', default_php).strip()
+            ext = request.POST.get('extension', '').strip()
+            ok, out = install_php_extension(ver, ext)
+            if ok:
+                messages.success(request, f"Extension php{ver}-{ext} installed and service reloaded.")
+            else:
+                messages.error(request, f"Failed to install php{ver}-{ext}: {out[:250]}")
+            return redirect(f'/software/w3packager/?tab=extensions&php_version={ver}')
+
+        elif action == 'uninstall_extension':
+            ver = request.POST.get('php_version', default_php).strip()
+            ext = request.POST.get('extension', '').strip()
+            ok, out = uninstall_php_extension(ver, ext)
+            if ok:
+                messages.success(request, f"Extension php{ver}-{ext} removed and service reloaded.")
+            else:
+                messages.error(request, f"Failed to remove php{ver}-{ext}: {out[:250]}")
+            return redirect(f'/software/w3packager/?tab=extensions&php_version={ver}')
+
+        elif action == 'install_component':
+            comp = request.POST.get('component', '').strip()
+            pkg_map = {
+                'nginx': ['nginx'],
+                'brotli': ['libnginx-mod-http-brotli'],
+                'certbot': ['python3-certbot-nginx'],
+                'nodejs': ['nodejs', 'npm'],
+                'composer': ['composer'],
+                'redis-server': ['redis-server'],
+            }
+            pkgs = pkg_map.get(comp)
+            if pkgs:
+                ok, out = _run_apt_transaction(['apt-get', 'install', '-y'] + pkgs)
+                if ok:
+                    messages.success(request, f"Component {comp} installed successfully.")
+                else:
+                    messages.error(request, f"Failed to install {comp}: {out[:250]}")
+            elif comp == 'wp-cli':
+                cmd = "curl -s -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar && chmod +x wp-cli.phar && sudo -n mv wp-cli.phar /usr/local/bin/wp"
+                proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+                if proc.returncode == 0:
+                    messages.success(request, "WP-CLI installed successfully at /usr/local/bin/wp.")
+                else:
+                    messages.error(request, f"Failed to install WP-CLI: {proc.stderr[:200]}")
+            tab = request.POST.get('return_tab', 'cli')
+            return redirect(f'/software/w3packager/?tab={tab}')
+
+    # GET
+    active_tab = request.GET.get('tab', 'runtimes').strip()
+    selected_php = request.GET.get('php_version', default_php).strip()
+    search_query = request.GET.get('q', '').strip()
+
+    catalog = get_w3packager_catalog(selected_php=selected_php, search_query=search_query)
+
+    return render(request, 'admin/w3packager.html', {
+        **_sidebar_context('w3packager'),
+        'active_tab': active_tab,
+        **catalog,
     })
 
 

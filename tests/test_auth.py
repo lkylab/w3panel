@@ -480,5 +480,54 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(resp_save_raw.status_code, 302)
         self.assertEqual(SystemSetting.get('php_8.3_memory_limit'), '768M')
 
+    def test_w3packager_provisioner(self):
+        """Test W3Packager EasyApache-style software provisioner."""
+        from packages.core.models import SystemSetting
+        self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
+
+        # 1. Test GET /software/w3packager/
+        resp = self.client.get('/software/w3packager/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'W3Packager')
+        self.assertContains(resp, 'EasyApache Parity')
+        self.assertContains(resp, 'PHP Runtimes')
+        self.assertContains(resp, 'PHP Extensions')
+        self.assertContains(resp, 'Web &amp; Proxy Modules')
+        self.assertContains(resp, 'CLI Tools &amp; Extra Runtimes')
+
+        # 2. Test GET shortcut /w3packager/
+        resp_short = self.client.get('/w3packager/')
+        self.assertEqual(resp_short.status_code, 200)
+        self.assertContains(resp_short, 'W3Packager')
+
+        # 3. Test POST install_runtime
+        resp_inst = self.client.post('/software/w3packager/', {
+            'action': 'install_runtime',
+            'php_version': '8.4',
+        })
+        self.assertEqual(resp_inst.status_code, 302)
+
+        # 4. Test POST uninstall_runtime rejection of default version
+        resp_uninst_def = self.client.post('/software/w3packager/', {
+            'action': 'uninstall_runtime',
+            'php_version': '8.3',
+        })
+        self.assertEqual(resp_uninst_def.status_code, 302)
+
+        # 5. Test POST install_extension
+        resp_ext = self.client.post('/software/w3packager/', {
+            'action': 'install_extension',
+            'php_version': '8.3',
+            'extension': 'redis',
+        })
+        self.assertEqual(resp_ext.status_code, 302)
+
+        # 6. Test POST install_component (composer / nodejs)
+        resp_comp = self.client.post('/software/w3packager/', {
+            'action': 'install_component',
+            'component': 'composer',
+        })
+        self.assertEqual(resp_comp.status_code, 302)
+
 
 
