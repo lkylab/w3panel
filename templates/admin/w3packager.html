@@ -101,15 +101,29 @@
             <i class="ti ti-chevron-right text-slate-300 text-xs shrink-0"></i>
 
             <!-- 6. Review & Apply -->
-            <button @click="step = 'review'"
+            <button @click="provisionStatus !== 'running' && (step = 'review')"
                     :class="step === 'review' ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'"
-                    class="px-3.5 py-2 rounded-lg flex items-center gap-2 transition">
+                    :disabled="provisionStatus === 'running'"
+                    class="px-3.5 py-2 rounded-lg flex items-center gap-2 transition disabled:opacity-60 disabled:cursor-not-allowed">
                 <i class="ti ti-clipboard-check text-sm"></i>
                 <span>6. Review &amp; Apply</span>
                 <template x-if="changesCount > 0">
                     <span class="px-1.5 py-0.2 rounded text-[10px] bg-white text-emerald-700 font-mono" x-text="'+' + toInstallList.length + ' / -' + toUninstallList.length"></span>
                 </template>
             </button>
+
+            <!-- 7. Provisioning Execution (Active State) -->
+            <template x-if="step === 'provisioning'">
+                <div class="flex items-center gap-1.5 shrink-0">
+                    <i class="ti ti-chevron-right text-slate-300 text-xs shrink-0"></i>
+                    <div class="px-3.5 py-2 rounded-lg bg-blue-600 text-white shadow-xs flex items-center gap-2 font-bold animate-pulse text-xs">
+                        <i class="ti ti-loader-2 animate-spin text-sm" x-show="provisionStatus === 'running'"></i>
+                        <i class="ti ti-circle-check text-sm" x-show="provisionStatus === 'complete'"></i>
+                        <i class="ti ti-alert-triangle text-sm" x-show="provisionStatus === 'error'"></i>
+                        <span>7. Provisioning</span>
+                    </div>
+                </div>
+            </template>
         </div>
     </div>
 
@@ -608,83 +622,99 @@
         </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
-            <!-- Left 2 Cols: Staged Diff Lists -->
+            <!-- Left 2 Cols: Terminal-Style Package Diff Console (EasyApache 4 Parity) -->
             <div class="lg:col-span-2 space-y-4">
-                
-                <!-- 1. Packages to Install -->
-                <div class="bg-white rounded-xl border border-emerald-200/80 p-5 shadow-xs space-y-3">
-                    <div class="flex items-center justify-between pb-3 border-b border-emerald-100">
-                        <h4 class="font-bold text-sm text-emerald-800 flex items-center gap-2">
-                            <i class="ti ti-square-plus text-base text-emerald-600"></i>
-                            Packages to Install
-                        </h4>
-                        <span class="px-2 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 font-mono" x-text="toInstallList.length"></span>
-                    </div>
-
-                    <div class="space-y-2">
-                        <template x-for="item in toInstallList" :key="item.key">
-                            <div class="p-2.5 rounded-lg bg-emerald-50/60 border border-emerald-200/70 flex items-center justify-between text-xs">
-                                <div class="flex items-center gap-2">
-                                    <i class="ti ti-circle-plus text-emerald-600 text-sm"></i>
-                                    <span class="font-bold text-emerald-950 font-mono" x-text="item.name"></span>
-                                </div>
-                                <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-100/80 text-emerald-800" x-text="item.type"></span>
-                            </div>
-                        </template>
-
-                        <template x-if="toInstallList.length === 0">
-                            <p class="text-xs text-slate-400 italic py-2">No new packages staged for installation.</p>
-                        </template>
-                    </div>
-                </div>
-
-                <!-- 2. Packages to Remove -->
-                <div class="bg-white rounded-xl border border-rose-200/80 p-5 shadow-xs space-y-3">
-                    <div class="flex items-center justify-between pb-3 border-b border-rose-100">
-                        <h4 class="font-bold text-sm text-rose-800 flex items-center gap-2">
-                            <i class="ti ti-square-minus text-base text-rose-600"></i>
-                            Packages to Remove
-                        </h4>
-                        <span class="px-2 py-0.5 rounded-full text-xs font-bold bg-rose-100 text-rose-800 font-mono" x-text="toUninstallList.length"></span>
-                    </div>
-
-                    <div class="space-y-2">
-                        <template x-for="item in toUninstallList" :key="item.key">
-                            <div class="p-2.5 rounded-lg bg-rose-50/60 border border-rose-200/70 flex items-center justify-between text-xs">
-                                <div class="flex items-center gap-2">
-                                    <i class="ti ti-circle-minus text-rose-600 text-sm"></i>
-                                    <span class="font-bold text-rose-950 font-mono" x-text="item.name"></span>
-                                </div>
-                                <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-100/80 text-rose-800" x-text="item.type"></span>
-                            </div>
-                        </template>
-
-                        <template x-if="toUninstallList.length === 0">
-                            <p class="text-xs text-slate-400 italic py-2">No currently installed packages marked for removal.</p>
-                        </template>
-                    </div>
-                </div>
-
-                <!-- 3. Packages to Keep (Collapsible) -->
-                <div x-data="{ openKept: false }" class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-3">
-                    <button type="button" @click="openKept = !openKept" class="w-full flex items-center justify-between text-left">
-                        <h4 class="font-bold text-sm text-slate-700 flex items-center gap-2">
-                            <i class="ti ti-check text-slate-500"></i>
-                            Unchanged Packages
-                        </h4>
+                <div class="rounded-xl bg-slate-950 border border-slate-800 shadow-sm overflow-hidden">
+                    <!-- Console Header & Filter Bar -->
+                    <div class="px-4 py-3 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
                         <div class="flex items-center gap-2">
-                            <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 font-mono" x-text="keptList.length"></span>
-                            <i class="ti text-xs text-slate-400" :class="openKept ? 'ti-chevron-up' : 'ti-chevron-down'"></i>
+                            <span class="size-2.5 rounded-full bg-rose-500 inline-block"></span>
+                            <span class="size-2.5 rounded-full bg-amber-500 inline-block"></span>
+                            <span class="size-2.5 rounded-full bg-emerald-500 inline-block"></span>
+                            <span class="text-xs font-mono text-slate-300 font-semibold ml-2">Package Selection Manifest (EasyApache 4 Diff)</span>
                         </div>
-                    </button>
 
-                    <div x-show="openKept" class="space-y-2 pt-2 border-t border-slate-100">
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            <template x-for="item in keptList" :key="item.key">
-                                <div class="p-2 rounded bg-slate-50 border border-slate-200/60 flex items-center justify-between text-xs">
-                                    <span class="font-mono text-slate-700" x-text="item.name"></span>
-                                    <span class="text-[10px] text-slate-400" x-text="item.type"></span>
+                        <!-- Monospace Filter Buttons -->
+                        <div class="flex items-center gap-1 font-mono text-xs">
+                            <button type="button" @click="reviewFilter = 'all'"
+                                    class="px-2.5 py-1 rounded transition text-xs"
+                                    :class="reviewFilter === 'all' ? 'bg-slate-800 text-white font-bold' : 'text-slate-400 hover:text-slate-200'">
+                                All (<span x-text="allReviewPackagesCount"></span>)
+                            </button>
+                            <button type="button" @click="reviewFilter = 'install'"
+                                    class="px-2.5 py-1 rounded transition text-xs text-emerald-400"
+                                    :class="reviewFilter === 'install' ? 'bg-emerald-950/80 border border-emerald-700/60 font-bold' : 'hover:bg-slate-900'">
+                                + Install (<span x-text="toInstallList.length"></span>)
+                            </button>
+                            <button type="button" @click="reviewFilter = 'remove'"
+                                    class="px-2.5 py-1 rounded transition text-xs text-rose-400"
+                                    :class="reviewFilter === 'remove' ? 'bg-rose-950/80 border border-rose-700/60 font-bold' : 'hover:bg-slate-900'">
+                                - Remove (<span x-text="toUninstallList.length"></span>)
+                            </button>
+                            <button type="button" @click="reviewFilter = 'unchanged'"
+                                    class="px-2.5 py-1 rounded transition text-xs text-slate-400"
+                                    :class="reviewFilter === 'unchanged' ? 'bg-slate-800 text-slate-200 font-bold' : 'hover:text-slate-200'">
+                                Unchanged (<span x-text="keptList.length"></span>)
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Monospace Package Diff Screen -->
+                    <div class="p-4 font-mono text-xs max-h-[500px] overflow-y-auto space-y-1.5 selection:bg-blue-600 selection:text-white leading-relaxed">
+                        <div class="text-slate-500 pb-2 border-b border-slate-800/80 mb-2">
+                            # EasyApache 4 Package Transaction Set<br>
+                            # Target Host: {{ os_info.distro|default:"Ubuntu" }} {{ os_info.version|default:"24.04" }} | Arch: {{ os_info.arch|default:"x86_64" }}<br>
+                            # Staged: <span class="text-emerald-400 font-bold" x-text="'+' + toInstallList.length + ' to install'"></span>, <span class="text-rose-400 font-bold" x-text="'-' + toUninstallList.length + ' to remove'"></span>, <span class="text-slate-400" x-text="keptList.length + ' unchanged'"></span>
+                        </div>
+
+                        <!-- Packages to Install (+) -->
+                        <div x-show="reviewFilter === 'all' || reviewFilter === 'install'" class="space-y-1">
+                            <div class="text-emerald-400 font-bold py-1 flex items-center gap-2">
+                                <span>-- PACKAGES TO INSTALL (+) --</span>
+                                <span class="text-[10px] px-1.5 py-0.2 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 font-mono" x-text="toInstallList.length"></span>
+                            </div>
+                            <template x-for="item in toInstallList" :key="item.key">
+                                <div class="flex items-center text-emerald-400 font-mono py-0.5 px-2 rounded hover:bg-emerald-950/40">
+                                    <span class="font-bold w-5 select-none text-emerald-400">+</span>
+                                    <span class="font-semibold" x-text="item.name"></span>
                                 </div>
+                            </template>
+                            <template x-if="toInstallList.length === 0">
+                                <div class="text-slate-600 italic px-2 py-0.5">None</div>
+                            </template>
+                        </div>
+
+                        <!-- Packages to Remove (-) -->
+                        <div x-show="reviewFilter === 'all' || reviewFilter === 'remove'" class="space-y-1 pt-3">
+                            <div class="text-rose-400 font-bold py-1 flex items-center gap-2">
+                                <span>-- PACKAGES TO REMOVE (-) --</span>
+                                <span class="text-[10px] px-1.5 py-0.2 rounded bg-rose-950 text-rose-300 border border-rose-800 font-mono" x-text="toUninstallList.length"></span>
+                            </div>
+                            <template x-for="item in toUninstallList" :key="item.key">
+                                <div class="flex items-center text-rose-400 font-mono py-0.5 px-2 rounded hover:bg-rose-950/40">
+                                    <span class="font-bold w-5 select-none text-rose-400">-</span>
+                                    <span class="font-semibold" x-text="item.name"></span>
+                                </div>
+                            </template>
+                            <template x-if="toUninstallList.length === 0">
+                                <div class="text-slate-600 italic px-2 py-0.5">None</div>
+                            </template>
+                        </div>
+
+                        <!-- Unchanged Packages -->
+                        <div x-show="reviewFilter === 'all' || reviewFilter === 'unchanged'" class="space-y-1 pt-3">
+                            <div class="text-slate-400 font-bold py-1 flex items-center gap-2">
+                                <span>-- UNCHANGED PACKAGES (RETAINED) --</span>
+                                <span class="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 font-mono" x-text="keptList.length"></span>
+                            </div>
+                            <template x-for="item in keptList" :key="item.key">
+                                <div class="flex items-center text-slate-400 font-mono py-0.5 px-2 rounded hover:bg-slate-900">
+                                    <span class="w-5 select-none text-slate-600">&nbsp;</span>
+                                    <span x-text="item.name"></span>
+                                </div>
+                            </template>
+                            <template x-if="keptList.length === 0">
+                                <div class="text-slate-600 italic px-2 py-0.5">None</div>
                             </template>
                         </div>
                     </div>
@@ -701,22 +731,18 @@
                     <p class="text-xs text-slate-500">Executing provision will invoke APT batch transactions and safely reload Nginx and PHP FastCGI daemons.</p>
 
                     <!-- Profile Saving Form -->
-                    <form method="post" action="{% url 'admin_w3packager' %}" @submit="prepareSubmit($event)" class="space-y-4">
+                    <form @submit.prevent="startProvisioning()" class="space-y-4">
                         {% csrf_token %}
-                        <input type="hidden" name="action" value="provision">
-                        
-                        <!-- Dynamic Submission Inputs Container -->
-                        <div id="provision-inputs"></div>
-
                         <div class="space-y-1.5">
                             <label class="block text-xs font-bold text-slate-700">Save as Custom Profile (Optional)</label>
-                            <input type="text" name="save_profile_name" x-model="customProfileName" placeholder="e.g. My Agency Production Stack"
+                            <input type="text" x-model="customProfileName" placeholder="e.g. My Agency Production Stack"
                                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-800 placeholder-slate-400 focus:border-blue-600 outline-none">
                             <p class="text-[11px] text-slate-400">If specified, this selection will be saved in your Profiles list for future re-use.</p>
                         </div>
 
                         <button type="submit"
-                                class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition shadow-sm flex items-center justify-center gap-2 cursor-pointer">
+                                :disabled="provisionStatus === 'running'"
+                                class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition shadow-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
                             <i class="ti ti-player-play-filled text-sm"></i>
                             <span>Provision Stack / Apply Changes</span>
                         </button>
@@ -730,8 +756,113 @@
         </div>
     </div>
 
+    <!-- ===================================================================== -->
+    <!-- STEP 7: PROVISIONING EXECUTION (EasyApache 4 Live Terminal & Progress) -->
+    <!-- ===================================================================== -->
+    <div x-show="step === 'provisioning'" class="space-y-5" x-cloak>
+        <div class="bg-white rounded-xl border border-slate-200/80 p-6 shadow-xs space-y-5">
+            <!-- Status Header -->
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+                <div class="flex items-center gap-3.5">
+                    <div class="size-12 rounded-xl flex items-center justify-center text-xl shrink-0 shadow-xs"
+                         :class="provisionStatus === 'error' ? 'bg-rose-100 text-rose-600' : (provisionStatus === 'complete' ? 'bg-emerald-100 text-emerald-600' : 'bg-blue-100 text-blue-600')">
+                        <i class="ti ti-loader-2 animate-spin" x-show="provisionStatus === 'running'"></i>
+                        <i class="ti ti-circle-check" x-show="provisionStatus === 'complete'"></i>
+                        <i class="ti ti-alert-triangle" x-show="provisionStatus === 'error'"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-bold text-base text-slate-900"
+                            x-text="provisionStatus === 'complete' ? 'Provisioning Completed Successfully' : (provisionStatus === 'error' ? 'Provisioning Failed' : 'Provisioning Software Stack...')">
+                        </h3>
+                        <p class="text-xs text-slate-500 mt-0.5" x-text="provisionStatusMessage"></p>
+                    </div>
+                </div>
+
+                <div class="flex items-center gap-3">
+                    <div class="text-right">
+                        <div class="text-xs font-bold text-slate-400 uppercase tracking-wider">Progress</div>
+                        <div class="font-mono text-xl font-bold"
+                             :class="provisionStatus === 'error' ? 'text-rose-600' : (provisionStatus === 'complete' ? 'text-emerald-600' : 'text-blue-600')"
+                             x-text="provisionProgress + '%'"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Progress Bar -->
+            <div class="space-y-1.5">
+                <div class="w-full bg-slate-100 rounded-full h-3.5 overflow-hidden border border-slate-200/80 p-0.5">
+                    <div class="h-full rounded-full transition-all duration-300"
+                         :class="provisionStatus === 'error' ? 'bg-rose-500' : (provisionStatus === 'complete' ? 'bg-emerald-500' : 'bg-blue-600')"
+                         :style="`width: ${provisionProgress}%`"></div>
+                </div>
+                <div class="flex items-center justify-between text-[11px] text-slate-400 font-mono">
+                    <span x-text="provisionStatus === 'running' ? 'Transaction in progress — do not refresh this page' : (provisionStatus === 'complete' ? 'All APT transactions completed successfully' : 'Execution halted')"></span>
+                    <span x-text="provisionProgress + ' / 100%'"></span>
+                </div>
+            </div>
+
+            <!-- Terminal Screen -->
+            <div class="rounded-xl bg-slate-950 border border-slate-800 shadow-md overflow-hidden">
+                <div class="px-4 py-2.5 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <span class="size-2.5 rounded-full bg-rose-500 inline-block"></span>
+                        <span class="size-2.5 rounded-full bg-amber-500 inline-block"></span>
+                        <span class="size-2.5 rounded-full bg-emerald-500 inline-block"></span>
+                        <span class="text-xs font-mono text-slate-400 ml-2">W3Packager Provisioning Console (APT Transaction Stream)</span>
+                    </div>
+                    <button type="button" @click="copyTerminalLog()" class="text-xs font-mono text-slate-400 hover:text-white flex items-center gap-1 transition">
+                        <i class="ti ti-copy"></i>
+                        <span x-text="copiedLog ? 'Copied!' : 'Copy Log'"></span>
+                    </button>
+                </div>
+                <div id="provision-terminal" class="p-4 font-mono text-xs text-slate-200 h-96 overflow-y-auto space-y-1 selection:bg-blue-600 selection:text-white leading-relaxed">
+                    <template x-for="(line, idx) in provisionLogs" :key="idx">
+                        <div :class="getLineClass(line)" x-text="line"></div>
+                    </template>
+                    <div x-show="provisionStatus === 'running'" class="flex items-center gap-2 text-slate-400 pt-2 font-mono">
+                        <span class="animate-spin"><i class="ti ti-loader-2"></i></span>
+                        <span class="animate-pulse">Processing APT transaction...</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Completion Action Buttons -->
+            <div x-show="provisionStatus === 'complete'" class="p-4 rounded-xl bg-emerald-50 border border-emerald-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div class="flex items-center gap-2.5 text-xs text-emerald-800 font-medium">
+                    <i class="ti ti-circle-check text-emerald-600 text-lg"></i>
+                    <span>All selected runtimes and extensions are active and operational. Nginx proxy reloaded.</span>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                    <a href="{% url 'admin_php_settings' %}?tab=manager"
+                       class="px-3.5 py-2 rounded-lg bg-white border border-emerald-300 text-emerald-800 hover:bg-emerald-100 font-bold text-xs transition flex items-center gap-1.5 shadow-xs">
+                        <i class="ti ti-settings"></i>
+                        <span>MultiPHP Manager</span>
+                    </a>
+                    <button type="button" @click="finishProvisioning()"
+                            class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition flex items-center gap-1.5 shadow-xs">
+                        <span>Done &amp; Return to Profiles</span>
+                        <i class="ti ti-arrow-right"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Error Action Buttons -->
+            <div x-show="provisionStatus === 'error'" class="p-4 rounded-xl bg-rose-50 border border-rose-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div class="flex items-center gap-2.5 text-xs text-rose-800 font-medium">
+                    <i class="ti ti-alert-triangle text-rose-600 text-lg"></i>
+                    <span>An error occurred during package provisioning. Inspect the console logs above.</span>
+                </div>
+                <button type="button" @click="step = 'review'; provisionStatus = 'idle'"
+                        class="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs transition flex items-center gap-1.5 shadow-xs shrink-0">
+                    <i class="ti ti-arrow-left"></i>
+                    <span>Back to Review</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Persistent Bottom Step Navigation Bar (Steps 2 to 5) -->
-    <div x-show="step !== 'profiles' && step !== 'review'"
+    <div x-show="step !== 'profiles' && step !== 'review' && step !== 'provisioning'"
          class="sticky bottom-4 z-20 bg-white/95 backdrop-blur-md rounded-xl border border-slate-200 p-3.5 shadow-md flex items-center justify-between gap-3 text-xs">
         
         <button type="button" @click="previousStep()" class="px-4 py-2 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 font-bold transition flex items-center gap-1.5">
@@ -811,6 +942,14 @@ function w3packagerApp() {
         web: webState,
         cli: cliState,
 
+        // Step 6 review & Step 7 provisioning states
+        reviewFilter: 'all',
+        provisionStatus: 'idle',
+        provisionProgress: 0,
+        provisionStatusMessage: 'Ready to apply configuration',
+        provisionLogs: [],
+        copiedLog: false,
+
         // Step titles
         get stepTitle() {
             switch(this.step) {
@@ -820,8 +959,13 @@ function w3packagerApp() {
                 case 'webserver': return '4. Web & Proxy Modules';
                 case 'cli': return '5. CLI Tools & Extra Runtimes';
                 case 'review': return '6. Review & Apply';
+                case 'provisioning': return '7. Provisioning Execution';
                 default: return '';
             }
+        },
+
+        get allReviewPackagesCount() {
+            return this.toInstallList.length + this.toUninstallList.length + this.keptList.length;
         },
 
         // Navigation
@@ -920,31 +1064,32 @@ function w3packagerApp() {
             });
         },
 
-        // Diff lists
+        // Diff lists (EasyApache 4 Clean Package Names)
         get toInstallList() {
             const list = [];
             // Runtimes
             Object.keys(this.runtimes).forEach(v => {
                 if (this.runtimes[v] && !this.installedRuntimes.includes(v)) {
-                    list.push({ type: 'PHP Runtime', name: `PHP ${v} (php${v}-fpm)`, key: `rt_${v}` });
+                    list.push({ name: `php${v}-fpm`, key: `rt_${v}` });
                 }
             });
             // Extensions
             Object.keys(this.extensions).forEach(pkg => {
                 if (this.extensions[pkg] && !this.installedExtensions.includes(pkg)) {
-                    list.push({ type: 'PHP Extension', name: pkg, key: `ext_${pkg}` });
+                    list.push({ name: pkg, key: `ext_${pkg}` });
                 }
             });
             // Web
             Object.keys(this.web).forEach(k => {
                 if (this.web[k] && !this.installedWeb.includes(k)) {
-                    list.push({ type: 'Web Module', name: k, key: `web_${k}` });
+                    const pkgName = k === 'brotli' ? 'libnginx-mod-http-brotli-filter' : (k === 'certbot' ? 'python3-certbot-nginx' : k);
+                    list.push({ name: pkgName, key: `web_${k}` });
                 }
             });
             // CLI
             Object.keys(this.cli).forEach(k => {
                 if (this.cli[k] && !this.installedCli.includes(k)) {
-                    list.push({ type: 'CLI Tool', name: k, key: `cli_${k}` });
+                    list.push({ name: k, key: `cli_${k}` });
                 }
             });
             return list;
@@ -955,25 +1100,26 @@ function w3packagerApp() {
             // Runtimes
             this.installedRuntimes.forEach(v => {
                 if (!this.runtimes[v] && v !== this.defaultPhp) {
-                    list.push({ type: 'PHP Runtime', name: `PHP ${v} (php${v}-fpm)`, key: `rt_rm_${v}` });
+                    list.push({ name: `php${v}-fpm`, key: `rt_rm_${v}` });
                 }
             });
             // Extensions
             this.installedExtensions.forEach(pkg => {
                 if (!this.extensions[pkg]) {
-                    list.push({ type: 'PHP Extension', name: pkg, key: `ext_rm_${pkg}` });
+                    list.push({ name: pkg, key: `ext_rm_${pkg}` });
                 }
             });
             // Web
             this.installedWeb.forEach(k => {
                 if (!this.web[k] && k !== 'nginx') {
-                    list.push({ type: 'Web Module', name: k, key: `web_rm_${k}` });
+                    const pkgName = k === 'brotli' ? 'libnginx-mod-http-brotli-filter' : (k === 'certbot' ? 'python3-certbot-nginx' : k);
+                    list.push({ name: pkgName, key: `web_rm_${k}` });
                 }
             });
             // CLI
             this.installedCli.forEach(k => {
                 if (!this.cli[k]) {
-                    list.push({ type: 'CLI Tool', name: k, key: `cli_rm_${k}` });
+                    list.push({ name: k, key: `cli_rm_${k}` });
                 }
             });
             return list;
@@ -982,16 +1128,19 @@ function w3packagerApp() {
         get keptList() {
             const list = [];
             this.installedRuntimes.forEach(v => {
-                if (this.runtimes[v]) list.push({ type: 'PHP Runtime', name: `PHP ${v}`, key: `k_rt_${v}` });
+                if (this.runtimes[v]) list.push({ name: `php${v}-fpm`, key: `k_rt_${v}` });
             });
             this.installedExtensions.forEach(pkg => {
-                if (this.extensions[pkg]) list.push({ type: 'PHP Extension', name: pkg, key: `k_ext_${pkg}` });
+                if (this.extensions[pkg]) list.push({ name: pkg, key: `k_ext_${pkg}` });
             });
             this.installedWeb.forEach(k => {
-                if (this.web[k]) list.push({ type: 'Web Module', name: k, key: `k_web_${k}` });
+                if (this.web[k]) {
+                    const pkgName = k === 'brotli' ? 'libnginx-mod-http-brotli-filter' : (k === 'certbot' ? 'python3-certbot-nginx' : k);
+                    list.push({ name: pkgName, key: `k_web_${k}` });
+                }
             });
             this.installedCli.forEach(k => {
-                if (this.cli[k]) list.push({ type: 'CLI Tool', name: k, key: `k_cli_${k}` });
+                if (this.cli[k]) list.push({ name: k, key: `k_cli_${k}` });
             });
             return list;
         },
@@ -1000,69 +1149,150 @@ function w3packagerApp() {
             return this.toInstallList.length + this.toUninstallList.length;
         },
 
-        prepareSubmit(e) {
+        async startProvisioning() {
             const count = this.changesCount;
             if (count === 0 && !this.customProfileName) {
-                if (!confirm('No package changes are staged. Do you wish to re-apply the current stack?')) {
-                    e.preventDefault();
-                    return false;
-                }
-            } else {
-                const msg = `Are you sure you want to provision this configuration?\n\n` +
-                            `• ${this.toInstallList.length} package(s) will be INSTALLED\n` +
-                            `• ${this.toUninstallList.length} package(s) will be REMOVED\n\n` +
-                            `Nginx and active PHP-FPM services will be reloaded.`;
-                if (!confirm(msg)) {
-                    e.preventDefault();
-                    return false;
+                if (!confirm('No package additions or removals are staged. Re-apply the current stack and reload services?')) {
+                    return;
                 }
             }
 
-            // Populate form inputs
-            const container = document.getElementById('provision-inputs');
-            container.innerHTML = '';
+            this.step = 'provisioning';
+            this.provisionStatus = 'running';
+            this.provisionProgress = 5;
+            this.provisionStatusMessage = 'Initializing provisioning engine...';
+            this.provisionLogs = [
+                '>> Initializing W3Packager Provisioning Engine (EasyApache 4 Parity)...',
+                '>> Preparing APT package transaction set...'
+            ];
 
-            Object.keys(this.runtimes).forEach(v => {
-                if (this.runtimes[v]) {
-                    const inp = document.createElement('input');
-                    inp.type = 'hidden';
-                    inp.name = 'selected_runtimes';
-                    inp.value = v;
-                    container.appendChild(inp);
+            const payload = {
+                selected_runtimes: Object.keys(this.runtimes).filter(k => this.runtimes[k]),
+                selected_extensions: Object.keys(this.extensions).filter(k => this.extensions[k]),
+                selected_web: Object.keys(this.web).filter(k => this.web[k]),
+                selected_cli: Object.keys(this.cli).filter(k => this.cli[k]),
+                save_profile_name: this.customProfileName.trim()
+            };
+
+            const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]')?.value || '';
+
+            try {
+                const response = await fetch('{% url "admin_w3packager_provision" %}', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': csrfToken,
+                        'Accept': 'text/event-stream'
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    const errText = await response.text();
+                    this.provisionStatus = 'error';
+                    this.provisionStatusMessage = `Provision request failed with HTTP ${response.status}`;
+                    this.provisionLogs.push(`>> [ERROR] Server error: ${errText}`);
+                    return;
                 }
-            });
 
-            Object.keys(this.extensions).forEach(pkg => {
-                if (this.extensions[pkg]) {
-                    const inp = document.createElement('input');
-                    inp.type = 'hidden';
-                    inp.name = 'selected_extensions';
-                    inp.value = pkg;
-                    container.appendChild(inp);
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const parts = buffer.split('\n\n');
+                    buffer = parts.pop();
+
+                    for (const part of parts) {
+                        const trimmed = part.trim();
+                        if (!trimmed) continue;
+                        const match = trimmed.match(/^data:\s*(.*)$/m);
+                        if (match) {
+                            try {
+                                const evt = JSON.parse(match[1]);
+                                if (evt.line && evt.line !== 'PROVISION_COMPLETE') {
+                                    this.provisionLogs.push(evt.line);
+                                    this.scrollTerminal();
+                                }
+                                if (typeof evt.percent === 'number') {
+                                    this.provisionProgress = evt.percent;
+                                }
+                                if (evt.step) {
+                                    this.provisionStatusMessage = evt.step;
+                                }
+                                if (evt.status === 'error') {
+                                    this.provisionStatus = 'error';
+                                    this.provisionStatusMessage = evt.error || 'Provisioning encountered an error.';
+                                } else if (evt.status === 'complete') {
+                                    this.provisionStatus = 'complete';
+                                    this.provisionProgress = 100;
+                                    this.provisionStatusMessage = 'Stack provisioned successfully! All services operational.';
+                                    if (evt.installed_runtimes) this.installedRuntimes = evt.installed_runtimes;
+                                    if (evt.installed_extensions) this.installedExtensions = evt.installed_extensions;
+                                    if (evt.installed_web) this.installedWeb = evt.installed_web;
+                                    if (evt.installed_cli) this.installedCli = evt.installed_cli;
+                                    if (evt.profiles) this.profiles = evt.profiles;
+                                }
+                            } catch(e) {
+                                console.error('Failed to parse SSE line:', e, trimmed);
+                            }
+                        }
+                    }
                 }
-            });
 
-            Object.keys(this.web).forEach(k => {
-                if (this.web[k]) {
-                    const inp = document.createElement('input');
-                    inp.type = 'hidden';
-                    inp.name = 'selected_web';
-                    inp.value = k;
-                    container.appendChild(inp);
+                if (this.provisionStatus === 'running') {
+                    this.provisionStatus = 'complete';
+                    this.provisionProgress = 100;
+                    this.provisionStatusMessage = 'Provision completed.';
                 }
-            });
+            } catch(err) {
+                this.provisionStatus = 'error';
+                this.provisionStatusMessage = 'Connection lost during provisioning.';
+                this.provisionLogs.push(`>> [ERROR] Network/Connection error: ${err.message}`);
+            }
+        },
 
-            Object.keys(this.cli).forEach(k => {
-                if (this.cli[k]) {
-                    const inp = document.createElement('input');
-                    inp.type = 'hidden';
-                    inp.name = 'selected_cli';
-                    inp.value = k;
-                    container.appendChild(inp);
-                }
+        scrollTerminal() {
+            this.$nextTick(() => {
+                const el = document.getElementById('provision-terminal');
+                if (el) el.scrollTop = el.scrollHeight;
             });
+        },
 
-            return true;
+        copyTerminalLog() {
+            const text = this.provisionLogs.join('\n');
+            navigator.clipboard.writeText(text).then(() => {
+                this.copiedLog = true;
+                setTimeout(() => { this.copiedLog = false; }, 2000);
+            });
+        },
+
+        getLineClass(line) {
+            if (!line) return 'text-slate-300';
+            if (line.includes('[ERROR]') || line.includes('[FATAL]') || line.includes('error:')) {
+                return 'text-rose-400 font-semibold';
+            }
+            if (line.includes('[WARNING]')) {
+                return 'text-amber-400';
+            }
+            if (line.startsWith('>>') || line.startsWith('==')) {
+                return 'text-emerald-400 font-bold';
+            }
+            if (line.startsWith('The following') || line.startsWith('Setting up') || line.startsWith('Unpacking')) {
+                return 'text-cyan-300';
+            }
+            return 'text-slate-300';
+        },
+
+        finishProvisioning() {
+            this.step = 'profiles';
+            this.provisionStatus = 'idle';
+            this.provisionLogs = [];
+            this.provisionProgress = 0;
         }
     };
 }

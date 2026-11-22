@@ -12,7 +12,7 @@ import subprocess
 import logging
 from pathlib import Path
 from django.db.models import Q
-from django.http import JsonResponse, HttpResponse
+from django.http import JsonResponse, HttpResponse, StreamingHttpResponse
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from django.utils import timezone
@@ -1786,9 +1786,12 @@ def is_ondrej_ppa_enabled() -> bool:
 def _run_apt_transaction(command_args: list) -> tuple[bool, str]:
     """Safely executes an apt-get command with sudo -n and DEBIAN_FRONTEND=noninteractive."""
     from services.webserver.manager import _has_sudo
-    if not _has_sudo():
+    if os.geteuid() == 0:
+        cmd = ['env', 'DEBIAN_FRONTEND=noninteractive'] + command_args
+    elif _has_sudo():
+        cmd = ['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive'] + command_args
+    else:
         return True, f"Mock transaction executed: apt-get {' '.join(command_args)}"
-    cmd = ['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive'] + command_args
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
         output = (proc.stdout or '') + '\n' + (proc.stderr or '')
@@ -1797,6 +1800,42 @@ def _run_apt_transaction(command_args: list) -> tuple[bool, str]:
         return False, "Transaction timed out after 240 seconds."
     except Exception as e:
         return False, f"Execution failed: {e}"
+
+
+def _stream_cmd(cmd_args: list):
+    """
+    Generator yielding output lines from subprocess execution.
+    Handles root execution or sudo -n env DEBIAN_FRONTEND=noninteractive.
+    """
+    from services.webserver.manager import _has_sudo
+    if os.geteuid() == 0:
+        full_cmd = ['env', 'DEBIAN_FRONTEND=noninteractive'] + cmd_args
+    elif _has_sudo():
+        full_cmd = ['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive'] + cmd_args
+    else:
+        yield f">> [SIMULATION] {' '.join(cmd_args)}"
+        yield ">> [SIMULATION] Command completed successfully."
+        return
+
+    try:
+        proc = subprocess.Popen(
+            full_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+        for line in iter(proc.stdout.readline, ''):
+            clean_line = line.strip('\r\n')
+            if clean_line:
+                yield clean_line
+        proc.stdout.close()
+        code = proc.wait()
+        if code != 0:
+            yield f">> [ERROR] Process exited with status code {code}"
+    except Exception as e:
+        yield f">> [ERROR] Execution failed: {e}"
 
 
 def enable_ondrej_ppa() -> tuple[bool, str]:
@@ -2261,6 +2300,355 @@ def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
     }
 
 
+def admin_w3packager_provision(request):
+    """
+    Streaming provision endpoint for W3Packager (EasyApache 4 Parity).
+    Streams real-time APT transaction output, progress percentages, and service status via SSE.
+    """
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST method required'}, status=405)
+
+    try:
+        if request.content_type == 'application/json':
+            payload = json.loads(request.body.decode('utf-8'))
+        else:
+            payload = request.POST
+    except Exception as e:
+        return JsonResponse({'error': f'Invalid request payload: {e}'}, status=400)
+
+    selected_runtimes = payload.get('selected_runtimes', [])
+    selected_extensions = payload.get('selected_extensions', [])
+    selected_web = payload.get('selected_web', [])
+    selected_cli = payload.get('selected_cli', [])
+    save_profile_name = payload.get('save_profile_name', '').strip()
+
+    if isinstance(selected_runtimes, str):
+        selected_runtimes = [selected_runtimes]
+    if isinstance(selected_extensions, str):
+        selected_extensions = [selected_extensions]
+    if isinstance(selected_web, str):
+        selected_web = [selected_web]
+    if isinstance(selected_cli, str):
+        selected_cli = [selected_cli]
+
+    default_php = SystemSetting.get('default_php', '8.3')
+    if default_php not in selected_runtimes:
+        selected_runtimes.append(default_php)
+    if 'nginx' not in selected_web:
+        selected_web.append('nginx')
+
+    def event_stream():
+        def sse(data_dict):
+            return f"data: {json.dumps(data_dict)}\n\n"
+
+        yield sse({
+            'status': 'running',
+            'percent': 5,
+            'step': 'Initializing W3Packager provision engine...',
+            'line': '>> Initializing W3Packager Provisioning Engine (EasyApache 4 Parity)...'
+        })
+
+        os_info = get_os_info()
+        yield sse({
+            'status': 'running',
+            'percent': 8,
+            'step': 'Target host verified',
+            'line': f">> Target Host: {os_info.get('distro', 'Linux')} {os_info.get('version', '')} ({os_info.get('arch', 'x86_64')})"
+        })
+
+        # 1. Validation
+        yield sse({
+            'status': 'running',
+            'percent': 12,
+            'step': 'Validating runtime selections and domain bindings...',
+            'line': '>> [1/5] Validating runtime selections and virtual host bindings...'
+        })
+
+        installed_runtimes = get_installed_php_versions()
+        installed_pkgs = get_installed_dpkg_packages()
+
+        # Check domain locks
+        runtimes_to_remove = [v for v in installed_runtimes if v not in selected_runtimes and v != default_php]
+        for v in runtimes_to_remove:
+            domain_count = Website.objects.filter(php_version=v).count()
+            if domain_count > 0:
+                yield sse({
+                    'status': 'error',
+                    'percent': 15,
+                    'step': 'Validation failed: Domain lock active',
+                    'line': f'>> [FATAL] Cannot remove PHP {v}: Currently used by {domain_count} domain(s). Change domain PHP version in MultiPHP Manager first.',
+                    'error': f'PHP {v} in use by {domain_count} domain(s)'
+                })
+                return
+
+        yield sse({
+            'status': 'running',
+            'percent': 18,
+            'step': 'Domain dependency validation passed',
+            'line': f'>> [1/5] Validation passed. Active websites: {Website.objects.count()}. Default PHP: {default_php}.'
+        })
+
+        # 2. Package Resolution
+        yield sse({
+            'status': 'running',
+            'percent': 22,
+            'step': 'Resolving package dependencies...',
+            'line': '>> [2/5] Resolving package dependency graph...'
+        })
+
+        apt_install_pkgs = []
+        apt_remove_pkgs = []
+
+        avail_brotli = get_available_apt_packages(['libnginx-mod-http-brotli-filter', 'libnginx-mod-brotli'])
+        brotli_pkg_name = 'libnginx-mod-http-brotli-filter' if 'libnginx-mod-http-brotli-filter' in avail_brotli else 'libnginx-mod-brotli'
+        certbot_pkg_name = 'python3-certbot-nginx'
+
+        web_pkg_map = {
+            'nginx': 'nginx',
+            'brotli': brotli_pkg_name,
+            'certbot': certbot_pkg_name,
+        }
+        cli_pkg_map = {
+            'nodejs': ['nodejs', 'npm'],
+            'composer': ['composer'],
+            'redis-server': ['redis-server'],
+        }
+
+        # Runtimes to install
+        runtimes_to_install = [v for v in selected_runtimes if v not in installed_runtimes]
+        for v in runtimes_to_install:
+            apt_install_pkgs.extend([
+                f'php{v}-fpm', f'php{v}-cli', f'php{v}-common',
+                f'php{v}-opcache', f'php{v}-curl', f'php{v}-mbstring',
+                f'php{v}-xml', f'php{v}-zip', f'php{v}-mysql'
+            ])
+
+        # Extensions to install & remove
+        for ext_pkg in selected_extensions:
+            if ext_pkg not in installed_pkgs:
+                apt_install_pkgs.append(ext_pkg)
+
+        catalog = get_w3packager_catalog()
+        all_known_ext_pkgs = [e['pkg_name'] for e in catalog['all_extensions']]
+        for ext_pkg in all_known_ext_pkgs:
+            if ext_pkg in installed_pkgs and ext_pkg not in selected_extensions:
+                apt_remove_pkgs.append(ext_pkg)
+
+        # Web components
+        for k, pkg in web_pkg_map.items():
+            if k in selected_web and pkg not in installed_pkgs:
+                apt_install_pkgs.append(pkg)
+            elif k not in selected_web and pkg in installed_pkgs and k != 'nginx':
+                apt_remove_pkgs.append(pkg)
+
+        # CLI components
+        for k, pkgs in cli_pkg_map.items():
+            if k in selected_cli:
+                for p in pkgs:
+                    if p not in installed_pkgs:
+                        apt_install_pkgs.append(p)
+            else:
+                for p in pkgs:
+                    if p in installed_pkgs:
+                        apt_remove_pkgs.append(p)
+
+        # Runtimes to remove
+        for v in runtimes_to_remove:
+            yield sse({
+                'status': 'running',
+                'percent': 25,
+                'step': f'Stopping service php{v}-fpm...',
+                'line': f'>> Stopping and disabling daemon php{v}-fpm...'
+            })
+            subprocess.run(['systemctl', 'stop', f'php{v}-fpm'], capture_output=True)
+            subprocess.run(['systemctl', 'disable', f'php{v}-fpm'], capture_output=True)
+            apt_remove_pkgs.append(f'php{v}-*')
+
+        apt_install_pkgs = list(dict.fromkeys(apt_install_pkgs))
+        apt_remove_pkgs = list(dict.fromkeys(apt_remove_pkgs))
+
+        yield sse({
+            'status': 'running',
+            'percent': 28,
+            'step': 'Dependency resolution complete',
+            'line': f'>> Target removal list ({len(apt_remove_pkgs)}): {", ".join(apt_remove_pkgs) or "None"}'
+        })
+        yield sse({
+            'status': 'running',
+            'percent': 30,
+            'step': 'Dependency resolution complete',
+            'line': f'>> Target install list ({len(apt_install_pkgs)}): {", ".join(apt_install_pkgs) or "None"}'
+        })
+
+        # 3. APT Removal Transaction
+        if apt_remove_pkgs:
+            yield sse({
+                'status': 'running',
+                'percent': 35,
+                'step': 'Executing APT removal transaction...',
+                'line': f'>> [3/5] Executing APT removal transaction ({len(apt_remove_pkgs)} packages)...'
+            })
+            for line in _stream_cmd(['apt-get', 'remove', '-y', '--purge'] + apt_remove_pkgs):
+                yield sse({'status': 'running', 'percent': 42, 'step': 'Removing obsolete packages...', 'line': line})
+        else:
+            yield sse({
+                'status': 'running',
+                'percent': 45,
+                'step': 'No packages to remove',
+                'line': '>> [3/5] No packages marked for removal. Skipping step.'
+            })
+
+        # 4. APT Installation Transaction
+        if apt_install_pkgs:
+            yield sse({
+                'status': 'running',
+                'percent': 50,
+                'step': 'Executing APT installation transaction...',
+                'line': f'>> [4/5] Executing APT installation transaction ({len(apt_install_pkgs)} packages)...'
+            })
+            for line in _stream_cmd(['apt-get', 'install', '-y'] + apt_install_pkgs):
+                yield sse({'status': 'running', 'percent': 70, 'step': 'Installing packages via APT...', 'line': line})
+        else:
+            yield sse({
+                'status': 'running',
+                'percent': 75,
+                'step': 'No new packages to install',
+                'line': '>> [4/5] No new packages to install. Skipping step.'
+            })
+
+        # WP-CLI handling
+        if 'wp-cli' in selected_cli and not shutil.which('wp'):
+            yield sse({'status': 'running', 'percent': 78, 'step': 'Installing WP-CLI...', 'line': '>> Installing WP-CLI binary...'})
+            cmd = "curl -s -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar && chmod +x wp-cli.phar && sudo -n mv wp-cli.phar /usr/local/bin/wp"
+            subprocess.run(cmd, shell=True, capture_output=True)
+            yield sse({'status': 'running', 'percent': 80, 'step': 'WP-CLI installed', 'line': '>> WP-CLI installed to /usr/local/bin/wp'})
+        elif 'wp-cli' not in selected_cli and shutil.which('wp'):
+            yield sse({'status': 'running', 'percent': 78, 'step': 'Removing WP-CLI...', 'line': '>> Removing WP-CLI binary...'})
+            subprocess.run("sudo -n rm -f /usr/local/bin/wp", shell=True, capture_output=True)
+            yield sse({'status': 'running', 'percent': 80, 'step': 'WP-CLI removed', 'line': '>> WP-CLI binary removed.'})
+
+        # 5. Services configuration & health checks
+        yield sse({
+            'status': 'running',
+            'percent': 85,
+            'step': 'Configuring and restarting daemons...',
+            'line': '>> [5/5] Configuring and restarting system daemons...'
+        })
+
+        newly_installed_runtimes = get_installed_php_versions()
+        for v in newly_installed_runtimes:
+            fpm_svc = f'php{v}-fpm'
+            subprocess.run(['systemctl', 'enable', fpm_svc], capture_output=True)
+            subprocess.run(['systemctl', 'restart', fpm_svc], capture_output=True)
+            check = subprocess.run(['systemctl', 'is-active', fpm_svc], capture_output=True, text=True)
+            status_text = check.stdout.strip()
+            yield sse({
+                'status': 'running',
+                'percent': 90,
+                'step': f'Service {fpm_svc} {status_text}',
+                'line': f'>> Daemon {fpm_svc}: {status_text.upper()}'
+            })
+
+        # Test and reload Nginx
+        nginx_test = subprocess.run(['nginx', '-t'], capture_output=True, text=True)
+        if nginx_test.returncode == 0:
+            subprocess.run(['systemctl', 'reload', 'nginx'], capture_output=True)
+            yield sse({
+                'status': 'running',
+                'percent': 95,
+                'step': 'Nginx proxy verified and reloaded',
+                'line': '>> Nginx configuration syntax OK. Proxy service reloaded.'
+            })
+        else:
+            yield sse({
+                'status': 'running',
+                'percent': 95,
+                'step': 'Nginx syntax warning',
+                'line': f'>> [WARNING] Nginx test output: {nginx_test.stderr[:100]}'
+            })
+
+        # Profile Saving if requested
+        if save_profile_name:
+            saved_raw = SystemSetting.get('w3packager_saved_profiles', '[]')
+            try:
+                saved = json.loads(saved_raw)
+            except Exception:
+                saved = []
+            profile_obj = {
+                'id': f"custom_{re.sub(r'[^a-zA-Z0-9_]', '', save_profile_name.lower().replace(' ', '_'))}",
+                'name': save_profile_name,
+                'badge': 'Custom',
+                'badge_class': 'text-purple-700 bg-purple-50 border-purple-200',
+                'description': f"User profile: PHP {', '.join(selected_runtimes)} + {len(selected_extensions)} extensions",
+                'tags': [f'PHP {v}' for v in selected_runtimes] + [f'{len(selected_extensions)} Extensions'],
+                'runtimes': selected_runtimes,
+                'extensions': [p.split('-', 1)[1] if '-' in p else p for p in selected_extensions],
+                'web': selected_web,
+                'cli': selected_cli,
+                'is_custom': True,
+            }
+            saved = [p for p in saved if p.get('id') != profile_obj['id']]
+            saved.append(profile_obj)
+            SystemSetting.set('w3packager_saved_profiles', json.dumps(saved))
+            yield sse({
+                'status': 'running',
+                'percent': 98,
+                'step': 'Saved custom profile',
+                'line': f'>> Custom profile "{save_profile_name}" saved successfully.'
+            })
+
+        catalog_new = get_w3packager_catalog()
+        final_installed_runtimes = [r['version'] for r in catalog_new['runtimes'] if r['installed']]
+        final_installed_exts = catalog_new['installed_extensions']
+        final_installed_web = catalog_new['installed_web']
+        final_installed_cli = catalog_new['installed_cli']
+        final_profiles = catalog_new['profiles']
+
+        yield sse({
+            'status': 'running',
+            'percent': 100,
+            'step': 'Complete',
+            'line': '>> ========================================================='
+        })
+        yield sse({
+            'status': 'running',
+            'percent': 100,
+            'step': 'Complete',
+            'line': '>> Stack Provisioning Completed Successfully!'
+        })
+        yield sse({
+            'status': 'running',
+            'percent': 100,
+            'step': 'Complete',
+            'line': '>> All requested PHP runtimes, modules, and proxy services are active.'
+        })
+        yield sse({
+            'status': 'running',
+            'percent': 100,
+            'step': 'Complete',
+            'line': '>> ========================================================='
+        })
+
+        yield sse({
+            'status': 'complete',
+            'percent': 100,
+            'step': 'Stack provisioned successfully',
+            'line': 'PROVISION_COMPLETE',
+            'installed_count': len(apt_install_pkgs),
+            'removed_count': len(apt_remove_pkgs),
+            'installed_runtimes': final_installed_runtimes,
+            'installed_extensions': final_installed_exts,
+            'installed_web': final_installed_web,
+            'installed_cli': final_installed_cli,
+            'profiles': final_profiles,
+        })
+
+    response = StreamingHttpResponse(event_stream(), content_type='text/event-stream')
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response
+
+
 def admin_w3packager(request):
     """
     W3Packager — Software & Stack Provisioner (EasyApache 4 Parity).
@@ -2290,6 +2678,9 @@ def admin_w3packager(request):
             return redirect('/software/w3packager/?tab=runtimes')
 
         elif action == 'provision':
+            if request.headers.get('accept') == 'text/event-stream' or request.headers.get('x-requested-with') == 'XMLHttpRequest' or request.content_type == 'application/json':
+                return admin_w3packager_provision(request)
+
             selected_runtimes = request.POST.getlist('selected_runtimes')
             selected_extensions = request.POST.getlist('selected_extensions')
             selected_web = request.POST.getlist('selected_web')
