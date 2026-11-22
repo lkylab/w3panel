@@ -3,6 +3,7 @@ W3Panel v2 — Admin Views
 Complete administration interface implementations.
 """
 import os
+import re
 import shutil
 import psutil
 import platform
@@ -1267,6 +1268,109 @@ def get_installed_php_versions():
     return results
 
 
+def _resolve_ini_path(php_version: str, target: str = 'fpm') -> Path:
+    if target not in ('fpm', 'cli'):
+        target = 'fpm'
+    test_path = Path(f"/tmp/w3panel_test/php/{php_version}/{target}/php.ini")
+    if test_path.exists() or (Path("/tmp/w3panel_test").exists() and not Path(f"/etc/php/{php_version}/{target}").exists()):
+        return test_path
+    return Path(f"/etc/php/{php_version}/{target}/php.ini")
+
+
+def get_raw_php_ini(php_version: str, target: str = 'fpm') -> tuple[str, str, bool]:
+    """
+    Returns (content, file_path_str, exists).
+    Reads the full php.ini from /etc/php/<php_version>/<target>/php.ini.
+    """
+    if target not in ('fpm', 'cli'):
+        target = 'fpm'
+    ini_path = _resolve_ini_path(php_version, target)
+    if not ini_path.exists():
+        std_path = Path(f"/etc/php/{php_version}/{target}/php.ini")
+        if std_path.exists():
+            ini_path = std_path
+        else:
+            return f"; php.ini for PHP {php_version} ({target.upper()}) was not found at {ini_path}\n", str(ini_path), False
+
+    try:
+        content = ini_path.read_text(encoding='utf-8', errors='replace')
+        return content, str(ini_path), True
+    except PermissionError:
+        res = subprocess.run(['sudo', '-n', 'cat', str(ini_path)], capture_output=True, text=True, timeout=5)
+        if res.returncode == 0:
+            return res.stdout, str(ini_path), True
+        return f"; Permission denied reading {ini_path}\n", str(ini_path), False
+    except Exception as e:
+        return f"; Error reading {ini_path}: {e}\n", str(ini_path), False
+
+
+def save_raw_php_ini(php_version: str, content: str, target: str = 'fpm') -> tuple[bool, str]:
+    """
+    Safely saves full php.ini file after creating a backup (.bak).
+    Returns (success, message).
+    """
+    if target not in ('fpm', 'cli'):
+        target = 'fpm'
+    from services.webserver.manager import _write_privileged_file
+
+    ini_path = _resolve_ini_path(php_version, target)
+
+    # Create backup if original exists
+    if ini_path.exists():
+        bak_path = Path(str(ini_path) + '.bak')
+        try:
+            old_content = ini_path.read_text(encoding='utf-8', errors='replace')
+            _write_privileged_file(bak_path, old_content)
+        except Exception as e:
+            logger.warning(f"Could not create php.ini backup at {bak_path}: {e}")
+
+    written = _write_privileged_file(ini_path, content)
+    if not written:
+        test_path = Path(f"/tmp/w3panel_test/php/{php_version}/{target}/php.ini")
+        try:
+            test_path.parent.mkdir(parents=True, exist_ok=True)
+            test_path.write_text(content, encoding='utf-8')
+            return True, f"Saved php.ini to test path {test_path}."
+        except Exception:
+            return False, f"Permission denied writing to {ini_path}."
+
+    return True, f"Successfully saved {ini_path}."
+
+
+def restore_raw_php_ini(php_version: str, target: str = 'fpm') -> tuple[bool, str]:
+    if target not in ('fpm', 'cli'):
+        target = 'fpm'
+    from services.webserver.manager import _write_privileged_file
+    ini_path = _resolve_ini_path(php_version, target)
+    bak_path = Path(str(ini_path) + '.bak')
+    if not bak_path.exists():
+        std_bak = Path(f"/etc/php/{php_version}/{target}/php.ini.bak")
+        if std_bak.exists():
+            bak_path = std_bak
+            ini_path = Path(f"/etc/php/{php_version}/{target}/php.ini")
+        else:
+            return False, f"No backup file (.bak) found for PHP {php_version} ({target.upper()})."
+
+    try:
+        content = bak_path.read_text(encoding='utf-8', errors='replace')
+        written = _write_privileged_file(ini_path, content)
+        if not written:
+            return False, f"Permission denied restoring {ini_path}."
+        return True, f"Successfully restored {ini_path} from backup."
+    except Exception as e:
+        return False, f"Failed to restore backup: {e}"
+
+
+def _sync_directives_from_ini(php_version: str, ini_content: str):
+    """Extract common directives from raw php.ini to keep Basic Mode in sync."""
+    directives = ['memory_limit', 'upload_max_filesize', 'post_max_size', 'max_execution_time', 'max_input_time', 'display_errors']
+    for d in directives:
+        match = re.search(r'^\s*' + re.escape(d) + r'\s*=\s*([^\s;]+)', ini_content, re.MULTILINE | re.IGNORECASE)
+        if match:
+            val = match.group(1).strip('"\'')
+            SystemSetting.set(f"php_{php_version}_{d}", val)
+
+
 def save_php_ini_directives(php_version: str, directives: dict):
     """Write customized INI directives to /etc/php/<ver>/fpm/conf.d/20-w3panel-directives.ini."""
     content = f"""; W3Panel MultiPHP Managed Directives for PHP {php_version}
@@ -1399,6 +1503,36 @@ def admin_php_settings(request):
             messages.success(request, f"PHP {ver} INI directives updated and service reloaded.")
             return redirect(f'/settings/php/?tab=ini&php_version={ver}')
 
+        elif action == 'save_raw_ini':
+            ver = request.POST.get('php_version', default_php).strip()
+            installed_vers = [p['version'] for p in get_installed_php_versions() if p['installed']]
+            if installed_vers and ver not in installed_vers:
+                messages.error(request, f"Cannot edit php.ini for PHP {ver}: PHP {ver} is not installed on this server.")
+                return redirect('/settings/php/?tab=ini&mode=editor')
+            target = request.POST.get('ini_target', 'fpm').strip()
+            raw_content = request.POST.get('ini_content', '')
+            ok, msg = save_raw_php_ini(ver, raw_content, target)
+            if ok:
+                _sync_directives_from_ini(ver, raw_content)
+                if target == 'fpm':
+                    reload_php_fpm(ver)
+                messages.success(request, f"Full php.ini for PHP {ver} ({target.upper()}) saved successfully and service reloaded.")
+            else:
+                messages.error(request, f"Failed to save php.ini: {msg}")
+            return redirect(f'/settings/php/?tab=ini&mode=editor&php_version={ver}&target={target}')
+
+        elif action == 'restore_raw_ini':
+            ver = request.POST.get('php_version', default_php).strip()
+            target = request.POST.get('ini_target', 'fpm').strip()
+            ok, msg = restore_raw_php_ini(ver, target)
+            if ok:
+                if target == 'fpm':
+                    reload_php_fpm(ver)
+                messages.success(request, f"PHP {ver} ({target.upper()}) php.ini successfully restored from backup (.bak).")
+            else:
+                messages.error(request, f"Could not restore backup: {msg}")
+            return redirect(f'/settings/php/?tab=ini&mode=editor&php_version={ver}&target={target}')
+
         elif action == 'apply_tuning':
             res = apply_system_tuning(default_php)
             if res.get('success'):
@@ -1428,6 +1562,22 @@ def admin_php_settings(request):
         installed_versions = [{'version': default_php, 'installed': True, 'active': True, 'fpm_dir': f'/etc/php/{default_php}/fpm'}]
     installed_version_numbers = [p['version'] for p in installed_versions]
 
+    if selected_php not in installed_version_numbers:
+        selected_php = default_php if default_php in installed_version_numbers else installed_version_numbers[0]
+
+    ini_mode = request.GET.get('mode', 'basic').strip()
+    if ini_mode not in ('basic', 'editor'):
+        ini_mode = 'basic'
+    ini_target = request.GET.get('target', 'fpm').strip()
+    if ini_target not in ('fpm', 'cli'):
+        ini_target = 'fpm'
+
+    raw_ini_content, raw_ini_path, raw_ini_exists = get_raw_php_ini(selected_php, ini_target)
+    raw_ini_lines = len(raw_ini_content.splitlines()) if raw_ini_content else 0
+    raw_ini_size_kb = round(len(raw_ini_content.encode('utf-8')) / 1024, 1) if raw_ini_content else 0
+    bak_path = Path(raw_ini_path + '.bak') if raw_ini_path else None
+    has_bak = bak_path.exists() if (bak_path and raw_ini_exists) else False
+
     websites = Website.objects.select_related('owner').all().order_by('domain')
     if search_query:
         websites = websites.filter(Q(domain__icontains=search_query) | Q(owner__username__icontains=search_query))
@@ -1454,6 +1604,14 @@ def admin_php_settings(request):
         'websites': websites,
         'ini_settings': ini_settings,
         'tuning_status': tuning_status,
+        'ini_mode': ini_mode,
+        'ini_target': ini_target,
+        'raw_ini_content': raw_ini_content,
+        'raw_ini_path': raw_ini_path,
+        'raw_ini_exists': raw_ini_exists,
+        'raw_ini_lines': raw_ini_lines,
+        'raw_ini_size_kb': raw_ini_size_kb,
+        'has_bak': has_bak,
         'memory_limit': ini_settings['memory_limit'],
         'max_execution_time': ini_settings['max_execution_time'],
         'upload_max_filesize': ini_settings['upload_max_filesize'],

@@ -446,7 +446,7 @@ class AuthAndRoleTests(TestCase):
         site.refresh_from_db()
         self.assertEqual(site.php_version, valid_ver)
 
-        # 5. Test POST save_ini
+        # 5. Test POST save_ini (Basic Mode)
         resp_ini = self.client.post('/settings/php/', {
             'action': 'save_ini',
             'php_version': '8.3',
@@ -460,6 +460,25 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(resp_ini.status_code, 302)
         self.assertEqual(SystemSetting.get('php_8.3_memory_limit'), '512M')
         self.assertEqual(SystemSetting.get('php_8.3_upload_max_filesize'), '128M')
+
+        # 6. Test GET Editor Mode (Whole Raw php.ini viewer)
+        resp_editor = self.client.get('/settings/php/?tab=ini&mode=editor&php_version=8.3&target=fpm')
+        self.assertEqual(resp_editor.status_code, 200)
+        self.assertContains(resp_editor, 'Editor Mode (Raw php.ini)')
+        self.assertContains(resp_editor, 'Runtime Target:')
+        self.assertContains(resp_editor, 'name="ini_content"')
+        self.assertContains(resp_editor, 'Save php.ini')
+
+        # 7. Test POST save_raw_ini
+        custom_raw = "; Custom W3Panel php.ini\nmemory_limit = 768M\nupload_max_filesize = 99M\n"
+        resp_save_raw = self.client.post('/settings/php/', {
+            'action': 'save_raw_ini',
+            'php_version': '8.3',
+            'ini_target': 'fpm',
+            'ini_content': custom_raw,
+        })
+        self.assertEqual(resp_save_raw.status_code, 302)
+        self.assertEqual(SystemSetting.get('php_8.3_memory_limit'), '768M')
 
 
 
