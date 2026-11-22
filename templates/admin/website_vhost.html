@@ -10,7 +10,7 @@
     <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
             <div class="flex items-center gap-2 text-xs text-slate-500 mb-1">
-                <a href="{% url 'admin_websites' %}" class="hover:text-blue-600 transition">Websites</a>
+                <a href="{% url 'admin_users' %}" class="hover:text-blue-600 transition">Accounts</a>
                 <i class="ti ti-chevron-right text-[10px]"></i>
                 <span class="text-slate-800 font-semibold">{{ site.domain }}</span>
             </div>
@@ -21,8 +21,8 @@
             <p class="text-xs text-slate-500 mt-1">Tenant: <span class="font-bold text-slate-800 font-mono">{{ site.owner.username }}</span> | Document Root: <span class="font-mono text-slate-700">{{ site.doc_root }}</span></p>
         </div>
         <div class="flex items-center gap-2">
-            <a href="{% url 'admin_websites' %}" class="inline-flex items-center gap-1 px-3.5 py-2 border border-slate-300 text-slate-700 bg-white hover:bg-slate-50 rounded-lg text-xs font-semibold uppercase tracking-wider transition">
-                <i class="ti ti-arrow-left"></i> Back to Websites
+            <a href="{% url 'admin_users' %}" class="inline-flex items-center gap-1 px-3.5 py-2 border border-slate-300 text-slate-700 bg-white hover:bg-slate-50 rounded-lg text-xs font-semibold uppercase tracking-wider transition">
+                <i class="ti ti-arrow-left"></i> Back to Accounts
             </a>
         </div>
     </div>

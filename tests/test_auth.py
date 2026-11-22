@@ -223,9 +223,21 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(resp_r.status_code, 302)
         self.assertFalse(User.objects.filter(username='hacked_admin').exists())
 
-    def test_vhosts_service_view(self):
+    def test_vhosts_redirects_to_accounts(self):
         self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
         resp = self.client.get('/services/vhosts/')
-        self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, 'Nginx VirtualHosts')
+        self.assertEqual(resp.status_code, 302)
+        self.assertRedirects(resp, '/users/')
+
+        resp_websites = self.client.get('/websites/')
+        self.assertEqual(resp_websites.status_code, 302)
+        self.assertRedirects(resp_websites, '/users/')
+
+        # Verify Service Manager page displays core services without panel daemons
+        resp_svc = self.client.get('/services/')
+        self.assertEqual(resp_svc.status_code, 200)
+        self.assertContains(resp_svc, 'Service Manager')
+        self.assertContains(resp_svc, 'Nginx Web Server')
+        self.assertNotContains(resp_svc, 'W3Host Manager (Port 2087)')
+        self.assertNotContains(resp_svc, 'W3Client Portal (Port 2083)')
 

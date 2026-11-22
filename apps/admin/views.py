@@ -46,7 +46,6 @@ def _sidebar_context(active_page=''):
         ],
         'sidebar_services': [
             {'label': 'Service Manager', 'url': '/services/', 'active': 'services'},
-            {'label': 'Nginx VirtualHosts', 'url': '/services/vhosts/', 'active': 'vhosts'},
             {'label': 'Terminal Console', 'url': '/terminal/', 'active': 'terminal'},
             {'label': 'Cron Jobs & Tasks', 'url': '/services/cron/', 'active': 'cron'},
             {'label': 'System Logs', 'url': '/services/logs/', 'active': 'logs'},
@@ -98,6 +97,7 @@ def admin_dashboard(request):
     """Admin dashboard."""
     stats = {
         'users': User.objects.filter(is_active=True).count(),
+        'packages': Package.objects.count(),
         'websites': Website.objects.filter(is_active=True).count(),
         'databases': Database.objects.count(),
         'plugins': len(PluginManager().list_plugins()),
@@ -555,14 +555,9 @@ def admin_features(request):
 # ===========================================================================
 
 def admin_websites(request):
-    """Websites management."""
-    websites = Website.objects.select_related('owner').all()
-    is_nginx_installed = bool(shutil.which('nginx'))
-    return render(request, 'admin/websites.html', {
-        **_sidebar_context('vhosts'),
-        'websites': websites,
-        'is_nginx_installed': is_nginx_installed,
-    })
+    """Websites and domains are managed per account inside W3Client Portal (Port 2083)."""
+    messages.info(request, "Websites and domains are managed per account inside W3Client Portal. Click 'W3Client' next to any account to manage their websites.")
+    return redirect('admin_users')
 
 
 
