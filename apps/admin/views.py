@@ -802,8 +802,6 @@ def admin_services_status(request):
     db_tuning = get_database_tuning_status()
 
     services_list = [
-        {'name': 'w3panel-admin', 'display': 'W3Host Manager (Port 2087)', 'icon': 'ti ti-shield-check', 'cmd': 'gunicorn', 'desc': 'Core Host Manager Administrative Server'},
-        {'name': 'w3panel-user', 'display': 'W3Client Portal (Port 2083)', 'icon': 'ti ti-user-check', 'cmd': 'gunicorn', 'desc': 'End-User Client Hosting Portal Server'},
         {'name': 'nginx', 'display': 'Nginx Web Server', 'icon': 'ti ti-world', 'cmd': 'nginx', 'desc': 'High-Performance Web Server for User Websites (Ports 80 & 443)'},
         {'name': 'mariadb', 'display': 'MariaDB Database Server', 'icon': 'ti ti-database', 'cmd': 'mariadbd', 'desc': 'Relational MySQL Database Engine'},
         {'name': 'postgresql', 'display': 'PostgreSQL Database Server', 'icon': 'ti ti-database-import', 'cmd': 'psql', 'desc': 'Advanced Object-Relational SQL Database Engine'},

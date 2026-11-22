@@ -71,7 +71,7 @@
                             <i class="ti ti-player-stop"></i>
                         </button>
                     </form>
-                    {% if s.name != 'w3panel-admin' and s.name != 'w3panel-user' and s.name != 'ssh' %}
+                    {% if s.name != 'ssh' %}
                     <form method="post" action="{% url 'admin_services_status' %}" class="inline" onsubmit="return confirm('Uninstall {{ s.display }}?');">
                         {% csrf_token %}
                         <input type="hidden" name="service" value="{{ s.name }}">
@@ -101,7 +101,7 @@
                             <i class="ti ti-player-play"></i> Start
                         </button>
                     </form>
-                    {% if s.name != 'w3panel-admin' and s.name != 'w3panel-user' and s.name != 'ssh' %}
+                    {% if s.name != 'ssh' %}
                     <form method="post" action="{% url 'admin_services_status' %}" class="inline" onsubmit="return confirm('Uninstall {{ s.display }}?');">
                         {% csrf_token %}
                         <input type="hidden" name="service" value="{{ s.name }}">
