@@ -17,8 +17,8 @@ if VBoxManage list vms | grep -q "\"$VM_NAME\""; then
     VBoxManage controlvm "$VM_NAME" poweroff || true
     VBoxManage unregistervm "$VM_NAME" --delete || true
 fi
-# Also remove leftover VDI if VM dir exists but VM is gone
-rm -f "/home/lky/VirtualBox VMs/$VM_NAME/$VM_NAME.vdi" 2>/dev/null || true
+# Also remove leftover VM dir if exists
+rm -rf "/home/lky/VirtualBox VMs/$VM_NAME" 2>/dev/null || true
 
 # 2. Check/Download Ubuntu ISO
 if [ ! -f "$ISO_PATH" ]; then
@@ -148,7 +148,7 @@ echo ""
 echo "Waiting for Ubuntu installation to complete (SSH on port 2222)..."
 for i in $(seq 1 120); do
   if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o PasswordAuthentication=no \
-      -p 2222 -o ConnectTimeout=5 lky@localhost true 2>/dev/null; then
+      -i /home/lky/.ssh/id_ed25519 -p 2222 -o ConnectTimeout=5 lky@localhost true 2>/dev/null; then
     echo "SSH is available. Taking snapshot..."
     break
   fi

@@ -47,5 +47,30 @@
             </div>
         </form>
     </div>
+
+    <!-- Panel Updates & Maintenance Card -->
+    <div class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm space-y-4">
+        <div class="flex items-center justify-between">
+            <div>
+                <h3 class="text-sm font-bold text-gray-900 flex items-center gap-2">
+                    <i class="ti ti-refresh text-blue-600"></i> Panel Updates & Maintenance
+                </h3>
+                <p class="text-xs text-gray-500 mt-0.5">W3Panel v{{ panel_version|default:"2.0.0" }} — Production Release</p>
+            </div>
+            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                <i class="ti ti-circle-check mr-1"></i> Automated Updates Active
+            </span>
+        </div>
+        <div class="p-3.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 space-y-2">
+            <div class="font-medium text-slate-800">CLI Updater:</div>
+            <div class="flex items-center justify-between font-mono bg-slate-900 text-slate-100 px-3 py-2 rounded">
+                <span>sudo w3panel-update</span>
+                <span class="text-slate-400 text-[10px]"># Git-based 1-command upgrade</span>
+            </div>
+            <div class="text-[11px] text-slate-500">
+                Pulls the latest codebase from GitHub, verifies python requirements, executes migrations, recompiles static assets, and performs zero-downtime service reload.
+            </div>
+        </div>
+    </div>
 </div>
 {% endblock %}

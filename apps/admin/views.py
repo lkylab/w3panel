@@ -896,6 +896,7 @@ def admin_settings(request):
         'server_hostname': SystemSetting.get('server_hostname', platform.node()),
         'default_php': SystemSetting.get('default_php', '8.3'),
         'api_rate_limit': SystemSetting.get('api_rate_limit', '50'),
+        'panel_version': getattr(settings, 'W3PANEL_VERSION', '2.0.0'),
     })
 
 
