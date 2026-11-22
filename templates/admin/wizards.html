@@ -1,162 +1,460 @@
 {% extends "base_admin.html" %}
 {% load static %}
 
-{% block title %}Setup Wizards — W3Panel{% endblock %}
-{% block page_title %}Setup Wizards{% endblock %}
+{% block title %}Initial Server Setup Wizard — W3Panel{% endblock %}
+{% block page_title %}Initial Server Setup Wizard{% endblock %}
 
 {% block content %}
-<div x-data="{ wpModal: false, lvModal: false }" class="space-y-6">
-    <div>
-        <h2 class="text-lg font-bold text-gray-900">One-Shot Setup Wizards</h2>
-        <p class="text-xs text-gray-500">Automate application deployments and stacks with single-click wizards</p>
+<div x-data="{
+    step: 1,
+    maxStep: 6,
+    webserver: 'nginx',
+    mariadb: true,
+    postgresql: false,
+    tune_mariadb: true,
+    mail: true,
+    spam: 'rspamd',
+    dkim: true,
+    ftp: true,
+    ufw: true
+}" class="max-w-4xl mx-auto space-y-6">
+
+    <!-- Header & Breadcrumbs -->
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+            <div class="flex items-center gap-2 text-xs text-slate-500 mb-1">
+                <a href="{% url 'admin_settings' %}" class="hover:text-blue-600 transition">Basic WebHost Setup</a>
+                <i class="ti ti-chevron-right text-[10px]"></i>
+                <span class="text-slate-800 font-semibold">Initial Server Setup Wizard</span>
+            </div>
+            <h2 class="text-xl font-bold text-gray-900 flex items-center gap-2">
+                <i class="ti ti-wand text-blue-600"></i>
+                Initial Server Setup Wizard
+            </h2>
+            <p class="text-xs text-gray-500 mt-0.5">Automated provisioning for core server networking, web server, database, mail, and FTP stacks.</p>
+        </div>
+        {% if initial_completed %}
+        <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 self-start sm:self-auto">
+            <i class="ti ti-circle-check text-sm"></i> Baseline Setup Active
+        </span>
+        {% else %}
+        <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200 self-start sm:self-auto">
+            <i class="ti ti-clock text-sm"></i> Pending Initial Setup
+        </span>
+        {% endif %}
     </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
-        <!-- 1-Click WordPress Setup Wizard -->
-        <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm flex flex-col justify-between hover:border-blue-500/50 transition">
-            <div>
-                <div class="size-11 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center text-2xl mb-4">
-                    <i class="ti ti-brand-wordpress"></i>
+    <!-- Stepper Navigation Bar -->
+    <div class="bg-white rounded-xl border border-gray-200 p-2 shadow-xs">
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-1">
+            <button type="button" @click="step = 1"
+                    :class="step === 1 ? 'bg-blue-600 text-white font-bold shadow-xs' : (step > 1 ? 'text-emerald-700 hover:bg-emerald-50 font-medium' : 'text-slate-600 hover:bg-slate-50 font-normal')"
+                    class="flex items-center justify-center sm:justify-start gap-2 px-3 py-2.5 rounded-lg text-xs transition">
+                <span :class="step === 1 ? 'bg-blue-700 text-white' : (step > 1 ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600')" class="size-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0">1</span>
+                <span class="truncate">1. Network</span>
+            </button>
+
+            <button type="button" @click="step = 2"
+                    :class="step === 2 ? 'bg-blue-600 text-white font-bold shadow-xs' : (step > 2 ? 'text-emerald-700 hover:bg-emerald-50 font-medium' : 'text-slate-600 hover:bg-slate-50 font-normal')"
+                    class="flex items-center justify-center sm:justify-start gap-2 px-3 py-2.5 rounded-lg text-xs transition">
+                <span :class="step === 2 ? 'bg-blue-700 text-white' : (step > 2 ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600')" class="size-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0">2</span>
+                <span class="truncate">2. Web</span>
+            </button>
+
+            <button type="button" @click="step = 3"
+                    :class="step === 3 ? 'bg-blue-600 text-white font-bold shadow-xs' : (step > 3 ? 'text-emerald-700 hover:bg-emerald-50 font-medium' : 'text-slate-600 hover:bg-slate-50 font-normal')"
+                    class="flex items-center justify-center sm:justify-start gap-2 px-3 py-2.5 rounded-lg text-xs transition">
+                <span :class="step === 3 ? 'bg-blue-700 text-white' : (step > 3 ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600')" class="size-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0">3</span>
+                <span class="truncate">3. Database</span>
+            </button>
+
+            <button type="button" @click="step = 4"
+                    :class="step === 4 ? 'bg-blue-600 text-white font-bold shadow-xs' : (step > 4 ? 'text-emerald-700 hover:bg-emerald-50 font-medium' : 'text-slate-600 hover:bg-slate-50 font-normal')"
+                    class="flex items-center justify-center sm:justify-start gap-2 px-3 py-2.5 rounded-lg text-xs transition">
+                <span :class="step === 4 ? 'bg-blue-700 text-white' : (step > 4 ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600')" class="size-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0">4</span>
+                <span class="truncate">4. Mail</span>
+            </button>
+
+            <button type="button" @click="step = 5"
+                    :class="step === 5 ? 'bg-blue-600 text-white font-bold shadow-xs' : (step > 5 ? 'text-emerald-700 hover:bg-emerald-50 font-medium' : 'text-slate-600 hover:bg-slate-50 font-normal')"
+                    class="flex items-center justify-center sm:justify-start gap-2 px-3 py-2.5 rounded-lg text-xs transition">
+                <span :class="step === 5 ? 'bg-blue-700 text-white' : (step > 5 ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600')" class="size-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0">5</span>
+                <span class="truncate">5. FTP</span>
+            </button>
+
+            <button type="button" @click="step = 6"
+                    :class="step === 6 ? 'bg-blue-600 text-white font-bold shadow-xs' : 'text-slate-600 hover:bg-slate-50 font-normal'"
+                    class="flex items-center justify-center sm:justify-start gap-2 px-3 py-2.5 rounded-lg text-xs transition">
+                <span :class="step === 6 ? 'bg-blue-700 text-white' : 'bg-slate-100 text-slate-600'" class="size-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0">6</span>
+                <span class="truncate">6. Finish</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Main Wizard Form -->
+    <form method="post" action="{% url 'admin_wizards' %}" class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        {% csrf_token %}
+
+        <!-- STEP 1: Host Identity & Networking -->
+        <div x-show="step === 1" class="p-6 sm:p-8 space-y-6">
+            <div class="border-b border-gray-100 pb-4">
+                <div class="flex items-center gap-3">
+                    <div class="size-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center text-xl">
+                        <i class="ti ti-world"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-gray-900">Step 1: Host Identity & Nameservers</h3>
+                        <p class="text-xs text-gray-500">Configure your primary server hostname (FQDN), IP, and default nameserver glue</p>
+                    </div>
                 </div>
-                <h3 class="font-bold text-gray-900 text-base">WordPress Installer</h3>
-                <p class="text-xs text-gray-500 mt-1.5 leading-relaxed">
-                    Downloads official WordPress release, creates MySQL database, configures wp-config.php and Nginx rewrites.
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                <div>
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">Server Hostname (FQDN) *</label>
+                    <input type="text" name="server_hostname" value="{{ hostname }}" required placeholder="server1.example.com"
+                           class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm text-gray-900 font-mono outline-none focus:border-blue-600">
+                    <p class="mt-1 text-[11px] text-gray-400">Must be a fully qualified domain name pointing to this server.</p>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">Primary Public / Shared IP *</label>
+                    <input type="text" name="server_ip" value="{{ server_ip }}" required placeholder="192.0.2.1"
+                           class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm text-gray-900 font-mono outline-none focus:border-blue-600">
+                    <p class="mt-1 text-[11px] text-gray-400">Auto-detected public address used for newly hosted websites and DNS A records.</p>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                <div>
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">Primary Nameserver (NS1) *</label>
+                    <input type="text" name="primary_ns" value="{{ primary_ns }}" required placeholder="ns1.example.com"
+                           class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm text-gray-900 font-mono outline-none focus:border-blue-600">
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">Secondary Nameserver (NS2) *</label>
+                    <input type="text" name="secondary_ns" value="{{ secondary_ns }}" required placeholder="ns2.example.com"
+                           class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm text-gray-900 font-mono outline-none focus:border-blue-600">
+                </div>
+            </div>
+
+            <div>
+                <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">Administrator Alert Email *</label>
+                <input type="email" name="admin_email" value="{{ admin_email }}" required placeholder="admin@example.com"
+                       class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm text-gray-900 outline-none focus:border-blue-600">
+                <p class="mt-1 text-[11px] text-gray-400">Used for system alerts, daemon crashes, and disk threshold notifications.</p>
+            </div>
+        </div>
+
+        <!-- STEP 2: Web Server Stack -->
+        <div x-show="step === 2" class="p-6 sm:p-8 space-y-6">
+            <div class="border-b border-gray-100 pb-4">
+                <div class="flex items-center gap-3">
+                    <div class="size-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-xl">
+                        <i class="ti ti-world-upload"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-gray-900">Step 2: Web Server Selection & PHP Runtime</h3>
+                        <p class="text-xs text-gray-500">Select the HTTP daemon that will serve user websites and applications</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <!-- Nginx Option -->
+                <label class="relative flex flex-col p-5 rounded-xl border-2 cursor-pointer transition"
+                       :class="webserver === 'nginx' ? 'border-blue-600 bg-blue-50/20' : 'border-gray-200 hover:border-gray-300'">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center gap-2.5 font-bold text-gray-900 text-sm">
+                            <input type="radio" name="webserver_choice" value="nginx" x-model="webserver" class="text-blue-600 focus:ring-blue-500">
+                            <span>Nginx Web Server</span>
+                        </div>
+                        {% if stack_status.webserver_nginx.installed %}
+                        <span class="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
+                            <i class="ti ti-circle-check"></i> Installed
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center gap-1 text-[11px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">
+                            <i class="ti ti-download"></i> Will Install
+                        </span>
+                        {% endif %}
+                    </div>
+                    <p class="text-xs text-gray-600 leading-relaxed">
+                        Industry-standard high-concurrency event-driven web server. Recommended for reverse-proxying, caching, and serving PHP-FPM, Node.js, and static assets.
+                    </p>
+                </label>
+
+                <!-- Apache Option -->
+                <label class="relative flex flex-col p-5 rounded-xl border-2 cursor-pointer transition opacity-75 hover:opacity-100"
+                       :class="webserver === 'apache' ? 'border-blue-600 bg-blue-50/20' : 'border-gray-200 hover:border-gray-300'">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center gap-2.5 font-bold text-gray-900 text-sm">
+                            <input type="radio" name="webserver_choice" value="apache" x-model="webserver" class="text-blue-600 focus:ring-blue-500">
+                            <span>Apache HTTP Server</span>
+                        </div>
+                        {% if stack_status.webserver_apache.installed %}
+                        <span class="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
+                            <i class="ti ti-circle-check"></i> Installed
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center gap-1 text-[11px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
+                            Not Installed
+                        </span>
+                        {% endif %}
+                    </div>
+                    <p class="text-xs text-gray-600 leading-relaxed">
+                        Traditional multi-process web server supporting native .htaccess rewrite files. Recommended for legacy shared hosting compatibility.
+                    </p>
+                </label>
+            </div>
+
+            <!-- Default PHP Version -->
+            <div class="p-4 rounded-xl border border-gray-200 bg-gray-50/50 space-y-2">
+                <div class="flex items-center justify-between">
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">Default PHP Runtime Version for New Sites</label>
+                    <span class="text-xs text-emerald-700 font-semibold flex items-center gap-1">
+                        <i class="ti ti-circle-check"></i> PHP 8.3-FPM Active
+                    </span>
+                </div>
+                <select name="default_php" class="w-full sm:w-64 rounded-lg border border-gray-300 px-3.5 py-2 text-sm text-gray-900 bg-white outline-none focus:border-blue-600">
+                    <option value="8.4" {% if default_php == '8.4' %}selected{% endif %}>PHP 8.4 (Latest)</option>
+                    <option value="8.3" {% if default_php == '8.3' %}selected{% endif %}>PHP 8.3 (Recommended / Stable)</option>
+                    <option value="8.2" {% if default_php == '8.2' %}selected{% endif %}>PHP 8.2</option>
+                </select>
+                <p class="text-[11px] text-gray-500">Tenants can customize their individual PHP runtime per-website inside the Client Portal.</p>
+            </div>
+        </div>
+
+        <!-- STEP 3: Database Engine -->
+        <div x-show="step === 3" class="p-6 sm:p-8 space-y-6">
+            <div class="border-b border-gray-100 pb-4">
+                <div class="flex items-center gap-3">
+                    <div class="size-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-xl">
+                        <i class="ti ti-database"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-gray-900">Step 3: Relational Database Engines</h3>
+                        <p class="text-xs text-gray-500">Configure MariaDB (MySQL-compatible) and PostgreSQL SQL servers</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="space-y-4">
+                <!-- MariaDB -->
+                <div class="p-5 rounded-xl border border-gray-200 bg-white hover:border-gray-300 transition space-y-3">
+                    <div class="flex items-center justify-between">
+                        <label class="flex items-center gap-3 cursor-pointer">
+                            <input type="checkbox" name="enable_mariadb" value="1" x-model="mariadb" class="size-4 rounded text-blue-600 focus:ring-blue-500 border-gray-300">
+                            <div>
+                                <span class="font-bold text-gray-900 text-sm">MariaDB Database Server (Default MySQL)</span>
+                                <p class="text-xs text-gray-500">High-performance relational engine powering WordPress, Laravel, and standard web apps.</p>
+                            </div>
+                        </label>
+                        {% if stack_status.db_mariadb.installed %}
+                        <span class="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full">
+                            <i class="ti ti-circle-check"></i> Running (Port 3306)
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center gap-1 text-[11px] font-bold text-amber-700 bg-amber-100 px-2.5 py-1 rounded-full">
+                            <i class="ti ti-download"></i> Will Install
+                        </span>
+                        {% endif %}
+                    </div>
+
+                    <!-- MariaDB Low-RAM Tuning Toggle -->
+                    <div x-show="mariadb" class="pt-3 border-t border-gray-100 flex items-start gap-3 bg-emerald-50/40 p-3 rounded-lg border border-emerald-200/60">
+                        <input type="checkbox" name="tune_mariadb" value="1" x-model="tune_mariadb" id="tune_mariadb" class="size-4 mt-0.5 rounded text-emerald-600 focus:ring-emerald-500 border-gray-300">
+                        <div>
+                            <label for="tune_mariadb" class="text-xs font-bold text-emerald-900 cursor-pointer flex items-center gap-1">
+                                <i class="ti ti-bolt text-emerald-600"></i> Enable MariaDB Low-RAM Memory Tuning (Recommended)
+                            </label>
+                            <p class="text-[11px] text-emerald-700 mt-0.5">
+                                Applies skip-name-resolve, optimizes innodb_buffer_pool_size (128MB), and turns performance_schema=OFF. Prevents out-of-memory kills on VPS servers.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- PostgreSQL -->
+                <div class="p-5 rounded-xl border border-gray-200 bg-white hover:border-gray-300 transition flex items-center justify-between">
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" name="enable_postgresql" value="1" x-model="postgresql" class="size-4 rounded text-blue-600 focus:ring-blue-500 border-gray-300">
+                        <div>
+                            <span class="font-bold text-gray-900 text-sm">PostgreSQL Object-Relational Database</span>
+                            <p class="text-xs text-gray-500">Advanced enterprise SQL engine for complex datasets and modern frameworks.</p>
+                        </div>
+                    </label>
+                    {% if stack_status.db_postgresql.installed %}
+                    <span class="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full">
+                        <i class="ti ti-circle-check"></i> Running (Port 5432)
+                    </span>
+                    {% else %}
+                    <span class="inline-flex items-center gap-1 text-[11px] font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full">
+                        Not Installed
+                    </span>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- STEP 4: Mail Server Stack -->
+        <div x-show="step === 4" class="p-6 sm:p-8 space-y-6">
+            <div class="border-b border-gray-100 pb-4">
+                <div class="flex items-center gap-3">
+                    <div class="size-10 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center text-xl">
+                        <i class="ti ti-mail"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-gray-900">Step 4: Mail Server Stack & Deliverability</h3>
+                        <p class="text-xs text-gray-500">Configure outbound SMTP mail transfer (Postfix) and incoming IMAP/POP3 (Dovecot)</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="p-5 rounded-xl border border-gray-200 bg-white space-y-4">
+                <div class="flex items-center justify-between">
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" name="enable_mail" value="1" x-model="mail" class="size-4 rounded text-blue-600 focus:ring-blue-500 border-gray-300">
+                        <div>
+                            <span class="font-bold text-gray-900 text-sm">Postfix (SMTP) & Dovecot (IMAP/POP3) Stack</span>
+                            <p class="text-xs text-gray-500">Enables hosted tenant mailboxes, webmail clients, and virtual Maildir routing.</p>
+                        </div>
+                    </label>
+                    {% if stack_status.mail_postfix.installed %}
+                    <span class="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full">
+                        <i class="ti ti-circle-check"></i> Installed & Active
+                    </span>
+                    {% else %}
+                    <span class="inline-flex items-center gap-1 text-[11px] font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full">
+                        Not Installed (Optional)
+                    </span>
+                    {% endif %}
+                </div>
+
+                <div x-show="mail" class="space-y-4 pt-3 border-t border-gray-100">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">Spam Mitigation Engine</label>
+                            <select name="spam_filter" x-model="spam" class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2 text-sm text-gray-900 bg-white outline-none focus:border-blue-600">
+                                <option value="rspamd">Rspamd (Fast C-based filter, recommended)</option>
+                                <option value="spamassassin">SpamAssassin</option>
+                                <option value="none">Disabled</option>
+                            </select>
+                        </div>
+
+                        <div class="flex items-center pt-5">
+                            <label class="flex items-center gap-2.5 cursor-pointer">
+                                <input type="checkbox" name="enable_dkim" value="1" x-model="dkim" class="size-4 rounded text-blue-600 focus:ring-blue-500 border-gray-300">
+                                <span class="text-xs font-medium text-gray-700">Generate automated DKIM 2048-bit keys & SPF for hosted domains</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- STEP 5: FTP Server Stack -->
+        <div x-show="step === 5" class="p-6 sm:p-8 space-y-6">
+            <div class="border-b border-gray-100 pb-4">
+                <div class="flex items-center gap-3">
+                    <div class="size-10 rounded-xl bg-orange-50 text-orange-600 flex items-center justify-center text-xl">
+                        <i class="ti ti-folder"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-gray-900">Step 5: File Transfer Protocol (FTP) Stack</h3>
+                        <p class="text-xs text-gray-500">Provide secure virtual user FTP/FTPS connections for remote file management</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="p-5 rounded-xl border border-gray-200 bg-white flex items-center justify-between">
+                <label class="flex items-center gap-3 cursor-pointer">
+                    <input type="checkbox" name="enable_ftp" value="1" x-model="ftp" class="size-4 rounded text-blue-600 focus:ring-blue-500 border-gray-300">
+                    <div>
+                        <span class="font-bold text-gray-900 text-sm">Pure-FTPd Virtual User Server</span>
+                        <p class="text-xs text-gray-500">Isolated chroot jail per user account with passive port range 30000:31000.</p>
+                    </div>
+                </label>
+                {% if stack_status.ftp_pureftpd.installed %}
+                <span class="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full">
+                    <i class="ti ti-circle-check"></i> Running (Port 21)
+                </span>
+                {% else %}
+                <span class="inline-flex items-center gap-1 text-[11px] font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full">
+                    Not Installed (Optional)
+                </span>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- STEP 6: Security Baseline & Finish -->
+        <div x-show="step === 6" class="p-6 sm:p-8 space-y-6">
+            <div class="border-b border-gray-100 pb-4">
+                <div class="flex items-center gap-3">
+                    <div class="size-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center text-xl">
+                        <i class="ti ti-shield-check"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-gray-900">Step 6: Security Baseline & Confirmation</h3>
+                        <p class="text-xs text-gray-500">Review selected server parameters and apply initial server provisioning</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- UFW Baseline -->
+            <div class="p-5 rounded-xl border border-gray-200 bg-white space-y-3">
+                <div class="flex items-center justify-between">
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" name="enable_ufw" value="1" x-model="ufw" class="size-4 rounded text-blue-600 focus:ring-blue-500 border-gray-300">
+                        <div>
+                            <span class="font-bold text-gray-900 text-sm">Automated UFW Firewall Baseline Protection</span>
+                            <p class="text-xs text-gray-500">Enforce default DENY on incoming traffic and auto-open selected hosting ports.</p>
+                        </div>
+                    </label>
+                    <span class="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full">
+                        <i class="ti ti-circle-check"></i> Active
+                    </span>
+                </div>
+
+                <div class="p-3 bg-slate-50 rounded-lg text-xs text-slate-700 space-y-1 font-mono">
+                    <div class="font-bold font-sans text-slate-800 text-[11px]">Ports to be automatically permitted:</div>
+                    <div class="text-[11px] text-slate-600">Core: 22 (SSH), 80/443 (HTTP/HTTPS), 2087 (Host Manager), 2083 (Client Portal)</div>
+                    <div x-show="mail" class="text-[11px] text-purple-700">Mail: 25, 587, 465 (SMTP), 993, 995 (IMAP/POP3)</div>
+                    <div x-show="ftp" class="text-[11px] text-orange-700">FTP: 21, 30000:31000 (Passive Range)</div>
+                </div>
+            </div>
+
+            <!-- Summary Box -->
+            <div class="p-4 rounded-xl border border-blue-200 bg-blue-50/40 text-xs text-slate-700 space-y-2">
+                <div class="font-bold text-blue-900 text-sm flex items-center gap-1.5">
+                    <i class="ti ti-info-circle"></i> Ready to Provision
+                </div>
+                <p>
+                    Clicking <strong>"Complete Server Setup"</strong> will save your networking defaults, configure the selected web, database, mail, and FTP stacks, optimize daemon performance, and finalize the server foundation.
                 </p>
             </div>
-            <div class="mt-6 pt-4 border-t border-gray-100">
-                <button @click="wpModal = true" class="w-full inline-flex justify-center items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold shadow-sm transition">
-                    <i class="ti ti-player-play"></i> Launch Installer
+        </div>
+
+        <!-- Wizard Navigation Footer -->
+        <div class="bg-gray-50 px-6 py-4 border-t border-gray-200 flex items-center justify-between">
+            <button type="button" @click="step = Math.max(1, step - 1)" :disabled="step === 1"
+                    class="inline-flex items-center gap-1 px-4 py-2 border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 rounded-lg text-xs font-semibold disabled:opacity-40 transition">
+                <i class="ti ti-arrow-left"></i> Previous
+            </button>
+
+            <div class="flex items-center gap-2">
+                <button type="button" x-show="step < 6" @click="step = Math.min(6, step + 1)"
+                        class="inline-flex items-center gap-1 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition shadow-sm">
+                    Next Step <i class="ti ti-arrow-right"></i>
+                </button>
+
+                <button type="submit" x-show="step === 6"
+                        class="inline-flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-black tracking-wide shadow-md transition">
+                    <i class="ti ti-check text-sm"></i> Complete Server Setup
                 </button>
             </div>
         </div>
-
-        <!-- 1-Click Laravel Setup Wizard -->
-        <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm flex flex-col justify-between hover:border-red-500/50 transition">
-            <div>
-                <div class="size-11 rounded-xl bg-red-50 text-red-600 flex items-center justify-center text-2xl mb-4">
-                    <i class="ti ti-brand-laravel"></i>
-                </div>
-                <h3 class="font-bold text-gray-900 text-base">Laravel Framework</h3>
-                <p class="text-xs text-gray-500 mt-1.5 leading-relaxed">
-                    Provisions modern Laravel scaffolding, database, secure APP_KEY, storage permissions, and /public Nginx rules.
-                </p>
-            </div>
-            <div class="mt-6 pt-4 border-t border-gray-100">
-                <button @click="lvModal = true" class="w-full inline-flex justify-center items-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg text-xs font-semibold shadow-sm transition">
-                    <i class="ti ti-player-play"></i> Launch Laravel
-                </button>
-            </div>
-        </div>
-
-        <!-- Node.js Daemon Supervisor Wizard -->
-        <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm flex flex-col justify-between hover:border-emerald-500/50 transition">
-            <div>
-                <div class="size-11 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-2xl mb-4">
-                    <i class="ti ti-brand-nodejs"></i>
-                </div>
-                <h3 class="font-bold text-gray-900 text-base">Node.js Daemon</h3>
-                <p class="text-xs text-gray-500 mt-1.5 leading-relaxed">
-                    Native Systemd daemon supervisor, zero idle RAM overhead, WebSocket proxying, and static caching.
-                </p>
-            </div>
-            <div class="mt-6 pt-4 border-t border-gray-100">
-                <a href="{% url 'admin_users' %}" class="w-full inline-flex justify-center items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold shadow-sm transition">
-                    <i class="ti ti-users"></i> Manage via Accounts
-                </a>
-            </div>
-        </div>
-
-        <!-- Email Stack Wizard -->
-        <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm flex flex-col justify-between hover:border-indigo-500/50 transition">
-            <div>
-                <div class="size-11 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-2xl mb-4">
-                    <i class="ti ti-mail"></i>
-                </div>
-                <h3 class="font-bold text-gray-900 text-base">Email Stack Wizard</h3>
-                <p class="text-xs text-gray-500 mt-1.5 leading-relaxed">
-                    Configure Postfix, Dovecot, virtual mailboxes, and automated DKIM DNS record generation.
-                </p>
-            </div>
-            <div class="mt-6 pt-4 border-t border-gray-100">
-                <a href="{% url 'admin_email_accounts' %}" class="w-full inline-flex justify-center items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold shadow-sm transition">
-                    <i class="ti ti-player-play"></i> Manage Email
-                </a>
-            </div>
-        </div>
-    </div>
-
-    <!-- WordPress Modal -->
-    <div x-show="wpModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
-        <div @click.away="wpModal = false" class="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl space-y-4">
-            <div class="flex items-center gap-3">
-                <div class="size-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center text-xl">
-                    <i class="ti ti-brand-wordpress"></i>
-                </div>
-                <div>
-                    <h3 class="font-bold text-slate-900 text-base">Install WordPress</h3>
-                    <p class="text-xs text-slate-500">Select target domain for WordPress setup</p>
-                </div>
-            </div>
-
-            <form method="post" action="{% url 'admin_wizards' %}" class="space-y-4">
-                {% csrf_token %}
-                <input type="hidden" name="action" value="install_wordpress">
-                <div>
-                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Target Website Domain</label>
-                    <select name="website_id" required class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:border-blue-600">
-                        {% for w in websites %}
-                        <option value="{{ w.id }}">{{ w.domain }} ({{ w.owner.username }})</option>
-                        {% empty %}
-                        <option disabled>No websites created yet. Create a website first.</option>
-                        {% endfor %}
-                    </select>
-                </div>
-
-                <div class="flex justify-end gap-2 pt-2 border-t border-slate-100">
-                    <button type="button" @click="wpModal = false" class="px-4 py-2 text-xs font-semibold text-slate-600">Cancel</button>
-                    <button type="submit" {% if not websites %}disabled{% endif %} class="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-sm transition">
-                        <i class="ti ti-check"></i> Install WordPress Now
-                    </button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <!-- Laravel Modal -->
-    <div x-show="lvModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
-        <div @click.away="lvModal = false" class="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl space-y-4">
-            <div class="flex items-center gap-3">
-                <div class="size-10 rounded-xl bg-red-50 text-red-600 flex items-center justify-center text-xl">
-                    <i class="ti ti-brand-laravel"></i>
-                </div>
-                <div>
-                    <h3 class="font-bold text-slate-900 text-base">Setup Laravel Application</h3>
-                    <p class="text-xs text-slate-500">Configure production Laravel environment and database</p>
-                </div>
-            </div>
-
-            <form method="post" action="{% url 'admin_wizards' %}" class="space-y-4">
-                {% csrf_token %}
-                <input type="hidden" name="action" value="install_laravel">
-                <div>
-                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Target Website Domain</label>
-                    <select name="website_id" required class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:border-red-600">
-                        {% for w in websites %}
-                        <option value="{{ w.id }}">{{ w.domain }} ({{ w.owner.username }})</option>
-                        {% empty %}
-                        <option disabled>No websites created yet. Create a website first.</option>
-                        {% endfor %}
-                    </select>
-                </div>
-
-                <div class="flex justify-end gap-2 pt-2 border-t border-slate-100">
-                    <button type="button" @click="lvModal = false" class="px-4 py-2 text-xs font-semibold text-slate-600">Cancel</button>
-                    <button type="submit" {% if not websites %}disabled{% endif %} class="inline-flex items-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-sm transition">
-                        <i class="ti ti-check"></i> Launch Laravel Now
-                    </button>
-                </div>
-            </form>
-        </div>
-    </div>
+    </form>
 </div>
 {% endblock %}

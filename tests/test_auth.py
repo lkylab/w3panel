@@ -241,3 +241,54 @@ class AuthAndRoleTests(TestCase):
         self.assertNotContains(resp_svc, 'W3Host Manager (Port 2087)')
         self.assertNotContains(resp_svc, 'W3Client Portal (Port 2083)')
 
+    def test_initial_setup_wizard_view_and_post(self):
+        from packages.core.models import SystemSetting
+        self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
+        
+        # 1. Test GET /wizards/
+        resp_get = self.client.get('/wizards/')
+        self.assertEqual(resp_get.status_code, 200)
+        self.assertContains(resp_get, 'Initial Server Setup Wizard')
+        self.assertContains(resp_get, 'Web Server Selection')
+
+        # 2. Test POST /wizards/
+        resp_post = self.client.post('/wizards/', {
+            'server_hostname': 'cloud.example.org',
+            'server_ip': '203.0.113.10',
+            'primary_ns': 'ns1.example.org',
+            'secondary_ns': 'ns2.example.org',
+            'admin_email': 'ops@example.org',
+            'webserver_choice': 'nginx',
+            'default_php': '8.3',
+            'enable_mariadb': '1',
+            'tune_mariadb': '1',
+            'enable_postgresql': '0',
+            'enable_mail': '1',
+            'spam_filter': 'rspamd',
+            'enable_dkim': '1',
+            'enable_ftp': '1',
+            'enable_ufw': '1',
+        })
+        self.assertEqual(resp_post.status_code, 302)
+        self.assertRedirects(resp_post, '/settings/')
+
+        # Verify values persisted in SystemSetting
+        self.assertEqual(SystemSetting.get('server_hostname'), 'cloud.example.org')
+        self.assertEqual(SystemSetting.get('server_ip'), '203.0.113.10')
+        self.assertEqual(SystemSetting.get('primary_ns'), 'ns1.example.org')
+        self.assertEqual(SystemSetting.get('secondary_ns'), 'ns2.example.org')
+        self.assertEqual(SystemSetting.get('admin_email'), 'ops@example.org')
+        self.assertEqual(SystemSetting.get('initial_setup_completed'), 'true')
+
+        # 3. Test GET /settings/ displays updated data and wizard banner
+        resp_settings = self.client.get('/settings/')
+        self.assertEqual(resp_settings.status_code, 200)
+        self.assertContains(resp_settings, 'cloud.example.org')
+        self.assertContains(resp_settings, '203.0.113.10')
+        self.assertContains(resp_settings, 'Completed')
+
+        # 4. Test GET /wizards/ shows Baseline Setup Active
+        resp_wizards = self.client.get('/wizards/')
+        self.assertEqual(resp_wizards.status_code, 200)
+        self.assertContains(resp_wizards, 'Baseline Setup Active')
+

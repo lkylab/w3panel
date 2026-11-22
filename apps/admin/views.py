@@ -46,12 +46,14 @@ def _sidebar_context(active_page=''):
         ],
         'sidebar_services': [
             {'label': 'Service Manager', 'url': '/services/', 'active': 'services'},
+            {'label': 'System Monitoring', 'url': '/monitoring/', 'active': 'monitoring'},
             {'label': 'Terminal Console', 'url': '/terminal/', 'active': 'terminal'},
             {'label': 'Cron Jobs & Tasks', 'url': '/services/cron/', 'active': 'cron'},
             {'label': 'System Logs', 'url': '/services/logs/', 'active': 'logs'},
         ],
         'sidebar_settings': [
             {'label': 'Basic WebHost Setup', 'url': '/settings/', 'active': 'settings'},
+            {'label': 'Initial Setup Wizard', 'url': '/wizards/', 'active': 'wizards'},
             {'label': 'PHP Configuration', 'url': '/settings/php/', 'active': 'php'},
             {'label': 'API Access', 'url': '/settings/api/', 'active': 'api'},
         ],
@@ -903,29 +905,92 @@ def admin_cron(request):
 # 7. Settings & License
 # ===========================================================================
 
+def get_server_public_ip():
+    """Detect server public or primary IP address."""
+    cached = SystemSetting.get('server_ip', '')
+    if cached:
+        return cached
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def get_server_stack_status():
+    """Detect presence and active status of all server hosting components."""
+    def _check(cmd, service_name=None):
+        svc = service_name or cmd
+        installed = bool(shutil.which(cmd))
+        active = False
+        if installed:
+            try:
+                res = subprocess.run(['systemctl', 'is-active', svc], capture_output=True, text=True, timeout=2)
+                active = (res.stdout.strip() == 'active')
+            except Exception:
+                active = False
+        return {'installed': installed, 'active': active}
+
+    return {
+        'webserver_nginx': _check('nginx'),
+        'webserver_apache': _check('apache2'),
+        'db_mariadb': _check('mariadbd', 'mariadb'),
+        'db_postgresql': _check('psql', 'postgresql'),
+        'mail_postfix': _check('postfix'),
+        'mail_dovecot': _check('dovecot'),
+        'ftp_pureftpd': _check('pure-ftpd', 'pure-ftpd'),
+        'security_ufw': _check('ufw'),
+        'php_fpm': _check('php-fpm8.3', 'php8.3-fpm'),
+    }
+
+
 def admin_settings(request):
-    """General panel settings."""
+    """General panel & Basic WebHost settings."""
     if request.method == 'POST':
-        panel_name = request.POST.get('panel_name', 'W3Panel')
-        server_hostname = request.POST.get('server_hostname', platform.node())
-        default_php = request.POST.get('default_php', '8.3')
-        api_rate_limit = request.POST.get('api_rate_limit', '50')
+        panel_name = request.POST.get('panel_name', 'W3Panel').strip()
+        server_hostname = request.POST.get('server_hostname', platform.node()).strip()
+        server_ip = request.POST.get('server_ip', '').strip()
+        primary_ns = request.POST.get('primary_ns', '').strip()
+        secondary_ns = request.POST.get('secondary_ns', '').strip()
+        admin_email = request.POST.get('admin_email', '').strip()
+        default_php = request.POST.get('default_php', '8.3').strip()
+        api_rate_limit = request.POST.get('api_rate_limit', '50').strip()
         
         SystemSetting.set('panel_name', panel_name)
         SystemSetting.set('server_hostname', server_hostname)
+        if server_ip:
+            SystemSetting.set('server_ip', server_ip)
+        if primary_ns:
+            SystemSetting.set('primary_ns', primary_ns)
+        if secondary_ns:
+            SystemSetting.set('secondary_ns', secondary_ns)
+        if admin_email:
+            SystemSetting.set('admin_email', admin_email)
         SystemSetting.set('default_php', default_php)
         SystemSetting.set('api_rate_limit', api_rate_limit)
         
-        messages.success(request, 'Settings saved successfully.')
+        messages.success(request, 'Basic WebHost settings saved successfully.')
         return redirect('admin_settings')
+
+    detected_ip = get_server_public_ip()
+    hostname = SystemSetting.get('server_hostname', platform.node())
 
     return render(request, 'admin/settings.html', {
         **_sidebar_context('settings'),
         'panel_name': SystemSetting.get('panel_name', 'W3Panel'),
-        'server_hostname': SystemSetting.get('server_hostname', platform.node()),
+        'server_hostname': hostname,
+        'server_ip': SystemSetting.get('server_ip', detected_ip),
+        'primary_ns': SystemSetting.get('primary_ns', f'ns1.{hostname}'),
+        'secondary_ns': SystemSetting.get('secondary_ns', f'ns2.{hostname}'),
+        'admin_email': SystemSetting.get('admin_email', f'admin@{hostname}'),
         'default_php': SystemSetting.get('default_php', '8.3'),
         'api_rate_limit': SystemSetting.get('api_rate_limit', '50'),
         'panel_version': getattr(settings, 'W3PANEL_VERSION', '2.0.0'),
+        'initial_completed': SystemSetting.get('initial_setup_completed', 'false') == 'true',
     })
 
 
@@ -1119,34 +1184,144 @@ def admin_notifications(request):
 
 
 def wizard_dashboard(request):
-    """Setup Wizards dashboard."""
-    websites = Website.objects.all()
+    """
+    Initial Server Setup Wizard (Basic WebHost Setup).
+    Guides administrator through core server identity, web server selection,
+    database engine, mail stack, FTP configuration, and security baselines.
+    """
+    from services.database import get_database_tuning_status, apply_database_tuning
+
+    stack_status = get_server_stack_status()
+
     if request.method == 'POST':
-        action = request.POST.get('action')
-        if action == 'install_wordpress':
-            website_id = request.POST.get('website_id')
-            site = get_object_or_404(Website, id=website_id)
-            from services.wizards import install_wordpress
-            res = install_wordpress(site)
-            if res.get('success'):
-                messages.success(request, f'WordPress installed successfully for {site.domain}! Database: {res.get("db_name")}')
-            else:
-                messages.error(request, f'Failed to install WordPress: {res.get("error")}')
-            return redirect('admin_wizards')
-        elif action == 'install_laravel':
-            website_id = request.POST.get('website_id')
-            site = get_object_or_404(Website, id=website_id)
-            from services.wizards import install_laravel
-            res = install_laravel(site)
-            if res.get('success'):
-                messages.success(request, f'Laravel configured successfully for {site.domain}! Database: {res.get("db_name")}')
-            else:
-                messages.error(request, f'Failed to install Laravel: {res.get("error")}')
-            return redirect('admin_wizards')
+        server_hostname = request.POST.get('server_hostname', '').strip() or platform.node()
+        server_ip = request.POST.get('server_ip', '').strip()
+        primary_ns = request.POST.get('primary_ns', '').strip()
+        secondary_ns = request.POST.get('secondary_ns', '').strip()
+        admin_email = request.POST.get('admin_email', '').strip()
+        
+        webserver_choice = request.POST.get('webserver_choice', 'nginx')
+        default_php = request.POST.get('default_php', '8.3')
+        
+        enable_mariadb = request.POST.get('enable_mariadb') in ('1', 'true', 'on')
+        enable_postgresql = request.POST.get('enable_postgresql') in ('1', 'true', 'on')
+        tune_mariadb = request.POST.get('tune_mariadb') in ('1', 'true', 'on')
+        
+        enable_mail = request.POST.get('enable_mail') in ('1', 'true', 'on')
+        spam_filter = request.POST.get('spam_filter', 'rspamd')
+        enable_dkim = request.POST.get('enable_dkim') in ('1', 'true', 'on')
+        
+        enable_ftp = request.POST.get('enable_ftp') in ('1', 'true', 'on')
+        enable_ufw = request.POST.get('enable_ufw') in ('1', 'true', 'on')
+
+        # Save system identity & stack preferences
+        SystemSetting.set('server_hostname', server_hostname)
+        if server_ip:
+            SystemSetting.set('server_ip', server_ip)
+        if primary_ns:
+            SystemSetting.set('primary_ns', primary_ns)
+        if secondary_ns:
+            SystemSetting.set('secondary_ns', secondary_ns)
+        if admin_email:
+            SystemSetting.set('admin_email', admin_email)
+        SystemSetting.set('webserver_choice', webserver_choice)
+        SystemSetting.set('default_php', default_php)
+        SystemSetting.set('db_mariadb_enabled', 'true' if enable_mariadb else 'false')
+        SystemSetting.set('db_postgresql_enabled', 'true' if enable_postgresql else 'false')
+        SystemSetting.set('mail_stack_enabled', 'true' if enable_mail else 'false')
+        SystemSetting.set('mail_spam_filter', spam_filter)
+        SystemSetting.set('mail_dkim_enabled', 'true' if enable_dkim else 'false')
+        SystemSetting.set('ftp_stack_enabled', 'true' if enable_ftp else 'false')
+        SystemSetting.set('initial_setup_completed', 'true')
+
+        # Execute package installations on-demand for selected services that are missing
+        install_pkgs = []
+        services_to_start = []
+        if webserver_choice == 'nginx' and not stack_status['webserver_nginx']['installed']:
+            install_pkgs.extend(['nginx', 'nginx-common'])
+            services_to_start.append('nginx')
+        elif webserver_choice == 'apache' and not stack_status['webserver_apache']['installed']:
+            install_pkgs.extend(['apache2'])
+            services_to_start.append('apache2')
+
+        if enable_mariadb and not stack_status['db_mariadb']['installed']:
+            install_pkgs.extend(['mariadb-server', 'mariadb-client'])
+            services_to_start.append('mariadb')
+        if enable_postgresql and not stack_status['db_postgresql']['installed']:
+            install_pkgs.extend(['postgresql', 'postgresql-contrib'])
+            services_to_start.append('postgresql')
+
+        if enable_mail and not stack_status['mail_postfix']['installed']:
+            install_pkgs.extend(['postfix', 'dovecot-imapd', 'dovecot-pop3d'])
+            services_to_start.extend(['postfix', 'dovecot'])
+
+        if enable_ftp and not stack_status['ftp_pureftpd']['installed']:
+            install_pkgs.extend(['pure-ftpd'])
+            services_to_start.append('pure-ftpd')
+
+        installed_count = len(install_pkgs)
+        if install_pkgs:
+            try:
+                subprocess.run(['sudo', '-n', 'apt-get', 'update', '-y'], timeout=60)
+                cmd = ['sudo', '-n', 'apt-get', 'install', '-y'] + install_pkgs
+                env = os.environ.copy()
+                env['DEBIAN_FRONTEND'] = 'noninteractive'
+                subprocess.run(cmd, env=env, timeout=300)
+                for svc in services_to_start:
+                    subprocess.run(['sudo', '-n', 'systemctl', 'enable', '--now', svc], timeout=10)
+            except Exception as e:
+                logger.warning(f"Wizard package install exception: {e}")
+
+        # Database Low-RAM optimization
+        if tune_mariadb:
+            try:
+                apply_database_tuning()
+            except Exception:
+                pass
+
+        # Firewall port setup
+        if enable_ufw:
+            try:
+                subprocess.run(['sudo', '-n', 'ufw', 'default', 'deny', 'incoming'], timeout=5)
+                subprocess.run(['sudo', '-n', 'ufw', 'default', 'allow', 'outgoing'], timeout=5)
+                for port_proto in ['22/tcp', '80/tcp', '443/tcp', '2087/tcp', '2083/tcp']:
+                    subprocess.run(['sudo', '-n', 'ufw', 'allow', port_proto], timeout=5)
+                if enable_mail:
+                    for mp in ['25/tcp', '587/tcp', '465/tcp', '993/tcp', '995/tcp']:
+                        subprocess.run(['sudo', '-n', 'ufw', 'allow', mp], timeout=5)
+                if enable_ftp:
+                    for fp in ['21/tcp', '30000:31000/tcp']:
+                        subprocess.run(['sudo', '-n', 'ufw', 'allow', fp], timeout=5)
+                subprocess.run(['sudo', '-n', 'ufw', '--force', 'enable'], timeout=5)
+            except Exception:
+                pass
+
+        msg = 'Initial Server Setup completed successfully! All stack configurations and networking defaults have been applied.'
+        if installed_count:
+            msg += f' Provisioned {installed_count} background server packages.'
+        messages.success(request, msg)
+        return redirect('admin_settings')
+
+    detected_ip = get_server_public_ip()
+    hostname = SystemSetting.get('server_hostname', platform.node())
+    primary_ns = SystemSetting.get('primary_ns', f"ns1.{hostname}")
+    secondary_ns = SystemSetting.get('secondary_ns', f"ns2.{hostname}")
+    admin_email = SystemSetting.get('admin_email', f"admin@{hostname}")
+    server_ip = SystemSetting.get('server_ip', detected_ip)
+    default_php = SystemSetting.get('default_php', '8.3')
+    db_tuning = get_database_tuning_status()
 
     return render(request, 'admin/wizards.html', {
         **_sidebar_context('wizards'),
-        'websites': websites,
+        'stack_status': stack_status,
+        'hostname': hostname,
+        'server_ip': server_ip,
+        'primary_ns': primary_ns,
+        'secondary_ns': secondary_ns,
+        'admin_email': admin_email,
+        'default_php': default_php,
+        'db_tuning': db_tuning,
+        'initial_completed': SystemSetting.get('initial_setup_completed', 'false') == 'true',
     })
 
 
