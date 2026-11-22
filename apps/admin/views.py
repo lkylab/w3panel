@@ -1408,7 +1408,7 @@ display_errors = {directives.get('display_errors', 'Off')}
 
 def admin_php_settings(request):
     """
-    MultiPHP Manager & INI Editor (WHM Parity).
+    MultiPHP Manager & INI Editor.
     Manages system default PHP, installed runtimes, per-domain PHP handlers,
     runtime directives (php.ini), and Enterprise performance profiles.
     """
@@ -1638,7 +1638,7 @@ def admin_php_settings(request):
 
 
 # ===========================================================================
-# 8. W3Packager — Software & Stack Provisioner (EasyApache 4 Parity)
+# 8. W3Packager — Software & Stack Provisioner
 # ===========================================================================
 
 def get_installed_dpkg_packages() -> set:
@@ -1948,7 +1948,7 @@ def uninstall_php_extension(ver: str, ext: str) -> tuple[bool, str]:
 
 
 def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
-    """Builds the EasyApache-style component catalog filtered strictly to OS-supported components."""
+    """Builds the software component catalog filtered strictly to OS-supported components."""
     os_info = get_os_info()
     installed_pkgs = get_installed_dpkg_packages()
     ppa_enabled = is_ondrej_ppa_enabled()
@@ -2188,7 +2188,7 @@ def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
             'description': 'In-memory persistent key-value database used for WordPress Object Cache and Laravel queues.',
         })
 
-    # 5. EasyApache 4 Profiles
+    # 5. Stack Profiles
     wp_php = default_php if default_php in supported_versions else (supported_versions[0] if supported_versions else '8.3')
     profiles = [
         {
@@ -2302,7 +2302,7 @@ def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
 
 def admin_w3packager_provision(request):
     """
-    Streaming provision endpoint for W3Packager (EasyApache 4 Parity).
+    Streaming provision endpoint for W3Packager.
     Streams real-time APT transaction output, progress percentages, and service status via SSE.
     """
     if request.method != 'POST':
@@ -2345,7 +2345,7 @@ def admin_w3packager_provision(request):
             'status': 'running',
             'percent': 5,
             'step': 'Initializing W3Packager provision engine...',
-            'line': '>> Initializing W3Packager Provisioning Engine (EasyApache 4 Parity)...'
+            'line': '>> Initializing W3Packager Provisioning Engine...'
         })
 
         os_info = get_os_info()
@@ -2652,7 +2652,7 @@ def admin_w3packager_provision(request):
 
 def admin_w3packager(request):
     """
-    W3Packager — Software & Stack Provisioner (EasyApache 4 Parity).
+    W3Packager — Software & Stack Provisioner.
     Supports sequential steps, profiling, package selection checkboxes,
     review diff calculation, and full stack provisioning.
     """

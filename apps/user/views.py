@@ -1349,7 +1349,7 @@ def user_profile(request):
 
 
 def user_sso(request):
-    """Single Sign-On endpoint for 1-click admin impersonation (like WHM to cPanel)."""
+    """Single Sign-On endpoint for 1-click admin impersonation."""
     token_str = request.GET.get('token', '').strip()
     if not token_str:
         messages.error(request, 'Missing authentication token.')

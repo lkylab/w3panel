@@ -2,7 +2,7 @@
 {% load static %}
 
 {% block title %}
-{% if panel_type == 'whm' or panel_type == 'host' or request.resolver_match.url_name == 'admin_login' %}
+{% if panel_type == 'admin' or panel_type == 'host' or request.resolver_match.url_name == 'admin_login' %}
 Sign In — W3Host Manager
 {% else %}
 Sign In — W3Client Portal
@@ -108,7 +108,7 @@ html.light, html.light body { background-color: #f8fafc; color: #0f172a; }
 {% endblock %}
 
 {% block body %}
-{% if panel_type == 'whm' or panel_type == 'host' or request.resolver_match.url_name == 'admin_login' %}
+{% if panel_type == 'admin' or panel_type == 'host' or request.resolver_match.url_name == 'admin_login' %}
 {# ==================== W3Host Manager (Server Admin) LOGIN ==================== #}
 <div id="loginWrapper" class="login-theme-dark min-h-screen relative overflow-hidden">
     <button type="button" class="theme-toggle" onclick="toggleTheme()" title="Switch theme">

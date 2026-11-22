@@ -5,7 +5,7 @@ Place UI references here for W3Panel v2:
 - **Admin dashboard** screenshots/mockups
 - **User dashboard** screenshots/mockups
 - **Wizard flow** diagrams
-- **cPanel/HestiaCP** comparison screenshots
+- **Legacy Panels/HestiaCP** comparison screenshots
 - **Mobile responsive** mockups
 - **License activation** page designs
 - **Plugin management** page designs
@@ -27,6 +27,6 @@ docs/ui-refs/
 │   ├── admin-mobile.png
 │   └── user-mobile.png
 └── comparisons/
-    ├── cpanel-pricing.png
+    ├── legacy-pricing.png
     └── hestia-features.png
 ```

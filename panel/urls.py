@@ -27,7 +27,7 @@ urlpatterns = [
     # Root redirect
     path('', root_redirect),
     
-    # Direct SSO endpoint (WHM to cPanel 1-click autologin)
+    # Direct SSO endpoint (1-click user autologin)
     path('sso/', user_views.user_sso, name='sso_direct'),
 
     # Admin

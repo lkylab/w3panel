@@ -481,7 +481,7 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(SystemSetting.get('php_8.3_memory_limit'), '768M')
 
     def test_w3packager_provisioner(self):
-        """Test W3Packager EasyApache-style software provisioner."""
+        """Test W3Packager software provisioner."""
         from packages.core.models import SystemSetting
         self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
 
@@ -569,7 +569,7 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(resp_wiz_sury.status_code, 302)
         self.assertEqual(SystemSetting.get('sury_repo_enabled'), 'true')
 
-        # 10. Test EasyApache-style batch provision action & custom profile saving
+        # 10. Test stack batch provision action & custom profile saving
         resp_prov = self.client.post('/software/w3packager/', {
             'action': 'provision',
             'selected_runtimes': ['8.3'],

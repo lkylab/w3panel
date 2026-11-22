@@ -1,6 +1,6 @@
 """
 W3Panel v2 — W3Packager & Provisioning Engine Test Suite
-Tests sequential EasyApache 4 parity steps, diff calculations,
+Tests sequential W3Packager provisioning steps, diff calculations,
 domain lock safety checks, and SSE live log streaming during provisioning.
 """
 import json
@@ -25,7 +25,7 @@ class W3PackagerTests(TestCase):
         response = self.client.get('/software/w3packager/')
         self.assertEqual(response.status_code, 200)
         content = response.content.decode('utf-8')
-        self.assertIn('Package Selection Manifest (EasyApache 4 Diff)', content)
+        self.assertIn('Package Selection Manifest', content)
         self.assertIn('W3Packager Provisioning Console (APT Transaction Stream)', content)
         self.assertIn('startProvisioning()', content)
         self.assertIn('toInstallList', content)
@@ -73,8 +73,7 @@ class W3PackagerTests(TestCase):
     @patch('apps.admin.views.get_installed_dpkg_packages', return_value=['nginx', 'php8.1-fpm', 'php8.3-fpm'])
     def test_domain_lock_prevents_removal_in_stream(self, mock_pkgs, mock_vers):
         """Ensure active website on PHP 8.1 halts removal with fatal error in SSE stream."""
-        pkg = Package.objects.create(name='TestPlan', websites_limit=5, disk_limit_mb=1000)
-        Website.objects.create(domain='locked-site.test', owner=self.admin, package=pkg, php_version='8.1')
+        Website.objects.create(domain='locked-site.test', owner=self.admin, php_version='8.1')
 
         # Payload tries to keep only 8.3, removing 8.1
         payload = {

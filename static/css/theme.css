@@ -1477,7 +1477,7 @@ html.dark .theme-toggle-btn:hover {
 }
 
 /* ==========================================================================
-   FILE MANAGER (user/files.html) — cPanel-style custom palette → dark mode
+   FILE MANAGER (user/files.html) — custom palette → dark mode
    ========================================================================== */
 html.dark .bg-\[#f0f2f5\] { background-color: var(--bg-primary) !important; }
 html.dark .bg-\[#f0f0f0\] { background-color: var(--bg-secondary) !important; }

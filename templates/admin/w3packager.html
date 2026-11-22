@@ -24,7 +24,7 @@
                 <i class="ti ti-package text-blue-600"></i>
                 W3Packager
             </h2>
-            <p class="text-xs text-slate-500 mt-0.5">EasyApache-style stack provisioner: select components, customize profiles, review changes, and provision.</p>
+            <p class="text-xs text-slate-500 mt-0.5">Software stack provisioner: select components, customize profiles, review changes, and provision.</p>
         </div>
 
         <!-- Staged Changes Quick Badge & Review Button -->
@@ -45,7 +45,7 @@
         </div>
     </div>
 
-    <!-- EasyApache 4 Sequential Step Progress Bar -->
+    <!-- W3Packager Sequential Step Progress Bar -->
     <div class="bg-white rounded-xl border border-slate-200/80 p-2.5 shadow-xs overflow-x-auto">
         <div class="flex items-center min-w-max space-x-1 sm:space-x-2 text-xs font-bold">
             <!-- 1. Profiles -->
@@ -128,13 +128,13 @@
     </div>
 
     <!-- ===================================================================== -->
-    <!-- STEP 1: PROFILES (EasyApache 4 Profiles)                               -->
+    <!-- STEP 1: PROFILES                                                      -->
     <!-- ===================================================================== -->
     <div x-show="step === 'profiles'" class="space-y-4">
         <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
             <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-100 gap-2">
                 <div>
-                    <h3 class="font-bold text-sm text-slate-900">EasyApache Stack Profiles</h3>
+                    <h3 class="font-bold text-sm text-slate-900">Stack Profiles</h3>
                     <p class="text-xs text-slate-500">Choose a predefined stack profile or start from your currently installed packages to customize.</p>
                 </div>
                 <div class="text-xs text-slate-500">
@@ -189,7 +189,7 @@
     </div>
 
     <!-- ===================================================================== -->
-    <!-- STEP 2: PHP RUNTIMES (EasyApache 4 PHP Versions)                      -->
+    <!-- STEP 2: PHP RUNTIMES                                                  -->
     <!-- ===================================================================== -->
     <div x-show="step === 'runtimes'" class="space-y-4" x-cloak>
         <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
@@ -290,7 +290,7 @@
     </div>
 
     <!-- ===================================================================== -->
-    <!-- STEP 3: PHP EXTENSIONS (EasyApache 4 Extension Catalog)               -->
+    <!-- STEP 3: PHP EXTENSIONS                                                -->
     <!-- ===================================================================== -->
     <div x-show="step === 'extensions'" class="space-y-4" x-cloak>
         <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
@@ -362,7 +362,7 @@
                 </div>
             </div>
 
-            <!-- Extensions Table with EasyApache Checkboxes -->
+            <!-- Extensions Table with Selection Checkboxes -->
             <div class="overflow-x-auto border border-slate-200 rounded-xl">
                 <table class="w-full text-left text-sm">
                     <thead class="bg-slate-50/80 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
@@ -446,7 +446,7 @@
     </div>
 
     <!-- ===================================================================== -->
-    <!-- STEP 4: WEB & PROXY MODULES (EasyApache 4 Web Modules)                -->
+    <!-- STEP 4: WEB & PROXY MODULES                                           -->
     <!-- ===================================================================== -->
     <div x-show="step === 'webserver'" class="space-y-4" x-cloak>
         <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
@@ -517,7 +517,7 @@
     </div>
 
     <!-- ===================================================================== -->
-    <!-- STEP 5: ADDITIONAL PACKAGES & CLI TOOLS (EasyApache 4 Packages)       -->
+    <!-- STEP 5: ADDITIONAL PACKAGES & CLI TOOLS                               -->
     <!-- ===================================================================== -->
     <div x-show="step === 'cli'" class="space-y-4" x-cloak>
         <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
@@ -591,7 +591,7 @@
     </div>
 
     <!-- ===================================================================== -->
-    <!-- STEP 6: REVIEW & PROVISION (EasyApache 4 Review & Apply)              -->
+    <!-- STEP 6: REVIEW & PROVISION                                            -->
     <!-- ===================================================================== -->
     <div x-show="step === 'review'" class="space-y-5" x-cloak>
         
@@ -622,7 +622,7 @@
         </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
-            <!-- Left 2 Cols: Terminal-Style Package Diff Console (EasyApache 4 Parity) -->
+            <!-- Left 2 Cols: Terminal-Style Package Diff Console -->
             <div class="lg:col-span-2 space-y-4">
                 <div class="rounded-xl bg-slate-950 border border-slate-800 shadow-sm overflow-hidden">
                     <!-- Console Header & Filter Bar -->
@@ -631,7 +631,7 @@
                             <span class="size-2.5 rounded-full bg-rose-500 inline-block"></span>
                             <span class="size-2.5 rounded-full bg-amber-500 inline-block"></span>
                             <span class="size-2.5 rounded-full bg-emerald-500 inline-block"></span>
-                            <span class="text-xs font-mono text-slate-300 font-semibold ml-2">Package Selection Manifest (EasyApache 4 Diff)</span>
+                            <span class="text-xs font-mono text-slate-300 font-semibold ml-2">Package Selection Manifest</span>
                         </div>
 
                         <!-- Monospace Filter Buttons -->
@@ -660,9 +660,9 @@
                     </div>
 
                     <!-- Monospace Package Diff Screen -->
-                    <div class="p-4 font-mono text-xs max-h-[500px] overflow-y-auto space-y-1.5 selection:bg-blue-600 selection:text-white leading-relaxed">
+                    <div class="p-4 font-mono text-xs max-h-[500px] overflow-y-auto space-y-2 selection:bg-blue-600 selection:text-white leading-relaxed">
                         <div class="text-slate-500 pb-2 border-b border-slate-800/80 mb-2">
-                            # EasyApache 4 Package Transaction Set<br>
+                            # W3Packager Package Transaction Set<br>
                             # Target Host: {{ os_info.distro|default:"Ubuntu" }} {{ os_info.version|default:"24.04" }} | Arch: {{ os_info.arch|default:"x86_64" }}<br>
                             # Staged: <span class="text-emerald-400 font-bold" x-text="'+' + toInstallList.length + ' to install'"></span>, <span class="text-rose-400 font-bold" x-text="'-' + toUninstallList.length + ' to remove'"></span>, <span class="text-slate-400" x-text="keptList.length + ' unchanged'"></span>
                         </div>
@@ -673,12 +673,14 @@
                                 <span>-- PACKAGES TO INSTALL (+) --</span>
                                 <span class="text-[10px] px-1.5 py-0.2 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 font-mono" x-text="toInstallList.length"></span>
                             </div>
-                            <template x-for="item in toInstallList" :key="item.key">
-                                <div class="flex items-center text-emerald-400 font-mono py-0.5 px-2 rounded hover:bg-emerald-950/40">
-                                    <span class="font-bold w-5 select-none text-emerald-400">+</span>
-                                    <span class="font-semibold" x-text="item.name"></span>
-                                </div>
-                            </template>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-x-6 gap-y-1 py-1">
+                                <template x-for="item in toInstallList" :key="item.key">
+                                    <div class="flex items-center gap-1.5 py-0.5 px-1.5 rounded hover:bg-emerald-950/60 font-mono text-xs overflow-hidden">
+                                        <span class="font-bold text-emerald-400 select-none shrink-0 w-3.5">+</span>
+                                        <span class="text-emerald-300 font-semibold truncate" x-text="item.name"></span>
+                                    </div>
+                                </template>
+                            </div>
                             <template x-if="toInstallList.length === 0">
                                 <div class="text-slate-600 italic px-2 py-0.5">None</div>
                             </template>
@@ -690,12 +692,14 @@
                                 <span>-- PACKAGES TO REMOVE (-) --</span>
                                 <span class="text-[10px] px-1.5 py-0.2 rounded bg-rose-950 text-rose-300 border border-rose-800 font-mono" x-text="toUninstallList.length"></span>
                             </div>
-                            <template x-for="item in toUninstallList" :key="item.key">
-                                <div class="flex items-center text-rose-400 font-mono py-0.5 px-2 rounded hover:bg-rose-950/40">
-                                    <span class="font-bold w-5 select-none text-rose-400">-</span>
-                                    <span class="font-semibold" x-text="item.name"></span>
-                                </div>
-                            </template>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-x-6 gap-y-1 py-1">
+                                <template x-for="item in toUninstallList" :key="item.key">
+                                    <div class="flex items-center gap-1.5 py-0.5 px-1.5 rounded hover:bg-rose-950/60 font-mono text-xs overflow-hidden">
+                                        <span class="font-bold text-rose-400 select-none shrink-0 w-3.5">-</span>
+                                        <span class="text-rose-300 font-semibold truncate" x-text="item.name"></span>
+                                    </div>
+                                </template>
+                            </div>
                             <template x-if="toUninstallList.length === 0">
                                 <div class="text-slate-600 italic px-2 py-0.5">None</div>
                             </template>
@@ -707,12 +711,14 @@
                                 <span>-- UNCHANGED PACKAGES (RETAINED) --</span>
                                 <span class="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 font-mono" x-text="keptList.length"></span>
                             </div>
-                            <template x-for="item in keptList" :key="item.key">
-                                <div class="flex items-center text-slate-400 font-mono py-0.5 px-2 rounded hover:bg-slate-900">
-                                    <span class="w-5 select-none text-slate-600">&nbsp;</span>
-                                    <span x-text="item.name"></span>
-                                </div>
-                            </template>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-x-6 gap-y-1 py-1">
+                                <template x-for="item in keptList" :key="item.key">
+                                    <div class="flex items-center gap-1.5 py-0.5 px-1.5 rounded hover:bg-slate-900 font-mono text-xs overflow-hidden">
+                                        <span class="text-slate-600 select-none shrink-0 w-3.5">&nbsp;</span>
+                                        <span class="text-slate-400 truncate" x-text="item.name"></span>
+                                    </div>
+                                </template>
+                            </div>
                             <template x-if="keptList.length === 0">
                                 <div class="text-slate-600 italic px-2 py-0.5">None</div>
                             </template>
@@ -757,7 +763,7 @@
     </div>
 
     <!-- ===================================================================== -->
-    <!-- STEP 7: PROVISIONING EXECUTION (EasyApache 4 Live Terminal & Progress) -->
+    <!-- STEP 7: PROVISIONING EXECUTION (Live Terminal & Progress)             -->
     <!-- ===================================================================== -->
     <div x-show="step === 'provisioning'" class="space-y-5" x-cloak>
         <div class="bg-white rounded-xl border border-slate-200/80 p-6 shadow-xs space-y-5">
@@ -1064,7 +1070,7 @@ function w3packagerApp() {
             });
         },
 
-        // Diff lists (EasyApache 4 Clean Package Names)
+        // Package diff lists (Clean Package Names)
         get toInstallList() {
             const list = [];
             // Runtimes
@@ -1162,7 +1168,7 @@ function w3packagerApp() {
             this.provisionProgress = 5;
             this.provisionStatusMessage = 'Initializing provisioning engine...';
             this.provisionLogs = [
-                '>> Initializing W3Packager Provisioning Engine (EasyApache 4 Parity)...',
+                '>> Initializing W3Packager Provisioning Engine...',
                 '>> Preparing APT package transaction set...'
             ];
 

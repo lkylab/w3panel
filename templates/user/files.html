@@ -24,7 +24,7 @@ body, html {
 .font-mono {
     font-family: 'JetBrains Mono', monospace;
 }
-.cpanel-toolbar-btn {
+.fm-toolbar-btn {
     display: inline-flex;
     align-items: center;
     gap: 5px;
@@ -39,18 +39,18 @@ body, html {
     user-select: none;
     cursor: pointer;
 }
-.cpanel-toolbar-btn:hover:not(:disabled) {
+.fm-toolbar-btn:hover:not(:disabled) {
     background-color: #ffffff;
     border-color: #cccccc;
     box-shadow: 0 1px 2px rgba(0,0,0,0.05);
 }
-.cpanel-toolbar-btn:disabled {
+.fm-toolbar-btn:disabled {
     opacity: 0.35;
     cursor: not-allowed;
     background: transparent;
     border-color: transparent;
 }
-.cpanel-nav-btn {
+.fm-nav-btn {
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -63,11 +63,11 @@ body, html {
     white-space: nowrap;
     cursor: pointer;
 }
-.cpanel-nav-btn:hover {
+.fm-nav-btn:hover {
     color: #000000;
     background-color: #e5e9ec;
 }
-.cpanel-table th {
+.fm-table th {
     color: #2b78b8;
     font-weight: 600;
     font-size: 12px;
@@ -75,34 +75,34 @@ body, html {
     background-color: #f7f9fa;
     padding: 6px 10px;
 }
-.cpanel-row-selected {
+.fm-row-selected {
     background-color: #d8ecf8 !important;
 }
-.cpanel-row:hover:not(.cpanel-row-selected) {
+.fm-row:hover:not(.fm-row-selected) {
     background-color: #f2f7fb;
 }
 
-/* === Dark mode overrides for cPanel-classic palette (matches panel theme) === */
-html.dark .cpanel-toolbar-btn { color: #c4c9e0; }
-html.dark .cpanel-toolbar-btn:hover:not(:disabled) {
+/* === Dark mode overrides for File Manager palette (matches panel theme) === */
+html.dark .fm-toolbar-btn { color: #c4c9e0; }
+html.dark .fm-toolbar-btn:hover:not(:disabled) {
     background-color: #1c2031;
     border-color: #262b42;
     color: #e8eaf2;
 }
-html.dark .cpanel-nav-btn { color: #a5adc7; }
-html.dark .cpanel-nav-btn:hover {
+html.dark .fm-nav-btn { color: #a5adc7; }
+html.dark .fm-nav-btn:hover {
     color: #e8eaf2;
     background-color: #1c2031;
 }
-html.dark .cpanel-table th {
+html.dark .fm-table th {
     color: #79c0ff;
     border-color: #262b42;
     background-color: #151726;
 }
-html.dark .cpanel-row-selected {
+html.dark .fm-row-selected {
     background-color: rgba(99,102,241,0.25) !important;
 }
-html.dark .cpanel-row:hover:not(.cpanel-row-selected) {
+html.dark .fm-row:hover:not(.fm-row-selected) {
     background-color: #1c2031;
 }
 </style>
@@ -863,24 +863,24 @@ function fileManagerApp() {
         </div>
     </header>
 
-    <!-- CLASSIC CPANEL ACTION TOOLBAR (EXACT MATCH TO CPANEL SCREENSHOT) -->
+    <!-- FILE MANAGER ACTION TOOLBAR -->
     <div class="bg-[#f0f0f0] dark:bg-[#151726] border-b border-[#d1d5db] dark:border-[#262b42] px-2 py-1 flex items-center justify-between gap-1 overflow-x-auto shrink-0 z-20 shadow-2xs">
         {% if current_path == '.trash' %}
         <div class="flex items-center gap-1">
             <!-- Restore -->
-            <button type="button" @click="restoreSelected()" :disabled="selectedItems.length === 0" class="cpanel-toolbar-btn text-emerald-800 dark:text-emerald-400 font-bold bg-emerald-50/60 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/60" title="Restore Selected Items to Original Location">
+            <button type="button" @click="restoreSelected()" :disabled="selectedItems.length === 0" class="fm-toolbar-btn text-emerald-800 dark:text-emerald-400 font-bold bg-emerald-50/60 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/60" title="Restore Selected Items to Original Location">
                 <i class="ti ti-rotate-clockwise-2 font-bold text-emerald-600 dark:text-emerald-400 text-sm"></i>
                 <span>Restore</span>
             </button>
 
             <!-- Empty Trash -->
-            <button type="button" @click="emptyTrashModal = true" class="cpanel-toolbar-btn text-red-800 dark:text-red-400 font-bold bg-red-50/60 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-900/60" title="Empty Trash (Purge All Items Permanently)">
+            <button type="button" @click="emptyTrashModal = true" class="fm-toolbar-btn text-red-800 dark:text-red-400 font-bold bg-red-50/60 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-900/60" title="Empty Trash (Purge All Items Permanently)">
                 <i class="ti ti-trash-x font-bold text-red-600 dark:text-red-400 text-sm"></i>
                 <span>Empty Trash</span>
             </button>
 
             <!-- Delete Permanently -->
-            <button type="button" @click="openDelete(selectedItems)" :disabled="selectedItems.length === 0" class="cpanel-toolbar-btn text-red-700 dark:text-red-400" title="Delete Selected Items Permanently">
+            <button type="button" @click="openDelete(selectedItems)" :disabled="selectedItems.length === 0" class="fm-toolbar-btn text-red-700 dark:text-red-400" title="Delete Selected Items Permanently">
                 <i class="ti ti-x font-bold text-red-600 dark:text-red-400 text-sm"></i>
                 <span>Delete</span>
             </button>
@@ -889,7 +889,7 @@ function fileManagerApp() {
             <div class="h-4 w-px bg-slate-300 dark:bg-[#262b42] mx-1 shrink-0"></div>
 
             <!-- View -->
-            <button type="button" @click="viewSelected()" :disabled="selectedItems.length !== 1 || (selectedFirstItem() && selectedFirstItem().is_dir)" class="cpanel-toolbar-btn" title="View File">
+            <button type="button" @click="viewSelected()" :disabled="selectedItems.length !== 1 || (selectedFirstItem() && selectedFirstItem().is_dir)" class="fm-toolbar-btn" title="View File">
                 <i class="ti ti-eye text-sm"></i>
                 <span>View</span>
             </button>
@@ -897,49 +897,49 @@ function fileManagerApp() {
         {% else %}
         <div class="flex items-center gap-0.5">
             <!-- + File -->
-            <button type="button" @click="newFileModal = true" class="cpanel-toolbar-btn" title="Create New File">
+            <button type="button" @click="newFileModal = true" class="fm-toolbar-btn" title="Create New File">
                 <i class="ti ti-plus font-bold text-sm"></i>
                 <span>File</span>
             </button>
 
             <!-- + Folder -->
-            <button type="button" @click="newFolderModal = true" class="cpanel-toolbar-btn" title="Create New Folder">
+            <button type="button" @click="newFolderModal = true" class="fm-toolbar-btn" title="Create New Folder">
                 <i class="ti ti-plus font-bold text-sm"></i>
                 <span>Folder</span>
             </button>
 
             <!-- Copy -->
-            <button type="button" @click="openCopyMove('copy', selectedItems)" :disabled="selectedItems.length === 0" class="cpanel-toolbar-btn" title="Copy Selected Items">
+            <button type="button" @click="openCopyMove('copy', selectedItems)" :disabled="selectedItems.length === 0" class="fm-toolbar-btn" title="Copy Selected Items">
                 <i class="ti ti-copy text-sm"></i>
                 <span>Copy</span>
             </button>
 
             <!-- Move -->
-            <button type="button" @click="openCopyMove('move', selectedItems)" :disabled="selectedItems.length === 0" class="cpanel-toolbar-btn" title="Move Selected Items">
+            <button type="button" @click="openCopyMove('move', selectedItems)" :disabled="selectedItems.length === 0" class="fm-toolbar-btn" title="Move Selected Items">
                 <i class="ti ti-arrows-move text-sm"></i>
                 <span>Move</span>
             </button>
 
             <!-- Upload -->
-            <button type="button" @click="uploadModal = true" class="cpanel-toolbar-btn" title="Upload Files">
+            <button type="button" @click="uploadModal = true" class="fm-toolbar-btn" title="Upload Files">
                 <i class="ti ti-upload text-sm"></i>
                 <span>Upload</span>
             </button>
 
             <!-- Download -->
-            <button type="button" @click="downloadSelected()" :disabled="selectedItems.length !== 1 || (selectedFirstItem() && selectedFirstItem().is_dir)" class="cpanel-toolbar-btn" title="Download Selected File">
+            <button type="button" @click="downloadSelected()" :disabled="selectedItems.length !== 1 || (selectedFirstItem() && selectedFirstItem().is_dir)" class="fm-toolbar-btn" title="Download Selected File">
                 <i class="ti ti-download text-sm"></i>
                 <span>Download</span>
             </button>
 
             <!-- Delete -->
-            <button type="button" @click="openDelete(selectedItems)" :disabled="selectedItems.length === 0" class="cpanel-toolbar-btn text-red-700 dark:text-red-400" title="Delete Selected Items">
+            <button type="button" @click="openDelete(selectedItems)" :disabled="selectedItems.length === 0" class="fm-toolbar-btn text-red-700 dark:text-red-400" title="Delete Selected Items">
                 <i class="ti ti-x font-bold text-red-600 dark:text-red-400 text-sm"></i>
                 <span>Delete</span>
             </button>
 
             <!-- Fix Permissions -->
-            <button type="button" @click="openFixPerm(selectedFirstItem() && selectedFirstItem().is_dir ? selectedFirstItem().rel_path : '{{ current_path }}')" class="cpanel-toolbar-btn text-emerald-800 dark:text-emerald-400 font-semibold" title="1-Click Fix Permissions (Dirs: 0755, Files: 0644, Owner: {{ panel_user.username }})">
+            <button type="button" @click="openFixPerm(selectedFirstItem() && selectedFirstItem().is_dir ? selectedFirstItem().rel_path : '{{ current_path }}')" class="fm-toolbar-btn text-emerald-800 dark:text-emerald-400 font-semibold" title="1-Click Fix Permissions (Dirs: 0755, Files: 0644, Owner: {{ panel_user.username }})">
                 <i class="ti ti-shield-check font-bold text-emerald-600 dark:text-emerald-400 text-sm"></i>
                 <span>Fix Permissions</span>
             </button>
@@ -948,43 +948,43 @@ function fileManagerApp() {
             <div class="h-4 w-px bg-slate-300 dark:bg-[#262b42] mx-1 shrink-0"></div>
 
             <!-- Rename -->
-            <button type="button" @click="renameSelected()" :disabled="selectedItems.length !== 1" class="cpanel-toolbar-btn" title="Rename Selected Item">
+            <button type="button" @click="renameSelected()" :disabled="selectedItems.length !== 1" class="fm-toolbar-btn" title="Rename Selected Item">
                 <i class="ti ti-file-description text-sm"></i>
                 <span>Rename</span>
             </button>
 
             <!-- Edit -->
-            <button type="button" @click="editSelected()" :disabled="selectedItems.length !== 1 || (selectedFirstItem() && selectedFirstItem().is_dir)" class="cpanel-toolbar-btn" title="Edit File">
+            <button type="button" @click="editSelected()" :disabled="selectedItems.length !== 1 || (selectedFirstItem() && selectedFirstItem().is_dir)" class="fm-toolbar-btn" title="Edit File">
                 <i class="ti ti-pencil text-sm"></i>
                 <span>Edit</span>
             </button>
 
             <!-- HTML Editor -->
-            <button type="button" @click="editSelected()" :disabled="selectedItems.length !== 1 || (selectedFirstItem() && selectedFirstItem().is_dir)" class="cpanel-toolbar-btn" title="HTML / Code Editor">
+            <button type="button" @click="editSelected()" :disabled="selectedItems.length !== 1 || (selectedFirstItem() && selectedFirstItem().is_dir)" class="fm-toolbar-btn" title="HTML / Code Editor">
                 <i class="ti ti-edit text-sm"></i>
                 <span>HTML Editor</span>
             </button>
 
             <!-- Permissions -->
-            <button type="button" @click="chmodSelected()" :disabled="selectedItems.length !== 1" class="cpanel-toolbar-btn" title="Change Permissions">
+            <button type="button" @click="chmodSelected()" :disabled="selectedItems.length !== 1" class="fm-toolbar-btn" title="Change Permissions">
                 <i class="ti ti-key text-sm"></i>
                 <span>Permissions</span>
             </button>
 
             <!-- View -->
-            <button type="button" @click="viewSelected()" :disabled="selectedItems.length !== 1 || (selectedFirstItem() && selectedFirstItem().is_dir)" class="cpanel-toolbar-btn" title="View File">
+            <button type="button" @click="viewSelected()" :disabled="selectedItems.length !== 1 || (selectedFirstItem() && selectedFirstItem().is_dir)" class="fm-toolbar-btn" title="View File">
                 <i class="ti ti-eye text-sm"></i>
                 <span>View</span>
             </button>
 
             <!-- Extract -->
-            <button type="button" @click="extractSelected()" :disabled="selectedItems.length !== 1 || (selectedFirstItem() && !selectedFirstItem().is_archive)" class="cpanel-toolbar-btn" title="Extract Archive">
+            <button type="button" @click="extractSelected()" :disabled="selectedItems.length !== 1 || (selectedFirstItem() && !selectedFirstItem().is_archive)" class="fm-toolbar-btn" title="Extract Archive">
                 <i class="ti ti-archive text-sm"></i>
                 <span>Extract</span>
             </button>
 
             <!-- Compress -->
-            <button type="button" @click="openCompress(selectedItems)" :disabled="selectedItems.length === 0" class="cpanel-toolbar-btn" title="Compress Selected Items">
+            <button type="button" @click="openCompress(selectedItems)" :disabled="selectedItems.length === 0" class="fm-toolbar-btn" title="Compress Selected Items">
                 <i class="ti ti-file-zip text-sm"></i>
                 <span>Compress</span>
             </button>
@@ -1054,50 +1054,50 @@ function fileManagerApp() {
             <!-- Navigation Toolbar Buttons -->
             <div class="flex items-center gap-1 text-xs">
                 <!-- Home -->
-                <a href="/filemanager/" class="cpanel-nav-btn" title="Go to User Home Directory">
+                <a href="/filemanager/" class="fm-nav-btn" title="Go to User Home Directory">
                     <i class="ti ti-home text-sm text-slate-600 dark:text-[#a5adc7]"></i>
                     <span>Home</span>
                 </a>
 
                 <!-- Up One Level -->
                 {% if current_path %}
-                <a href="/filemanager/?path={{ parent_path }}" class="cpanel-nav-btn" title="Up One Level">
+                <a href="/filemanager/?path={{ parent_path }}" class="fm-nav-btn" title="Up One Level">
                     <i class="ti ti-arrow-up text-sm text-slate-600 dark:text-[#a5adc7]"></i>
                     <span>Up One Level</span>
                 </a>
                 {% else %}
-                <span class="cpanel-nav-btn opacity-35 cursor-not-allowed" title="Already at Root">
+                <span class="fm-nav-btn opacity-35 cursor-not-allowed" title="Already at Root">
                     <i class="ti ti-arrow-up text-sm"></i>
                     <span>Up One Level</span>
                 </span>
                 {% endif %}
 
                 <!-- Back -->
-                <button type="button" @click="window.history.back()" class="cpanel-nav-btn" title="Back">
+                <button type="button" @click="window.history.back()" class="fm-nav-btn" title="Back">
                     <i class="ti ti-arrow-left text-sm text-slate-600 dark:text-[#a5adc7]"></i>
                     <span>Back</span>
                 </button>
 
                 <!-- Forward -->
-                <button type="button" @click="window.history.forward()" class="cpanel-nav-btn" title="Forward">
+                <button type="button" @click="window.history.forward()" class="fm-nav-btn" title="Forward">
                     <i class="ti ti-arrow-right text-sm text-slate-600 dark:text-[#a5adc7]"></i>
                     <span>Forward</span>
                 </button>
 
                 <!-- Reload -->
-                <button type="button" @click="window.location.reload()" class="cpanel-nav-btn" title="Reload File Manager">
+                <button type="button" @click="window.location.reload()" class="fm-nav-btn" title="Reload File Manager">
                     <i class="ti ti-refresh text-sm text-[#2b78b8] dark:text-[#79c0ff]"></i>
                     <span>Reload</span>
                 </button>
 
                 <!-- Select All -->
-                <button type="button" @click="selectAll = true; toggleSelectAll()" class="cpanel-nav-btn" title="Select All Items">
+                <button type="button" @click="selectAll = true; toggleSelectAll()" class="fm-nav-btn" title="Select All Items">
                     <i class="ti ti-checkbox text-sm text-[#2b78b8] dark:text-[#79c0ff]"></i>
                     <span>Select All</span>
                 </button>
 
                 <!-- Unselect All -->
-                <button type="button" @click="unselectAll()" class="cpanel-nav-btn" title="Unselect All Items">
+                <button type="button" @click="unselectAll()" class="fm-nav-btn" title="Unselect All Items">
                     <i class="ti ti-square text-sm text-slate-500 dark:text-[#a5adc7]"></i>
                     <span>Unselect All</span>
                 </button>
@@ -1106,12 +1106,12 @@ function fileManagerApp() {
 
                 <!-- View Trash -->
                 {% if current_path == '.trash' %}
-                <span class="cpanel-nav-btn bg-blue-50 dark:bg-blue-950/50 text-[#2b78b8] dark:text-[#79c0ff] font-bold border border-blue-200 dark:border-blue-800" title="Currently Viewing Trash">
+                <span class="fm-nav-btn bg-blue-50 dark:bg-blue-950/50 text-[#2b78b8] dark:text-[#79c0ff] font-bold border border-blue-200 dark:border-blue-800" title="Currently Viewing Trash">
                     <i class="ti ti-trash text-sm"></i>
                     <span>Viewing Trash</span>
                 </span>
                 {% else %}
-                <a href="/filemanager/?path=.trash" class="cpanel-nav-btn text-[#2b78b8] dark:text-[#79c0ff] font-medium" title="View Trash">
+                <a href="/filemanager/?path=.trash" class="fm-nav-btn text-[#2b78b8] dark:text-[#79c0ff] font-medium" title="View Trash">
                     <i class="ti ti-trash text-sm"></i>
                     <span>View Trash</span>
                 </a>
@@ -1227,7 +1227,7 @@ function fileManagerApp() {
     <!-- MAIN SPLIT WORKSPACE: LEFT DIRECTORY TREE | RIGHT FILE EXPLORER TABLE -->
     <div class="flex flex-1 min-h-0 overflow-hidden">
         
-        <!-- LEFT PANE: Directory / Folder Tree (cPanel Style) -->
+        <!-- LEFT PANE: Directory / Folder Tree -->
         <aside x-show="folderTreeOpen" x-transition:enter="transition ease-out duration-150" x-transition:enter-start="-translate-x-full" x-transition:enter-end="translate-x-0"
                class="w-64 bg-[#fbfbfb] dark:bg-[#151726] border-r border-[#d1d5db] dark:border-[#262b42] flex flex-col shrink-0 overflow-hidden select-none">
             
@@ -1428,9 +1428,9 @@ function fileManagerApp() {
             </div>
             {% endif %}
 
-            <!-- FILES & DIRECTORIES TABLE (MATCHING CPANEL SCREENSHOT) -->
+            <!-- FILES & DIRECTORIES TABLE -->
             <div class="flex-1 overflow-x-auto" x-ref="fileTable">
-                <table class="w-full text-left border-collapse table-fixed text-xs select-none cpanel-table">
+                <table class="w-full text-left border-collapse table-fixed text-xs select-none fm-table">
                     <!-- Column Widths -->
                     <colgroup>
                         <col style="width: 32px;">
@@ -1539,7 +1539,7 @@ function fileManagerApp() {
                     <tbody class="divide-y divide-[#edf1f5] dark:divide-[#262b42] text-[13px]">
                         {% if current_path %}
                         <!-- Parent Directory Row (Hidden when search is active) -->
-                        <tr x-show="!isSearchActive" class="cpanel-row hover:bg-[#f2f7fb] dark:hover:bg-[#1c2031] transition cursor-pointer" @dblclick="window.location.href='/filemanager/?path={{ parent_path }}'">
+                        <tr x-show="!isSearchActive" class="fm-row hover:bg-[#f2f7fb] dark:hover:bg-[#1c2031] transition cursor-pointer" @dblclick="window.location.href='/filemanager/?path={{ parent_path }}'">
                             <td class="px-2 py-1.5 text-center text-slate-400 dark:text-[#70789a]">
                                 <i class="ti ti-corner-left-up text-sm"></i>
                             </td>
@@ -1554,8 +1554,8 @@ function fileManagerApp() {
 
                         <!-- Dynamic Sorted & Filtered Rows via Alpine -->
                         <template x-for="it in sortedFilteredItems" :key="it.rel_path">
-                            <tr class="cpanel-row transition cursor-pointer"
-                                :class="selectedItems.includes(it.rel_path) ? 'cpanel-row-selected font-medium text-slate-900 dark:text-white' : 'text-slate-800 dark:text-[#e8eaf2]'"
+                            <tr class="fm-row transition cursor-pointer"
+                                :class="selectedItems.includes(it.rel_path) ? 'fm-row-selected font-medium text-slate-900 dark:text-white' : 'text-slate-800 dark:text-[#e8eaf2]'"
                                 @click="toggleRowSelect(it.rel_path, $event)"
                                 @dblclick="if(it.is_dir) { window.location.href='/filemanager/?path=' + encodeURIComponent(it.rel_path); } else { let p = it.rel_path.includes('/') ? it.rel_path.substring(0, it.rel_path.lastIndexOf('/')) : ''; if (it.is_code || it.is_archive) { window.location.href='/filemanager/?path=' + encodeURIComponent(p) + '&edit=' + encodeURIComponent(it.rel_path); } else { window.location.href='/filemanager/?path=' + encodeURIComponent(p); } }">
                                 

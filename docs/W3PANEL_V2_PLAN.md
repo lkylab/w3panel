@@ -6,7 +6,7 @@ W3Panel v2 is a **container-native hosting panel** with a licensing system, plug
 
 ---
 
-## Architecture (cPanel-style)
+## Architecture (Modular Hosting Architecture)
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -377,7 +377,7 @@ Place UI references (PDFs, screenshots) in `docs/ui-refs/`:
 - Admin dashboard screenshots
 - User dashboard screenshots
 - Wizard flow diagrams
-- cPanel/HestiaCP comparison screenshots
+- Legacy Panels/HestiaCP comparison screenshots
 - Mobile responsive mockups
 
 ---
@@ -404,9 +404,9 @@ Place UI references (PDFs, screenshots) in `docs/ui-refs/`:
 
 ---
 
-## Comparison with cPanel
+## Comparison with Legacy Control Panels
 
-| Feature | cPanel | W3Panel v2 |
+| Feature | Legacy Commercial Panels | W3Panel v2 |
 |---------|--------|------------|
 | License model | Per-server | Per-server (similar) |
 | Pricing | $29.99-$69.99/mo | $0-$75/mo |

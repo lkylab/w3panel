@@ -6,7 +6,7 @@ from django.urls import path, include
 from apps.user import views as user_views
 
 urlpatterns = [
-    # Direct SSO endpoint (WHM to cPanel 1-click autologin)
+    # Direct SSO endpoint (1-click user autologin)
     path('sso/', user_views.user_sso, name='admin_sso_direct'),
     path('user/sso/', user_views.user_sso, name='admin_user_sso_direct'),
 
