@@ -106,7 +106,7 @@
                 <select name="default_php" class="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-800 bg-white outline-none focus:border-blue-600">
                     {% for p in installed_versions %}
                     <option value="{{ p.version }}" {% if default_php == p.version %}selected{% endif %}>
-                        PHP {{ p.version }} {% if not p.installed %}(Not Installed){% endif %}
+                        PHP {{ p.version }}
                     </option>
                     {% endfor %}
                 </select>
@@ -205,10 +205,17 @@
                                 {{ w.framework|default:"PHP" }}
                             </td>
                             <td class="px-5 py-3.5 whitespace-nowrap">
+                                {% if w.php_version in installed_version_numbers or not w.php_version and default_php in installed_version_numbers %}
                                 <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold font-mono {% if w.php_version == default_php %}bg-blue-50 text-blue-700 border border-blue-200{% else %}bg-purple-50 text-purple-700 border border-purple-200{% endif %}">
                                     PHP {{ w.php_version|default:default_php }}
                                     {% if w.php_version == default_php %}<span class="text-[9px] font-sans font-normal opacity-75">(default)</span>{% endif %}
                                 </span>
+                                {% else %}
+                                <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold font-mono bg-red-50 text-red-700 border border-red-200" title="This PHP runtime is not installed on this server">
+                                    <i class="ti ti-alert-triangle text-red-500"></i>
+                                    PHP {{ w.php_version }} (Not Installed)
+                                </span>
+                                {% endif %}
                             </td>
                             <td class="px-5 py-3.5 font-mono text-[11px] text-slate-500 whitespace-nowrap">
                                 {% if w.framework == 'nodejs' %}
@@ -228,6 +235,11 @@
                                             PHP {{ p.version }}
                                         </option>
                                         {% endfor %}
+                                        {% if w.php_version and w.php_version not in installed_version_numbers %}
+                                        <option value="{{ w.php_version }}" selected disabled>
+                                            PHP {{ w.php_version }} (Not Installed)
+                                        </option>
+                                        {% endif %}
                                     </select>
                                     <button type="submit" class="px-2.5 py-1 bg-slate-100 hover:bg-blue-50 hover:text-blue-600 text-slate-700 rounded text-xs font-bold transition">
                                         Update

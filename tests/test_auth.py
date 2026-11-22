@@ -406,23 +406,45 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(resp_short.status_code, 200)
         self.assertContains(resp_short, 'MultiPHP Manager')
 
-        # 3. Test POST set_default_php
+        # 3. Test POST set_default_php rejection of uninstalled version
+        from apps.admin.views import get_installed_php_versions
+        installed_list = [p['version'] for p in get_installed_php_versions() if p['installed']]
+        valid_ver = installed_list[0] if installed_list else '8.3'
+
+        resp_bad_def = self.client.post('/settings/php/', {
+            'action': 'set_default_php',
+            'default_php': '99.9',
+        })
+        self.assertEqual(resp_bad_def.status_code, 302)
+        self.assertNotEqual(SystemSetting.get('default_php'), '99.9')
+
+        # Test POST set_default_php with installed version
         resp_def = self.client.post('/settings/php/', {
             'action': 'set_default_php',
-            'default_php': '8.2',
+            'default_php': valid_ver,
         })
         self.assertEqual(resp_def.status_code, 302)
-        self.assertEqual(SystemSetting.get('default_php'), '8.2')
+        self.assertEqual(SystemSetting.get('default_php'), valid_ver)
 
-        # 4. Test POST set_domain_php
+        # 4. Test POST set_domain_php rejection of uninstalled version
+        resp_bad_dom = self.client.post('/settings/php/', {
+            'action': 'set_domain_php',
+            'website_id': site.id,
+            'php_version': '99.9',
+        })
+        self.assertEqual(resp_bad_dom.status_code, 302)
+        site.refresh_from_db()
+        self.assertNotEqual(site.php_version, '99.9')
+
+        # Test POST set_domain_php with installed version
         resp_dom = self.client.post('/settings/php/', {
             'action': 'set_domain_php',
             'website_id': site.id,
-            'php_version': '8.1',
+            'php_version': valid_ver,
         })
         self.assertEqual(resp_dom.status_code, 302)
         site.refresh_from_db()
-        self.assertEqual(site.php_version, '8.1')
+        self.assertEqual(site.php_version, valid_ver)
 
         # 5. Test POST save_ini
         resp_ini = self.client.post('/settings/php/', {

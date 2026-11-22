@@ -1305,6 +1305,10 @@ def admin_php_settings(request):
 
         if action == 'set_default_php':
             new_default = request.POST.get('default_php', '8.3').strip()
+            installed_vers = [p['version'] for p in get_installed_php_versions() if p['installed']]
+            if installed_vers and new_default not in installed_vers:
+                messages.error(request, f"Cannot set PHP {new_default} as system default: PHP {new_default} is not installed on this server.")
+                return redirect('/settings/php/?tab=manager')
             SystemSetting.set('default_php', new_default)
             messages.success(request, f"System default PHP updated to PHP {new_default}.")
             return redirect('/settings/php/?tab=manager')
@@ -1312,6 +1316,10 @@ def admin_php_settings(request):
         elif action == 'set_domain_php':
             website_id = request.POST.get('website_id')
             new_ver = request.POST.get('php_version', '8.3').strip()
+            installed_vers = [p['version'] for p in get_installed_php_versions() if p['installed']]
+            if installed_vers and new_ver not in installed_vers:
+                messages.error(request, f"Cannot switch domain to PHP {new_ver}: PHP {new_ver} is not installed on this server.")
+                return redirect('/settings/php/?tab=manager')
             site = get_object_or_404(Website, id=website_id)
             site.php_version = new_ver
             site.save(update_fields=['php_version'])
@@ -1329,6 +1337,10 @@ def admin_php_settings(request):
         elif action == 'bulk_set_domain_php':
             website_ids = request.POST.getlist('selected_websites')
             target_ver = request.POST.get('target_php_version', '8.3').strip()
+            installed_vers = [p['version'] for p in get_installed_php_versions() if p['installed']]
+            if installed_vers and target_ver not in installed_vers:
+                messages.error(request, f"Cannot switch domains to PHP {target_ver}: PHP {target_ver} is not installed on this server.")
+                return redirect('/settings/php/?tab=manager')
             if not website_ids:
                 messages.warning(request, "No domains were selected for bulk PHP update.")
                 return redirect('/settings/php/?tab=manager')
@@ -1409,7 +1421,12 @@ def admin_php_settings(request):
     selected_php = request.GET.get('php_version', default_php).strip()
     search_query = request.GET.get('q', '').strip()
 
-    installed_versions = get_installed_php_versions()
+    raw_versions = get_installed_php_versions()
+    installed_versions = [p for p in raw_versions if p['installed']]
+    # Fallback to default_php if no versions are found, ensuring the dropdown has a valid option
+    if not installed_versions:
+        installed_versions = [{'version': default_php, 'installed': True, 'active': True, 'fpm_dir': f'/etc/php/{default_php}/fpm'}]
+    installed_version_numbers = [p['version'] for p in installed_versions]
 
     websites = Website.objects.select_related('owner').all().order_by('domain')
     if search_query:
@@ -1433,6 +1450,7 @@ def admin_php_settings(request):
         'selected_php': selected_php,
         'search_query': search_query,
         'installed_versions': installed_versions,
+        'installed_version_numbers': installed_version_numbers,
         'websites': websites,
         'ini_settings': ini_settings,
         'tuning_status': tuning_status,
