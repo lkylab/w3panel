@@ -222,12 +222,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
 if [[ -d "$SCRIPT_DIR/apps" ]] && [[ -f "$SCRIPT_DIR/manage.py" ]]; then
     # Running from cloned repo
-    cp -r "$SCRIPT_DIR"/{apps,packages,panel,services,static,templates,manage.py,requirements.txt} "$INSTALL_DIR/"
+    cp -r "$SCRIPT_DIR"/{apps,packages,panel,services,static,templates,tests,manage.py,requirements.txt} "$INSTALL_DIR/"
     if [[ -f "$SCRIPT_DIR/update.sh" ]]; then
         cp "$SCRIPT_DIR/update.sh" "$INSTALL_DIR/"
         chmod +x "$INSTALL_DIR/update.sh"
         ln -sf "$INSTALL_DIR/update.sh" /usr/local/bin/w3panel-update
     fi
+
+    # Install test runner helper
+    cat << 'EOF' > /usr/local/bin/w3panel-test
+#!/usr/bin/env bash
+cd /usr/local/w3panel || exit 1
+export DJANGO_SETTINGS_MODULE=panel.settings
+/usr/local/w3panel/venv/bin/python manage.py test tests "$@"
+EOF
+    chmod +x /usr/local/bin/w3panel-test
 else
     die "Cannot find W3Panel source files. Run from the cloned repository."
 fi
