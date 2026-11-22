@@ -65,8 +65,9 @@ fi
 info "Updating panel files in ${INSTALL_DIR}..."
 cp -r "$SRC_DIR"/{apps,packages,panel,services,static,templates,tests,manage.py,requirements.txt} "$INSTALL_DIR/"
 if [[ -f "$SRC_DIR/update.sh" ]]; then
-    cp "$SRC_DIR/update.sh" "$INSTALL_DIR/"
-    chmod +x "$INSTALL_DIR/update.sh"
+    cp "$SRC_DIR/update.sh" "$INSTALL_DIR/update.sh.tmp"
+    chmod +x "$INSTALL_DIR/update.sh.tmp"
+    mv -f "$INSTALL_DIR/update.sh.tmp" "$INSTALL_DIR/update.sh"
     ln -sf "$INSTALL_DIR/update.sh" /usr/local/bin/w3panel-update
 fi
 
