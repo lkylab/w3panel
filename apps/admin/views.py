@@ -41,12 +41,12 @@ def _sidebar_context(active_page=''):
             {'label': 'Feature Manager', 'url': '/features/', 'active': 'features'},
         ],
         'sidebar_domains': [
-            {'label': 'List Websites', 'url': '/websites/', 'active': 'websites'},
             {'label': 'DNS Zone Editor', 'url': '/domains/dns/', 'active': 'dns'},
             {'label': 'DNS Cluster', 'url': '/domains/dns-cluster/', 'active': 'dns-cluster'},
         ],
         'sidebar_services': [
             {'label': 'Service Manager', 'url': '/services/', 'active': 'services'},
+            {'label': 'Nginx VirtualHosts', 'url': '/services/vhosts/', 'active': 'vhosts'},
             {'label': 'Terminal Console', 'url': '/terminal/', 'active': 'terminal'},
             {'label': 'Cron Jobs & Tasks', 'url': '/services/cron/', 'active': 'cron'},
             {'label': 'System Logs', 'url': '/services/logs/', 'active': 'logs'},
@@ -180,6 +180,17 @@ def admin_user_create(request):
         package_id = request.POST.get('package')
         role = request.POST.get('role', 'user')
         shell_enabled = request.POST.get('shell_enabled') in ('1', 'true', 'on')
+
+        # Restrict allowed roles for hosting account creation (admins are created via /administrators/)
+        current_admin = getattr(request, 'panel_user', None)
+        if current_admin and current_admin.role == 'admin':
+            allowed_roles = ('user', 'reseller')
+        else:
+            allowed_roles = ('user',)
+        if role not in allowed_roles:
+            role = 'user'
+
+        parent_reseller = current_admin if current_admin and current_admin.role == 'reseller' else None
         
         if username and password:
             if User.objects.filter(username=username).exists():
@@ -194,6 +205,7 @@ def admin_user_create(request):
                     password=password,
                     role=role,
                     package=pkg,
+                    parent_reseller=parent_reseller,
                     shell_enabled=shell_enabled
                 )
 
@@ -452,7 +464,31 @@ def admin_resellers(request):
 
 
 def admin_administrators(request):
-    """List administrators."""
+    """List and create administrators."""
+    admin_user = getattr(request, 'panel_user', None)
+    if not admin_user or admin_user.role != 'admin':
+        messages.error(request, 'Unauthorized: Administrator access required.')
+        return redirect('admin_dashboard')
+
+    if request.method == 'POST':
+        username = request.POST.get('username', '').strip()
+        email = request.POST.get('email', '').strip()
+        password = request.POST.get('password', '').strip()
+
+        if not username or not password:
+            messages.error(request, 'Username and password are required.')
+        elif User.objects.filter(username=username).exists():
+            messages.error(request, f'Username "{username}" already exists.')
+        else:
+            User.objects.create_user(
+                username=username,
+                email=email,
+                password=password,
+                role='admin'
+            )
+            messages.success(request, f'Administrator "{username}" created successfully.')
+            return redirect('admin_administrators')
+
     admins = User.objects.filter(role='admin')
     return render(request, 'admin/administrators.html', {
         **_sidebar_context('administrators'),
@@ -523,7 +559,7 @@ def admin_websites(request):
     websites = Website.objects.select_related('owner').all()
     is_nginx_installed = bool(shutil.which('nginx'))
     return render(request, 'admin/websites.html', {
-        **_sidebar_context('domains'),
+        **_sidebar_context('vhosts'),
         'websites': websites,
         'is_nginx_installed': is_nginx_installed,
     })

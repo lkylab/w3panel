@@ -1,19 +1,24 @@
 {% extends "base_admin.html" %}
 {% load static %}
 
-{% block title %}Websites & Domains — W3Panel{% endblock %}
-{% block page_title %}Websites & Domains{% endblock %}
+{% block title %}Nginx VirtualHosts — W3Host Manager{% endblock %}
+{% block page_title %}Nginx VirtualHosts{% endblock %}
 
 {% block content %}
 <div class="space-y-6">
     <div class="flex items-center justify-between">
         <div>
-            <h2 class="text-lg font-bold text-gray-900">Websites & Domains</h2>
-            <p class="text-xs text-gray-500">Manage all hosted domains, frameworks, and virtual hosts</p>
+            <h2 class="text-lg font-bold text-gray-900">Nginx VirtualHosts & Server Mappings</h2>
+            <p class="text-xs text-gray-500">Low-level server vhost configurations and proxy real-IP settings. Client websites and CMS frameworks are managed inside the Client Portal.</p>
         </div>
-        <a href="{% url 'admin_user_create' %}" class="inline-flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium transition shadow-sm">
-            <i class="ti ti-user-plus text-base"></i> Create Account
-        </a>
+        <div class="flex items-center gap-2">
+            <a href="{% url 'admin_users' %}" class="inline-flex items-center gap-1.5 px-3.5 py-2 border border-slate-300 text-slate-700 bg-white hover:bg-slate-50 rounded-lg text-sm font-medium transition shadow-xs">
+                <i class="ti ti-users text-base"></i> Manage Accounts
+            </a>
+            <a href="{% url 'admin_user_create' %}" class="inline-flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium transition shadow-sm">
+                <i class="ti ti-user-plus text-base"></i> Create Account
+            </a>
+        </div>
     </div>
 
     {% if not is_nginx_installed %}

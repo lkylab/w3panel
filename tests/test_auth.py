@@ -178,3 +178,54 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(resp_user_exec_en.status_code, 200)
         user_data = resp_user_exec_en.json()
         self.assertIn('user_ok', user_data.get('stdout', ''))
+
+    def test_create_account_role_restrictions(self):
+        self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
+        # Attempting to select role='admin' on /users/create/ is ignored and forced to 'user'
+        resp = self.client.post('/users/create/', {
+            'username': 'attempted_admin',
+            'password': 'Pass123!',
+            'role': 'admin'
+        })
+        self.assertEqual(resp.status_code, 302)
+        created = User.objects.get(username='attempted_admin')
+        self.assertEqual(created.role, 'user')
+
+        # Creating a reseller works
+        resp_reseller = self.client.post('/users/create/', {
+            'username': 'legit_reseller',
+            'password': 'Pass123!',
+            'role': 'reseller'
+        })
+        self.assertEqual(resp_reseller.status_code, 302)
+        reseller_created = User.objects.get(username='legit_reseller')
+        self.assertEqual(reseller_created.role, 'reseller')
+
+    def test_administrator_dedicated_create(self):
+        self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
+        resp = self.client.post('/administrators/', {
+            'username': 'new_sysadmin',
+            'email': 'sysadmin@test.local',
+            'password': 'Pass123!'
+        })
+        self.assertEqual(resp.status_code, 302)
+        new_admin = User.objects.get(username='new_sysadmin')
+        self.assertEqual(new_admin.role, 'admin')
+
+        # Reseller cannot create or view administrators
+        reseller = User.objects.create_user('reseller_test', 'r@local.test', 'Pass123!', role='reseller')
+        r_client = Client()
+        r_client.post('/login/', {'username': 'reseller_test', 'password': 'Pass123!'})
+        resp_r = r_client.post('/administrators/', {
+            'username': 'hacked_admin',
+            'password': 'Pass123!'
+        })
+        self.assertEqual(resp_r.status_code, 302)
+        self.assertFalse(User.objects.filter(username='hacked_admin').exists())
+
+    def test_vhosts_service_view(self):
+        self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
+        resp = self.client.get('/services/vhosts/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Nginx VirtualHosts')
+

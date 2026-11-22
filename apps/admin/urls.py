@@ -41,6 +41,7 @@ urlpatterns = [
     path('domains/dns-cluster/', views.admin_dns_cluster, name='admin_dns_cluster'),
     
     # Services & Plugins
+    path('services/vhosts/', views.admin_websites, name='admin_vhosts'),
     path('plugins/', views.admin_plugins, name='admin_plugins'),
     path('services/', views.admin_services_status, name='admin_services_status'),
     path('services/cron/', views.admin_cron, name='admin_cron'),
