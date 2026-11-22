@@ -38,7 +38,6 @@ def _sidebar_context(active_page=''):
         ],
         'sidebar_plans': [
             {'label': 'Hosting Packages', 'url': '/plans/', 'active': 'plans'},
-            {'label': 'Feature Manager', 'url': '/features/', 'active': 'features'},
         ],
         'sidebar_domains': [
             {'label': 'DNS Zone Editor', 'url': '/domains/dns/', 'active': 'dns'},
@@ -546,10 +545,8 @@ def admin_plan_delete(request, plan_id):
 
 
 def admin_features(request):
-    """Feature Manager matrix."""
-    return render(request, 'admin/features.html', {
-        **_sidebar_context('features'),
-    })
+    """Legacy Feature Manager redirects to Hosting Packages."""
+    return redirect('admin_plans')
 
 
 # ===========================================================================

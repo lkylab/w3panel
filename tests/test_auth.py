@@ -233,6 +233,15 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(resp_websites.status_code, 302)
         self.assertRedirects(resp_websites, '/users/')
 
+        # Verify /features/ redirects to /plans/ and Feature Manager is removed from sidebar
+        resp_features = self.client.get('/features/')
+        self.assertEqual(resp_features.status_code, 302)
+        self.assertRedirects(resp_features, '/plans/')
+
+        resp_plans = self.client.get('/plans/')
+        self.assertEqual(resp_plans.status_code, 200)
+        self.assertNotContains(resp_plans, 'Feature Manager')
+
         # Verify Service Manager page displays core services without panel daemons
         resp_svc = self.client.get('/services/')
         self.assertEqual(resp_svc.status_code, 200)
