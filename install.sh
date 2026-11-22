@@ -128,6 +128,24 @@ fi
 
 # ── Install Web Server (Nginx & PHP-FPM) ──────────────────────────────────────
 if [[ "$WEBSERVER" == "nginx" ]]; then
+    if [[ "$PKG_MGR" == "apt-get" ]]; then
+        info "Configuring Ondřej Surý / deb.sury.org Multi-PHP repository..."
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get install -y -qq software-properties-common gnupg ca-certificates curl lsb-release || true
+        if [[ "$OS_ID" == "ubuntu" ]]; then
+            add-apt-repository -y ppa:ondrej/php || {
+                warn "add-apt-repository failed, configuring deb.sury.org apt repository directly..."
+                curl -sSLo /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg || true
+                echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list
+            }
+        else
+            curl -sSLo /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg || true
+            echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list
+        fi
+        apt-get update -qq || true
+        success "Ondřej Surý / deb.sury.org Multi-PHP repository configured"
+    fi
+
     info "Installing Nginx & PHP 8.3 FPM..."
     if [[ "$PKG_MGR" == "apt-get" ]]; then
         apt-get install -y -qq nginx php8.3-fpm php8.3-cli php8.3-mysql php8.3-pgsql php8.3-curl php8.3-zip php8.3-mbstring php8.3-xml
@@ -243,12 +261,13 @@ sudo -u "$PANEL_USER" "$VENV_DIR/bin/python" - <<PYEOF
 import os, django
 os.environ['DJANGO_SETTINGS_MODULE'] = 'panel.settings'
 django.setup()
-from packages.core.models import User
+from packages.core.models import User, SystemSetting
 if not User.objects.filter(username='admin').exists():
     User.objects.create_user('admin', 'admin@localhost', '${ADMIN_PASS}', role='admin')
     print('Admin user created: admin / ${ADMIN_PASS}')
 else:
     print('Admin user already exists')
+SystemSetting.set('sury_repo_enabled', 'true')
 PYEOF
 
 # ── Self-signed SSL ───────────────────────────────────────────────────────────

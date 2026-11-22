@@ -536,5 +536,39 @@ class AuthAndRoleTests(TestCase):
         })
         self.assertEqual(resp_comp.status_code, 302)
 
+        # 7. Test POST enable_ppa and disable_ppa in W3Packager
+        resp_en_ppa = self.client.post('/software/w3packager/', {
+            'action': 'enable_ppa',
+        })
+        self.assertEqual(resp_en_ppa.status_code, 302)
+        self.assertEqual(SystemSetting.get('sury_repo_enabled'), 'true')
+
+        resp_dis_ppa = self.client.post('/software/w3packager/', {
+            'action': 'disable_ppa',
+        })
+        self.assertEqual(resp_dis_ppa.status_code, 302)
+        self.assertEqual(SystemSetting.get('sury_repo_enabled'), 'false')
+
+        # 8. Test toggle sury repo switch in admin_settings
+        resp_set_sury = self.client.post('/settings/', {
+            'panel_name': 'W3Panel',
+            'server_hostname': 'test.host.com',
+            'default_php': '8.3',
+            'api_rate_limit': '60',
+            'enable_sury_repo': '1',
+        })
+        self.assertEqual(resp_set_sury.status_code, 302)
+        self.assertEqual(SystemSetting.get('sury_repo_enabled'), 'true')
+
+        # 9. Test toggle sury repo switch in wizard_dashboard
+        resp_wiz_sury = self.client.post('/wizards/', {
+            'server_hostname': 'test.host.com',
+            'webserver_choice': 'nginx',
+            'default_php': '8.3',
+            'enable_sury_repo': '1',
+        })
+        self.assertEqual(resp_wiz_sury.status_code, 302)
+        self.assertEqual(SystemSetting.get('sury_repo_enabled'), 'true')
+
 
 

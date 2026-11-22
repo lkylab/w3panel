@@ -1165,6 +1165,22 @@ def admin_settings(request):
             SystemSetting.set('admin_email', admin_email)
         SystemSetting.set('default_php', default_php)
         SystemSetting.set('api_rate_limit', api_rate_limit)
+
+        # Handle Ondřej Surý / deb.sury.org Multi-PHP repository switch
+        enable_sury = request.POST.get('enable_sury_repo') in ('1', 'true', 'on')
+        currently_enabled = is_ondrej_ppa_enabled()
+        if enable_sury and not currently_enabled:
+            ok, out = enable_ondrej_ppa()
+            if ok:
+                messages.info(request, "Ondřej Surý / deb.sury.org Multi-PHP repository enabled.")
+            else:
+                messages.warning(request, f"Could not enable Ondřej repository: {out[:200]}")
+        elif not enable_sury and currently_enabled:
+            ok, out = disable_ondrej_ppa()
+            if ok:
+                messages.info(request, "Ondřej Surý / deb.sury.org Multi-PHP repository disabled.")
+            else:
+                messages.warning(request, f"Could not disable Ondřej repository: {out[:200]}")
         
         messages.success(request, 'Basic WebHost settings saved successfully.')
         return redirect('admin_settings')
@@ -1184,6 +1200,7 @@ def admin_settings(request):
         'api_rate_limit': SystemSetting.get('api_rate_limit', '50'),
         'panel_version': getattr(settings, 'W3PANEL_VERSION', '2.0.0'),
         'initial_completed': SystemSetting.get('initial_setup_completed', 'false') == 'true',
+        'sury_repo_enabled': is_ondrej_ppa_enabled(),
     })
 
 
@@ -1724,25 +1741,41 @@ def get_available_apt_packages(pkg_names: set | list) -> set:
         'nginx', 'python3-certbot-nginx', 'nodejs', 'npm', 'composer', 'redis-server',
         'libnginx-mod-http-brotli-filter'
     }
+
+    # If Ondřej Surý / deb.sury.org repository is enabled, unlock all supported multi-PHP versions
+    if is_ondrej_ppa_enabled():
+        for extra_v in ('7.4', '8.1', '8.2', '8.3', '8.4'):
+            fallback_available.update({
+                f'php{extra_v}-fpm', f'php{extra_v}-cli', f'php{extra_v}-mysql',
+                f'php{extra_v}-curl', f'php{extra_v}-mbstring', f'php{extra_v}-xml',
+                f'php{extra_v}-zip', f'php{extra_v}-intl', f'php{extra_v}-bcmath',
+                f'php{extra_v}-opcache', f'php{extra_v}-redis', f'php{extra_v}-memcached',
+                f'php{extra_v}-imagick', f'php{extra_v}-gd', f'php{extra_v}-pgsql',
+                f'php{extra_v}-sqlite3', f'php{extra_v}-mongodb', f'php{extra_v}-soap'
+            })
+
     return fallback_available.intersection(set(pkg_names))
 
 
 def is_ondrej_ppa_enabled() -> bool:
-    """Checks if ppa:ondrej/php is enabled on the system."""
+    """Checks if ppa:ondrej/php or deb.sury.org is enabled on the system."""
+    setting_val = SystemSetting.get('sury_repo_enabled')
+    if setting_val is not None and setting_val != '':
+        return (setting_val == 'true')
     try:
         sources_dir = Path('/etc/apt/sources.list.d')
         if sources_dir.exists():
             for f in sources_dir.glob('*'):
                 try:
                     content = f.read_text(encoding='utf-8', errors='replace').lower()
-                    if 'ondrej' in content and 'php' in content:
+                    if ('ondrej' in content and 'php' in content) or ('sury' in content and 'php' in content):
                         return True
                 except Exception:
                     pass
         main_sources = Path('/etc/apt/sources.list')
         if main_sources.exists():
             content = main_sources.read_text(encoding='utf-8', errors='replace').lower()
-            if 'ondrej' in content and 'php' in content:
+            if ('ondrej' in content and 'php' in content) or ('sury' in content and 'php' in content):
                 return True
     except Exception:
         pass
@@ -1766,13 +1799,55 @@ def _run_apt_transaction(command_args: list) -> tuple[bool, str]:
 
 
 def enable_ondrej_ppa() -> tuple[bool, str]:
-    """Configures ppa:ondrej/php repository on Debian/Ubuntu."""
-    _run_apt_transaction(['apt-get', 'install', '-y', 'software-properties-common', 'gnupg'])
-    ok, out = _run_apt_transaction(['add-apt-repository', '-y', 'ppa:ondrej/php'])
-    if not ok:
-        return False, f"Failed to add PPA repository: {out}"
+    """Configures ppa:ondrej/php or deb.sury.org repository on Debian/Ubuntu."""
+    os_info = get_os_info()
+    _run_apt_transaction(['apt-get', 'install', '-y', 'software-properties-common', 'gnupg', 'ca-certificates', 'curl'])
+    out_all = ""
+    if os_info.get('id') == 'ubuntu':
+        ok, out = _run_apt_transaction(['add-apt-repository', '-y', 'ppa:ondrej/php'])
+        out_all += out + "\n"
+        if not ok:
+            # Fallback to direct deb.sury.org source
+            codename = os_info.get('codename') or 'noble'
+            cmd = f"curl -sSLo /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg && echo 'deb https://packages.sury.org/php/ {codename} main' > /etc/apt/sources.list.d/php.list"
+            proc = subprocess.run(['sudo', '-n', 'sh', '-c', cmd], capture_output=True, text=True)
+            out_all += proc.stdout + "\n" + proc.stderr
+    else:
+        # Debian
+        codename = os_info.get('codename') or 'bookworm'
+        cmd = f"curl -sSLo /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg && echo 'deb https://packages.sury.org/php/ {codename} main' > /etc/apt/sources.list.d/php.list"
+        proc = subprocess.run(['sudo', '-n', 'sh', '-c', cmd], capture_output=True, text=True)
+        out_all += proc.stdout + "\n" + proc.stderr
+
     ok_upd, out_upd = _run_apt_transaction(['apt-get', 'update'])
-    return ok_upd, out + '\n' + out_upd
+    out_all += out_upd
+    SystemSetting.set('sury_repo_enabled', 'true')
+    return ok_upd, out_all
+
+
+def disable_ondrej_ppa() -> tuple[bool, str]:
+    """Disables / removes ppa:ondrej/php or deb.sury.org repository."""
+    os_info = get_os_info()
+    out_all = ""
+    if os_info.get('id') == 'ubuntu':
+        ok, out = _run_apt_transaction(['add-apt-repository', '-y', '--remove', 'ppa:ondrej/php'])
+        out_all += out + "\n"
+
+    # Remove any manual sury / ondrej list files in /etc/apt/sources.list.d/
+    sources_dir = Path('/etc/apt/sources.list.d')
+    if sources_dir.exists():
+        for f in sources_dir.glob('*'):
+            try:
+                name_lower = f.name.lower()
+                if 'ondrej' in name_lower or 'sury' in name_lower or name_lower == 'php.list':
+                    subprocess.run(['sudo', '-n', 'rm', '-f', str(f)], capture_output=True)
+            except Exception:
+                pass
+
+    ok_upd, out_upd = _run_apt_transaction(['apt-get', 'update'])
+    out_all += out_upd
+    SystemSetting.set('sury_repo_enabled', 'false')
+    return ok_upd, out_all
 
 
 def install_php_runtime(ver: str) -> tuple[bool, str]:
@@ -2119,9 +2194,17 @@ def admin_w3packager(request):
         if action == 'enable_ppa':
             ok, out = enable_ondrej_ppa()
             if ok:
-                messages.success(request, "Ondřej Surý PHP PPA repository enabled successfully.")
+                messages.success(request, "Ondřej Surý / deb.sury.org Multi-PHP repository enabled successfully.")
             else:
-                messages.error(request, f"Failed to enable PPA repository: {out[:250]}")
+                messages.error(request, f"Failed to enable repository: {out[:250]}")
+            return redirect('/software/w3packager/?tab=runtimes')
+
+        elif action == 'disable_ppa':
+            ok, out = disable_ondrej_ppa()
+            if ok:
+                messages.success(request, "Ondřej Surý / deb.sury.org Multi-PHP repository disabled successfully.")
+            else:
+                messages.error(request, f"Failed to disable repository: {out[:250]}")
             return redirect('/software/w3packager/?tab=runtimes')
 
         elif action == 'install_runtime':
@@ -2331,6 +2414,14 @@ def wizard_dashboard(request):
         
         enable_ftp = request.POST.get('enable_ftp') in ('1', 'true', 'on')
         enable_ufw = request.POST.get('enable_ufw') in ('1', 'true', 'on')
+        enable_sury_repo = request.POST.get('enable_sury_repo') in ('1', 'true', 'on')
+
+        # Handle Ondřej Surý / deb.sury.org Multi-PHP repository switch
+        currently_sury = is_ondrej_ppa_enabled()
+        if enable_sury_repo and not currently_sury:
+            enable_ondrej_ppa()
+        elif not enable_sury_repo and currently_sury:
+            disable_ondrej_ppa()
 
         # Save system identity & stack preferences
         SystemSetting.set('server_hostname', server_hostname)
@@ -2440,6 +2531,8 @@ def wizard_dashboard(request):
         'default_php': default_php,
         'db_tuning': db_tuning,
         'initial_completed': SystemSetting.get('initial_setup_completed', 'false') == 'true',
+        'sury_repo_enabled': is_ondrej_ppa_enabled(),
+        'ppa_enabled': is_ondrej_ppa_enabled(),
     })
 
 
