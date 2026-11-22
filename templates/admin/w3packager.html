@@ -5,11 +5,12 @@
 {% block page_title %}W3Packager — Software & Stack Provisioner{% endblock %}
 
 {% block content %}
-<div x-data="{
-    tab: '{{ active_tab|default:'runtimes' }}',
-    extSearch: '{{ search_query|default:'' }}',
-    selectedPhp: '{{ selected_php }}'
-}" class="space-y-6">
+<!-- Embedded Initial Packager Data -->
+<script id="packager-init-data" type="application/json">
+{{ packager_init_json|safe }}
+</script>
+
+<div x-data="w3packagerApp()" class="space-y-6">
 
     <!-- Header -->
     <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -17,67 +18,171 @@
             <div class="flex items-center gap-2 text-xs text-slate-500 mb-1">
                 <a href="{% url 'admin_settings' %}" class="hover:text-blue-600 transition">Configuration</a>
                 <i class="ti ti-chevron-right text-[10px]"></i>
-                <span class="text-slate-800 font-semibold">Software & Provisioning</span>
+                <span class="text-slate-800 font-semibold">Software &amp; Provisioning</span>
             </div>
             <h2 class="text-xl font-bold text-slate-900 flex items-center gap-2">
                 <i class="ti ti-package text-blue-600"></i>
                 W3Packager
             </h2>
-            <p class="text-xs text-slate-500 mt-0.5">Provision and customize PHP runtimes, modules, and system packages.</p>
+            <p class="text-xs text-slate-500 mt-0.5">EasyApache-style stack provisioner: select components, customize profiles, review changes, and provision.</p>
+        </div>
+
+        <!-- Staged Changes Quick Badge & Review Button -->
+        <div class="flex items-center gap-3">
+            <template x-if="changesCount > 0">
+                <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                    <i class="ti ti-alert-circle text-amber-600"></i>
+                    <span x-text="changesCount + ' changes staged'"></span>
+                </span>
+            </template>
+            <button type="button" @click="step = 'review'"
+                    :class="step === 'review' ? 'bg-blue-600 text-white' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300'"
+                    class="px-4 py-2 border rounded-lg text-xs font-bold transition shadow-xs flex items-center gap-1.5">
+                <i class="ti ti-clipboard-check text-sm"></i>
+                <span>Review &amp; Apply</span>
+                <span x-show="changesCount > 0" class="size-2 rounded-full bg-amber-500"></span>
+            </button>
         </div>
     </div>
 
-    <!-- EasyApache 4 Style Step Navigation Tabs -->
-    <div class="flex items-center border-b border-slate-200 overflow-x-auto">
-        <div class="flex space-x-6 text-xs font-bold whitespace-nowrap">
-            <button @click="tab = 'runtimes'"
-                    :class="tab === 'runtimes' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500 hover:text-slate-700'"
-                    class="pb-3 flex items-center gap-2 transition outline-none">
+    <!-- EasyApache 4 Sequential Step Progress Bar -->
+    <div class="bg-white rounded-xl border border-slate-200/80 p-2.5 shadow-xs overflow-x-auto">
+        <div class="flex items-center min-w-max space-x-1 sm:space-x-2 text-xs font-bold">
+            <!-- 1. Profiles -->
+            <button @click="step = 'profiles'"
+                    :class="step === 'profiles' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'"
+                    class="px-3.5 py-2 rounded-lg flex items-center gap-2 transition">
+                <i class="ti ti-folders text-sm"></i>
+                <span>1. Profiles</span>
+            </button>
+
+            <i class="ti ti-chevron-right text-slate-300 text-xs shrink-0"></i>
+
+            <!-- 2. PHP Runtimes -->
+            <button @click="step = 'runtimes'"
+                    :class="step === 'runtimes' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'"
+                    class="px-3.5 py-2 rounded-lg flex items-center gap-2 transition">
                 <i class="ti ti-versions text-sm"></i>
-                <span>1. PHP Runtimes</span>
-                <span class="px-1.5 py-0.5 rounded-full text-[10px] bg-slate-100 text-slate-700 font-mono">{{ installed_versions|length }} installed</span>
+                <span>2. PHP Runtimes</span>
+                <span :class="step === 'runtimes' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700'" class="px-1.5 py-0.2 rounded text-[10px] font-mono" x-text="selectedRuntimesCount"></span>
             </button>
 
-            <button @click="tab = 'extensions'"
-                    :class="tab === 'extensions' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500 hover:text-slate-700'"
-                    class="pb-3 flex items-center gap-2 transition outline-none">
+            <i class="ti ti-chevron-right text-slate-300 text-xs shrink-0"></i>
+
+            <!-- 3. PHP Extensions -->
+            <button @click="step = 'extensions'"
+                    :class="step === 'extensions' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'"
+                    class="px-3.5 py-2 rounded-lg flex items-center gap-2 transition">
                 <i class="ti ti-puzzle text-sm"></i>
-                <span>2. PHP Extensions</span>
-                <span class="px-1.5 py-0.5 rounded-full text-[10px] bg-blue-50 text-blue-700 font-mono">PHP {{ selected_php }}</span>
+                <span>3. PHP Extensions</span>
+                <span :class="step === 'extensions' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700'" class="px-1.5 py-0.2 rounded text-[10px] font-mono" x-text="selectedExtensionsCount"></span>
             </button>
 
-            <button @click="tab = 'webserver'"
-                    :class="tab === 'webserver' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500 hover:text-slate-700'"
-                    class="pb-3 flex items-center gap-2 transition outline-none">
+            <i class="ti ti-chevron-right text-slate-300 text-xs shrink-0"></i>
+
+            <!-- 4. Web Modules -->
+            <button @click="step = 'webserver'"
+                    :class="step === 'webserver' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'"
+                    class="px-3.5 py-2 rounded-lg flex items-center gap-2 transition">
                 <i class="ti ti-server text-sm"></i>
-                <span>3. Web &amp; Proxy Modules</span>
+                <span>4. Web &amp; Proxy Modules</span>
             </button>
 
-            <button @click="tab = 'cli'"
-                    :class="tab === 'cli' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500 hover:text-slate-700'"
-                    class="pb-3 flex items-center gap-2 transition outline-none">
+            <i class="ti ti-chevron-right text-slate-300 text-xs shrink-0"></i>
+
+            <!-- 5. Additional Packages & CLI -->
+            <button @click="step = 'cli'"
+                    :class="step === 'cli' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'"
+                    class="px-3.5 py-2 rounded-lg flex items-center gap-2 transition">
                 <i class="ti ti-terminal-2 text-sm"></i>
-                <span>4. CLI Tools &amp; Extra Runtimes</span>
+                <span>5. CLI Tools &amp; Extra Runtimes</span>
             </button>
 
-            <button @click="tab = 'review'"
-                    :class="tab === 'review' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500 hover:text-slate-700'"
-                    class="pb-3 flex items-center gap-2 transition outline-none">
-                <i class="ti ti-file-check text-sm"></i>
-                <span>5. Review & Stack Profiles</span>
+            <i class="ti ti-chevron-right text-slate-300 text-xs shrink-0"></i>
+
+            <!-- 6. Review & Apply -->
+            <button @click="step = 'review'"
+                    :class="step === 'review' ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'"
+                    class="px-3.5 py-2 rounded-lg flex items-center gap-2 transition">
+                <i class="ti ti-clipboard-check text-sm"></i>
+                <span>6. Review &amp; Apply</span>
+                <template x-if="changesCount > 0">
+                    <span class="px-1.5 py-0.2 rounded text-[10px] bg-white text-emerald-700 font-mono" x-text="'+' + toInstallList.length + ' / -' + toUninstallList.length"></span>
+                </template>
             </button>
         </div>
     </div>
 
     <!-- ===================================================================== -->
-    <!-- STEP 1: PHP RUNTIMES (EasyApache 4 PHP Versions)                      -->
+    <!-- STEP 1: PROFILES (EasyApache 4 Profiles)                               -->
     <!-- ===================================================================== -->
-    <div x-show="tab === 'runtimes'" class="space-y-4">
+    <div x-show="step === 'profiles'" class="space-y-4">
         <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
             <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-100 gap-2">
                 <div>
-                    <h3 class="font-bold text-sm text-slate-900">PHP Runtimes</h3>
-                    <p class="text-xs text-slate-500">Manage installed PHP versions and FastCGI process managers.</p>
+                    <h3 class="font-bold text-sm text-slate-900">EasyApache Stack Profiles</h3>
+                    <p class="text-xs text-slate-500">Choose a predefined stack profile or start from your currently installed packages to customize.</p>
+                </div>
+                <div class="text-xs text-slate-500">
+                    Active base: <span class="font-bold text-slate-800" x-text="activeProfileName"></span>
+                </div>
+            </div>
+
+            <!-- Profiles Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <template x-for="p in profiles" :key="p.id">
+                    <div class="p-4 rounded-xl border border-slate-200 bg-white hover:border-blue-400 transition flex flex-col justify-between gap-4 shadow-xs">
+                        <div class="space-y-2.5">
+                            <div class="flex items-start justify-between gap-2">
+                                <h4 class="font-bold text-sm text-slate-900" x-text="p.name"></h4>
+                                <span :class="p.badge_class || 'text-slate-700 bg-slate-100 border-slate-200'"
+                                      class="text-[10px] font-bold px-2 py-0.5 rounded border whitespace-nowrap"
+                                      x-text="p.badge"></span>
+                            </div>
+                            <p class="text-xs text-slate-500" x-text="p.description"></p>
+                            
+                            <!-- Tags -->
+                            <div class="flex flex-wrap gap-1.5 pt-1">
+                                <template x-for="t in (p.tags || [])" :key="t">
+                                    <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600 font-mono" x-text="t"></span>
+                                </template>
+                            </div>
+                        </div>
+
+                        <div class="pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                            <button type="button" @click="applyProfile(p)"
+                                    class="w-full px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition shadow-xs flex items-center justify-center gap-1.5">
+                                <i class="ti ti-adjustments text-sm"></i>
+                                <span>Customize</span>
+                            </button>
+
+                            <!-- Delete button if custom profile -->
+                            <template x-if="p.is_custom">
+                                <form method="post" action="{% url 'admin_w3packager' %}" onsubmit="return confirm('Delete this custom profile?');" class="shrink-0">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="action" value="delete_profile">
+                                    <input type="hidden" name="profile_id" :value="p.id">
+                                    <button type="submit" title="Delete Profile" class="p-2 border border-slate-200 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded-lg transition">
+                                        <i class="ti ti-trash text-sm"></i>
+                                    </button>
+                                </form>
+                            </template>
+                        </div>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- STEP 2: PHP RUNTIMES (EasyApache 4 PHP Versions)                      -->
+    <!-- ===================================================================== -->
+    <div x-show="step === 'runtimes'" class="space-y-4" x-cloak>
+        <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-100 gap-2">
+                <div>
+                    <h3 class="font-bold text-sm text-slate-900">PHP Versions</h3>
+                    <p class="text-xs text-slate-500">Use checkboxes to select which PHP runtime packages to install or keep active on this server.</p>
                 </div>
                 <div class="flex items-center gap-2 text-xs font-semibold text-slate-600">
                     <span>Default:</span>
@@ -87,83 +192,82 @@
 
             <div class="grid grid-cols-1 gap-3.5">
                 {% for r in runtimes %}
-                <div class="p-4 rounded-xl border {% if r.installed %}border-slate-200 bg-white hover:border-blue-200{% else %}border-slate-200/60 bg-slate-50/50{% endif %} transition flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div class="p-4 rounded-xl border transition flex flex-col md:flex-row md:items-center justify-between gap-4"
+                     :class="runtimes['{{ r.version }}'] ? 'border-blue-300 bg-blue-50/20 shadow-xs' : 'border-slate-200 bg-slate-50/40'">
+                    
                     <div class="flex items-start sm:items-center gap-3.5">
-                        <div class="size-11 rounded-xl {% if r.installed %}bg-blue-50 text-blue-600 border border-blue-100{% else %}bg-slate-100 text-slate-400{% endif %} flex items-center justify-center text-lg font-bold shrink-0">
+                        <!-- Checkbox -->
+                        <div class="flex items-center h-full pt-1 sm:pt-0">
+                            {% if r.is_default %}
+                            <input type="checkbox" checked disabled class="size-5 rounded text-blue-600 border-slate-300 bg-slate-200 cursor-not-allowed">
+                            {% else %}
+                            <input type="checkbox"
+                                   id="runtime_check_{{ r.version }}"
+                                   :checked="runtimes['{{ r.version }}']"
+                                   @change="toggleRuntime('{{ r.version }}', $event.target.checked)"
+                                   class="size-5 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer">
+                            {% endif %}
+                        </div>
+
+                        <div class="size-11 rounded-xl flex items-center justify-center text-lg font-bold shrink-0"
+                             :class="runtimes['{{ r.version }}'] ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-500'">
                             {{ r.version }}
                         </div>
+
                         <div class="space-y-1">
                             <div class="flex flex-wrap items-center gap-2">
-                                <h4 class="font-bold text-sm text-slate-900">PHP {{ r.version }}</h4>
+                                <label for="runtime_check_{{ r.version }}" class="font-bold text-sm text-slate-900 cursor-pointer">
+                                    PHP {{ r.version }}
+                                </label>
                                 <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600">{{ r.release_status }}</span>
 
                                 {% if r.is_default %}
                                 <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                                    <i class="ti ti-star"></i> System Default
+                                    <i class="ti ti-star"></i> System Default (Required)
                                 </span>
                                 {% endif %}
 
+                                <!-- Current Installed status -->
                                 {% if r.installed %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                    <i class="ti ti-check"></i> Installed & Active
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600">
+                                    Installed
                                 </span>
                                 {% else %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-200/70 text-slate-600">
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-200/60 text-slate-500">
                                     Not Installed
                                 </span>
                                 {% endif %}
+
+                                <!-- Dynamic Staged Action Badge -->
+                                <template x-if="runtimes['{{ r.version }}'] && !installedRuntimes.includes('{{ r.version }}')">
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                        <i class="ti ti-plus"></i> Staged to Install
+                                    </span>
+                                </template>
+                                <template x-if="!runtimes['{{ r.version }}'] && installedRuntimes.includes('{{ r.version }}')">
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                                        <i class="ti ti-minus"></i> Staged to Remove
+                                    </span>
+                                </template>
                             </div>
+
                             <p class="text-xs text-slate-500">{{ r.description }}</p>
-                            {% if r.installed %}
-                            <div class="text-[11px] font-mono text-slate-400 flex items-center gap-2">
-                                <span>/etc/php/{{ r.version }}/fpm</span>
-                                <span>•</span>
-                                <span>php{{ r.version }}-fpm.service</span>
-                                {% if r.domain_count > 0 %}
-                                <span>•</span>
-                                <span class="text-blue-600 font-sans font-semibold">Active on {{ r.domain_count }} domain{% if r.domain_count != 1 %}s{% endif %}</span>
-                                {% endif %}
+
+                            {% if r.domain_count > 0 %}
+                            <div class="text-[11px] font-medium text-blue-600 flex items-center gap-1.5 pt-0.5">
+                                <i class="ti ti-world"></i>
+                                <span>Active on {{ r.domain_count }} domain{% if r.domain_count != 1 %}s{% endif %}</span>
                             </div>
                             {% endif %}
                         </div>
                     </div>
 
                     <div class="flex items-center gap-2 shrink-0">
-                        {% if r.installed %}
-                            <a href="{% url 'admin_w3packager' %}?tab=extensions&php_version={{ r.version }}"
-                               class="px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition flex items-center gap-1.5">
-                                <i class="ti ti-puzzle text-sm"></i> Extensions
-                            </a>
-
-                            {% if r.is_default %}
-                            <button type="button" disabled class="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-400 text-xs font-semibold cursor-not-allowed">
-                                System Default
-                            </button>
-                            {% elif r.domain_count > 0 %}
-                            <button type="button" disabled title="In use by {{ r.domain_count }} domain(s)" class="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-400 text-xs font-semibold cursor-not-allowed">
-                                In Use ({{ r.domain_count }})
-                            </button>
-                            {% else %}
-                            <form method="post" action="{% url 'admin_w3packager' %}" onsubmit="return confirm('Are you sure you want to uninstall PHP {{ r.version }}?');">
-                                {% csrf_token %}
-                                <input type="hidden" name="action" value="uninstall_runtime">
-                                <input type="hidden" name="php_version" value="{{ r.version }}">
-                                <button type="submit" class="px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 text-xs font-semibold transition">
-                                    Uninstall
-                                </button>
-                            </form>
-                            {% endif %}
-                        {% else %}
-                            <form method="post" action="{% url 'admin_w3packager' %}">
-                                {% csrf_token %}
-                                <input type="hidden" name="action" value="install_runtime">
-                                <input type="hidden" name="php_version" value="{{ r.version }}">
-                                <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition shadow-xs flex items-center gap-1.5">
-                                    <i class="ti ti-download text-sm"></i>
-                                    Install PHP {{ r.version }} Stack
-                                </button>
-                            </form>
-                        {% endif %}
+                        <button type="button" @click="activeExtPhp = '{{ r.version }}'; step = 'extensions'"
+                                class="px-3.5 py-1.5 rounded-lg border border-slate-300 hover:bg-white text-slate-700 text-xs font-semibold transition flex items-center gap-1.5">
+                            <i class="ti ti-puzzle text-sm text-blue-600"></i>
+                            <span>Configure Extensions</span>
+                        </button>
                     </div>
                 </div>
                 {% endfor %}
@@ -172,122 +276,155 @@
     </div>
 
     <!-- ===================================================================== -->
-    <!-- STEP 2: PHP EXTENSIONS (EasyApache 4 Extension Catalog)               -->
+    <!-- STEP 3: PHP EXTENSIONS (EasyApache 4 Extension Catalog)               -->
     <!-- ===================================================================== -->
-    <div x-show="tab === 'extensions'" class="space-y-4" x-cloak>
+    <div x-show="step === 'extensions'" class="space-y-4" x-cloak>
         <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
-            <!-- Selector and Search Bar -->
-            <div class="flex flex-col md:flex-row md:items-center justify-between pb-4 border-b border-slate-100 gap-3">
+            
+            <!-- Controls & Selector -->
+            <div class="flex flex-col lg:flex-row lg:items-center justify-between pb-4 border-b border-slate-100 gap-3">
                 <div class="flex items-center gap-3">
                     <div class="size-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center text-lg shrink-0">
                         <i class="ti ti-puzzle"></i>
                     </div>
                     <div>
-                        <h3 class="font-bold text-sm text-slate-900">PHP Extensions &amp; Modules</h3>
-                        <p class="text-xs text-slate-500">Manage extensions and modules for PHP {{ selected_php }}.</p>
+                        <h3 class="font-bold text-sm text-slate-900">PHP Extensions</h3>
+                        <p class="text-xs text-slate-500">Toggle checkboxes to select extensions for PHP runtimes.</p>
                     </div>
                 </div>
 
-                <div class="flex flex-wrap items-center gap-3">
-                    <!-- Version Switcher -->
-                    <form method="get" action="{% url 'admin_w3packager' %}" class="flex items-center gap-1.5">
-                        <input type="hidden" name="tab" value="extensions">
-                        <span class="text-xs font-semibold text-slate-600">Configuring:</span>
-                        <select name="php_version" onchange="this.form.submit()"
-                                class="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-800 bg-white font-bold focus:border-blue-600 outline-none">
-                            {% for v in installed_versions %}
-                            <option value="{{ v }}" {% if selected_php == v %}selected{% endif %}>PHP {{ v }}</option>
-                            {% endfor %}
-                        </select>
-                    </form>
-
-                    <!-- Search Input -->
-                    <form method="get" action="{% url 'admin_w3packager' %}" class="flex items-center gap-2">
-                        <input type="hidden" name="tab" value="extensions">
-                        <input type="hidden" name="php_version" value="{{ selected_php }}">
-                        <div class="relative">
-                            <i class="ti ti-search absolute left-2.5 top-2 text-slate-400 text-xs"></i>
-                            <input type="text" name="q" value="{{ search_query }}" placeholder="Filter extensions (e.g. redis, gd)..."
-                                   class="rounded-lg border border-slate-300 pl-8 pr-3 py-1.5 text-xs text-slate-800 bg-white placeholder-slate-400 focus:border-blue-600 outline-none w-52">
-                        </div>
-                        {% if search_query %}
-                        <a href="{% url 'admin_w3packager' %}?tab=extensions&php_version={{ selected_php }}" class="text-xs text-blue-600 hover:underline">Clear</a>
-                        {% endif %}
-                    </form>
+                <!-- PHP Version Tabs for Extensions -->
+                <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-xs font-semibold text-slate-500">Configuring:</span>
+                    <div class="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs font-bold">
+                        <template x-for="v in supportedRuntimes" :key="v">
+                            <button type="button" @click="activeExtPhp = v"
+                                    :class="activeExtPhp === v ? 'bg-white text-blue-600 shadow-xs' : 'text-slate-600 hover:text-slate-900'"
+                                    class="px-3 py-1.5 rounded-md transition flex items-center gap-1">
+                                <span x-text="'PHP ' + v"></span>
+                                <span x-show="runtimes[v]" class="size-1.5 rounded-full bg-blue-600"></span>
+                            </button>
+                        </template>
+                    </div>
                 </div>
             </div>
 
-            <!-- Extensions Table -->
-            <div class="overflow-x-auto">
+            <!-- Search, Filter & Bulk Actions Bar -->
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200/80">
+                <div class="flex flex-wrap items-center gap-2 flex-1">
+                    <!-- Search Input -->
+                    <div class="relative w-full sm:w-64">
+                        <i class="ti ti-search absolute left-2.5 top-2.5 text-slate-400 text-xs"></i>
+                        <input type="text" x-model="extSearch" placeholder="Filter extensions (e.g. redis, gd)..."
+                               class="w-full rounded-lg border border-slate-300 pl-8 pr-3 py-1.5 text-xs text-slate-800 bg-white placeholder-slate-400 focus:border-blue-600 outline-none">
+                    </div>
+
+                    <!-- Category Filter -->
+                    <select x-model="extCategory" class="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 bg-white font-semibold outline-none">
+                        <option value="all">All Categories</option>
+                        <option value="Cache &amp; Performance">Cache &amp; Performance</option>
+                        <option value="Database Drivers">Database Drivers</option>
+                        <option value="Image &amp; Media">Image &amp; Media</option>
+                        <option value="Core Protocols &amp; Data">Core Protocols</option>
+                        <option value="Internationalization &amp; Math">Internationalization &amp; Math</option>
+                        <option value="Advanced Networking">Advanced Networking</option>
+                    </select>
+
+                    <template x-if="extSearch || extCategory !== 'all'">
+                        <button type="button" @click="extSearch = ''; extCategory = 'all'" class="text-xs text-blue-600 hover:underline">
+                            Clear filters
+                        </button>
+                    </template>
+                </div>
+
+                <!-- Bulk Toggles -->
+                <div class="flex items-center gap-2 shrink-0">
+                    <button type="button" @click="setAllFilteredExtensions(activeExtPhp, true)" class="px-2.5 py-1 text-xs font-semibold rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 transition">
+                        Select All
+                    </button>
+                    <button type="button" @click="setAllFilteredExtensions(activeExtPhp, false)" class="px-2.5 py-1 text-xs font-semibold rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 transition">
+                        Deselect All
+                    </button>
+                </div>
+            </div>
+
+            <!-- Extensions Table with EasyApache Checkboxes -->
+            <div class="overflow-x-auto border border-slate-200 rounded-xl">
                 <table class="w-full text-left text-sm">
-                    <thead class="bg-slate-50/60 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    <thead class="bg-slate-50/80 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
                         <tr>
+                            <th class="px-4 py-3 w-12 text-center">Select</th>
                             <th class="px-4 py-3">Package / Extension</th>
                             <th class="px-4 py-3">Category</th>
                             <th class="px-4 py-3">Description</th>
-                            <th class="px-4 py-3">Status</th>
-                            <th class="px-4 py-3 text-right">Action</th>
+                            <th class="px-4 py-3">Current Status</th>
+                            <th class="px-4 py-3 text-right">Staged Action</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-100 font-sans text-xs">
-                        {% for ext in extensions %}
-                        <tr class="hover:bg-slate-50/60 transition">
-                            <td class="px-4 py-3.5 font-bold font-mono text-slate-900 whitespace-nowrap">
-                                <div class="flex items-center gap-2">
-                                    <i class="ti ti-puzzle text-blue-600"></i>
-                                    <span>{{ ext.pkg_name }}</span>
-                                </div>
-                            </td>
-                            <td class="px-4 py-3.5 whitespace-nowrap">
-                                <span class="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-700">
-                                    {{ ext.category }}
-                                </span>
-                            </td>
-                            <td class="px-4 py-3.5 text-slate-600">
-                                {{ ext.description }}
-                            </td>
-                            <td class="px-4 py-3.5 whitespace-nowrap">
-                                {% if ext.installed %}
-                                <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                    <i class="ti ti-check"></i> Installed
-                                </span>
-                                {% else %}
-                                <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-500">
-                                    Available
-                                </span>
-                                {% endif %}
-                            </td>
-                            <td class="px-4 py-3.5 text-right whitespace-nowrap">
-                                {% if ext.installed %}
-                                <form method="post" action="{% url 'admin_w3packager' %}" class="inline">
-                                    {% csrf_token %}
-                                    <input type="hidden" name="action" value="uninstall_extension">
-                                    <input type="hidden" name="php_version" value="{{ selected_php }}">
-                                    <input type="hidden" name="extension" value="{{ ext.name }}">
-                                    <button type="submit" class="px-3 py-1 rounded border border-red-200 text-red-600 hover:bg-red-50 text-xs font-semibold transition">
-                                        Remove
-                                    </button>
-                                </form>
-                                {% else %}
-                                <form method="post" action="{% url 'admin_w3packager' %}" class="inline">
-                                    {% csrf_token %}
-                                    <input type="hidden" name="action" value="install_extension">
-                                    <input type="hidden" name="php_version" value="{{ selected_php }}">
-                                    <input type="hidden" name="extension" value="{{ ext.name }}">
-                                    <button type="submit" class="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-bold transition shadow-xs">
-                                        Install
-                                    </button>
-                                </form>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        {% empty %}
-                        <tr>
-                            <td colspan="5" class="px-4 py-8 text-center text-slate-400">
-                                No extensions matched "{{ search_query }}".
-                            </td>
-                        </tr>
-                        {% endfor %}
+                        <template x-for="ext in filteredExtensions" :key="ext.pkg_name">
+                            <tr class="hover:bg-slate-50/60 transition"
+                                :class="extensions[ext.pkg_name] ? 'bg-blue-50/20' : ''">
+                                
+                                <!-- Checkbox Column -->
+                                <td class="px-4 py-3 text-center">
+                                    <input type="checkbox"
+                                           :id="'ext_' + ext.pkg_name"
+                                           :checked="extensions[ext.pkg_name]"
+                                           @change="extensions[ext.pkg_name] = $event.target.checked"
+                                           class="size-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer">
+                                </td>
+
+                                <td class="px-4 py-3 font-bold font-mono text-slate-900 whitespace-nowrap">
+                                    <label :for="'ext_' + ext.pkg_name" class="cursor-pointer flex items-center gap-2">
+                                        <i class="ti ti-puzzle text-blue-600"></i>
+                                        <span x-text="ext.pkg_name"></span>
+                                    </label>
+                                </td>
+
+                                <td class="px-4 py-3 whitespace-nowrap">
+                                    <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700" x-text="ext.category"></span>
+                                </td>
+
+                                <td class="px-4 py-3 text-slate-600" x-text="ext.description"></td>
+
+                                <td class="px-4 py-3 whitespace-nowrap">
+                                    <span x-show="installedExtensions.includes(ext.pkg_name)" class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-700">
+                                        Installed
+                                    </span>
+                                    <span x-show="!installedExtensions.includes(ext.pkg_name)" class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-400">
+                                        Available
+                                    </span>
+                                </td>
+
+                                <td class="px-4 py-3 text-right whitespace-nowrap">
+                                    <template x-if="extensions[ext.pkg_name] && !installedExtensions.includes(ext.pkg_name)">
+                                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                            <i class="ti ti-plus"></i> Will Install
+                                        </span>
+                                    </template>
+                                    <template x-if="!extensions[ext.pkg_name] && installedExtensions.includes(ext.pkg_name)">
+                                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                                            <i class="ti ti-minus"></i> Will Remove
+                                        </span>
+                                    </template>
+                                    <template x-if="extensions[ext.pkg_name] && installedExtensions.includes(ext.pkg_name)">
+                                        <span class="text-slate-400 text-[11px]">Kept</span>
+                                    </template>
+                                    <template x-if="!extensions[ext.pkg_name] && !installedExtensions.includes(ext.pkg_name)">
+                                        <span class="text-slate-300 text-[11px]">Excluded</span>
+                                    </template>
+                                </td>
+                            </tr>
+                        </template>
+
+                        <template x-if="filteredExtensions.length === 0">
+                            <tr>
+                                <td colspan="6" class="px-4 py-8 text-center text-slate-400">
+                                    No extensions found matching your filter criteria.
+                                </td>
+                            </tr>
+                        </template>
                     </tbody>
                 </table>
             </div>
@@ -295,55 +432,68 @@
     </div>
 
     <!-- ===================================================================== -->
-    <!-- STEP 3: WEB SERVER & REVERSE PROXY                                    -->
+    <!-- STEP 4: WEB & PROXY MODULES (EasyApache 4 Web Modules)                -->
     <!-- ===================================================================== -->
-    <div x-show="tab === 'webserver'" class="space-y-4" x-cloak>
+    <div x-show="step === 'webserver'" class="space-y-4" x-cloak>
         <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
             <div class="pb-3 border-b border-slate-100">
-                <h3 class="font-bold text-sm text-slate-900">Web Server &amp; Reverse Proxy</h3>
-                <p class="text-xs text-slate-500">Nginx web server and compression modules.</p>
+                <h3 class="font-bold text-sm text-slate-900">Web &amp; Proxy Modules</h3>
+                <p class="text-xs text-slate-500">Configure Nginx web server and reverse proxy modules.</p>
             </div>
 
             <div class="grid grid-cols-1 gap-3.5">
                 {% for w in web_components %}
-                <div class="p-4 rounded-xl border border-slate-200 bg-white flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div class="p-4 rounded-xl border transition flex flex-col md:flex-row md:items-center justify-between gap-4"
+                     :class="web['{{ w.key }}'] ? 'border-blue-300 bg-blue-50/20' : 'border-slate-200 bg-slate-50/40'">
+                    
                     <div class="flex items-start sm:items-center gap-3.5">
+                        <div class="flex items-center h-full pt-1 sm:pt-0">
+                            {% if w.required %}
+                            <input type="checkbox" checked disabled class="size-5 rounded text-blue-600 border-slate-300 bg-slate-200 cursor-not-allowed">
+                            {% else %}
+                            <input type="checkbox"
+                                   id="web_check_{{ w.key }}"
+                                   :checked="web['{{ w.key }}']"
+                                   @change="web['{{ w.key }}'] = $event.target.checked"
+                                   class="size-5 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer">
+                            {% endif %}
+                        </div>
+
                         <div class="size-11 rounded-xl bg-blue-50 text-blue-600 border border-blue-100 flex items-center justify-center text-xl shrink-0">
                             <i class="ti ti-server"></i>
                         </div>
+
                         <div class="space-y-1">
                             <div class="flex items-center gap-2">
-                                <h4 class="font-bold text-sm text-slate-900">{{ w.name }}</h4>
+                                <label for="web_check_{{ w.key }}" class="font-bold text-sm text-slate-900 cursor-pointer">
+                                    {{ w.name }}
+                                </label>
                                 <code class="font-mono text-[11px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded">{{ w.pkg_name }}</code>
+
                                 {% if w.installed %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                    <i class="ti ti-check"></i> Installed
-                                </span>
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600">Installed</span>
                                 {% else %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-500">
-                                    Not Installed
-                                </span>
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-200/60 text-slate-500">Available</span>
                                 {% endif %}
+
+                                <template x-if="web['{{ w.key }}'] && !installedWeb.includes('{{ w.key }}')">
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                        <i class="ti ti-plus"></i> Will Install
+                                    </span>
+                                </template>
+                                <template x-if="!web['{{ w.key }}'] && installedWeb.includes('{{ w.key }}')">
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                                        <i class="ti ti-minus"></i> Will Remove
+                                    </span>
+                                </template>
                             </div>
                             <p class="text-xs text-slate-500">{{ w.description }}</p>
                         </div>
                     </div>
 
-                    <div class="shrink-0">
-                        {% if w.installed %}
-                        <span class="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 font-bold text-xs">
-                            <i class="ti ti-circle-check"></i> Active
-                        </span>
-                        {% else %}
-                        <form method="post" action="{% url 'admin_w3packager' %}">
-                            {% csrf_token %}
-                            <input type="hidden" name="action" value="install_component">
-                            <input type="hidden" name="component" value="{{ w.key }}">
-                            <input type="hidden" name="return_tab" value="webserver">
-                            <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition shadow-xs flex items-center gap-1.5">
-                                <i class="ti ti-download text-sm"></i> Install Component
-                            </button>
-                        </form>
+                    <div class="shrink-0 text-xs font-semibold">
+                        {% if w.required %}
+                        <span class="text-blue-600 bg-blue-50 border border-blue-200 px-2.5 py-1 rounded-lg">Core Engine (Required)</span>
                         {% endif %}
                     </div>
                 </div>
@@ -353,19 +503,29 @@
     </div>
 
     <!-- ===================================================================== -->
-    <!-- STEP 4: CLI TOOLS & EXTRA RUNTIMES (Node.js, Composer, WP-CLI, Redis) -->
+    <!-- STEP 5: ADDITIONAL PACKAGES & CLI TOOLS (EasyApache 4 Packages)       -->
     <!-- ===================================================================== -->
-    <div x-show="tab === 'cli'" class="space-y-4" x-cloak>
+    <div x-show="step === 'cli'" class="space-y-4" x-cloak>
         <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
             <div class="pb-3 border-b border-slate-100">
                 <h3 class="font-bold text-sm text-slate-900">CLI Tools &amp; Extra Runtimes</h3>
-                <p class="text-xs text-slate-500">Developer tools and caching daemons.</p>
+                <p class="text-xs text-slate-500">Select developer packages, command-line tooling, and background caching services.</p>
             </div>
 
             <div class="grid grid-cols-1 gap-3.5">
                 {% for c in cli_runtimes %}
-                <div class="p-4 rounded-xl border border-slate-200 bg-white flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div class="p-4 rounded-xl border transition flex flex-col md:flex-row md:items-center justify-between gap-4"
+                     :class="cli['{{ c.key }}'] ? 'border-purple-300 bg-purple-50/20' : 'border-slate-200 bg-slate-50/40'">
+                    
                     <div class="flex items-start sm:items-center gap-3.5">
+                        <div class="flex items-center h-full pt-1 sm:pt-0">
+                            <input type="checkbox"
+                                   id="cli_check_{{ c.key }}"
+                                   :checked="cli['{{ c.key }}']"
+                                   @change="cli['{{ c.key }}'] = $event.target.checked"
+                                   class="size-5 rounded text-purple-600 focus:ring-purple-500 border-slate-300 cursor-pointer">
+                        </div>
+
                         <div class="size-11 rounded-xl bg-purple-50 text-purple-600 border border-purple-100 flex items-center justify-center text-xl shrink-0">
                             {% if c.key == 'nodejs' %}
                             <i class="ti ti-brand-nodejs"></i>
@@ -377,39 +537,38 @@
                             <i class="ti ti-database"></i>
                             {% endif %}
                         </div>
+
                         <div class="space-y-1">
                             <div class="flex items-center gap-2">
-                                <h4 class="font-bold text-sm text-slate-900">{{ c.name }}</h4>
+                                <label for="cli_check_{{ c.key }}" class="font-bold text-sm text-slate-900 cursor-pointer">
+                                    {{ c.name }}
+                                </label>
+
                                 {% if c.installed %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                    <i class="ti ti-check"></i> {{ c.version_str }}
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700">
+                                    {{ c.version_str }}
                                 </span>
                                 {% else %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-500">
-                                    Not Installed
-                                </span>
+                                <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-200/60 text-slate-500">Available</span>
                                 {% endif %}
+
+                                <template x-if="cli['{{ c.key }}'] && !installedCli.includes('{{ c.key }}')">
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                        <i class="ti ti-plus"></i> Will Install
+                                    </span>
+                                </template>
+                                <template x-if="!cli['{{ c.key }}'] && installedCli.includes('{{ c.key }}')">
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                                        <i class="ti ti-minus"></i> Will Remove
+                                    </span>
+                                </template>
                             </div>
                             <p class="text-xs text-slate-500">{{ c.description }}</p>
                         </div>
                     </div>
 
-                    <div class="shrink-0">
-                        {% if c.installed %}
-                        <span class="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 font-bold text-xs">
-                            <i class="ti ti-circle-check"></i> Installed & Ready
-                        </span>
-                        {% else %}
-                        <form method="post" action="{% url 'admin_w3packager' %}">
-                            {% csrf_token %}
-                            <input type="hidden" name="action" value="install_component">
-                            <input type="hidden" name="component" value="{{ c.key }}">
-                            <input type="hidden" name="return_tab" value="cli">
-                            <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition shadow-xs flex items-center gap-1.5">
-                                <i class="ti ti-download text-sm"></i> Install {{ c.key }}
-                            </button>
-                        </form>
-                        {% endif %}
+                    <div class="shrink-0 text-xs text-slate-400 font-mono">
+                        {{ c.pkg_name }}
                     </div>
                 </div>
                 {% endfor %}
@@ -418,86 +577,494 @@
     </div>
 
     <!-- ===================================================================== -->
-    <!-- STEP 5: REVIEW & STACK PROFILES (EasyApache 4 Profiles)                -->
+    <!-- STEP 6: REVIEW & PROVISION (EasyApache 4 Review & Apply)              -->
     <!-- ===================================================================== -->
-    <div x-show="tab === 'review'" class="space-y-4" x-cloak>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <!-- Current Server Stack Summary -->
-            <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
-                <div class="flex items-center gap-3 pb-3 border-b border-slate-100">
-                    <div class="size-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center text-lg">
-                        <i class="ti ti-clipboard-list"></i>
+    <div x-show="step === 'review'" class="space-y-5" x-cloak>
+        
+        <!-- Summary Stats Banner -->
+        <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+                <h3 class="font-bold text-base text-slate-900 flex items-center gap-2">
+                    <i class="ti ti-clipboard-check text-blue-600"></i>
+                    Review Package Selections
+                </h3>
+                <p class="text-xs text-slate-500 mt-0.5">Review the calculated installation and removal plan before applying changes to this server.</p>
+            </div>
+
+            <div class="flex items-center gap-2 text-xs font-bold">
+                <span class="px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1.5">
+                    <i class="ti ti-plus font-bold"></i>
+                    <span x-text="toInstallList.length + ' to install'"></span>
+                </span>
+                <span class="px-3 py-1.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 flex items-center gap-1.5">
+                    <i class="ti ti-minus font-bold"></i>
+                    <span x-text="toUninstallList.length + ' to remove'"></span>
+                </span>
+                <span class="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 border border-slate-200 flex items-center gap-1.5">
+                    <i class="ti ti-check"></i>
+                    <span x-text="keptList.length + ' unchanged'"></span>
+                </span>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+            <!-- Left 2 Cols: Staged Diff Lists -->
+            <div class="lg:col-span-2 space-y-4">
+                
+                <!-- 1. Packages to Install -->
+                <div class="bg-white rounded-xl border border-emerald-200/80 p-5 shadow-xs space-y-3">
+                    <div class="flex items-center justify-between pb-3 border-b border-emerald-100">
+                        <h4 class="font-bold text-sm text-emerald-800 flex items-center gap-2">
+                            <i class="ti ti-square-plus text-base text-emerald-600"></i>
+                            Packages to Install
+                        </h4>
+                        <span class="px-2 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 font-mono" x-text="toInstallList.length"></span>
                     </div>
-                    <div>
-                        <h4 class="font-bold text-sm text-slate-900">Current Server Stack Summary</h4>
-                        <p class="text-xs text-slate-500">Currently active runtimes, sockets, and web proxy</p>
+
+                    <div class="space-y-2">
+                        <template x-for="item in toInstallList" :key="item.key">
+                            <div class="p-2.5 rounded-lg bg-emerald-50/60 border border-emerald-200/70 flex items-center justify-between text-xs">
+                                <div class="flex items-center gap-2">
+                                    <i class="ti ti-circle-plus text-emerald-600 text-sm"></i>
+                                    <span class="font-bold text-emerald-950 font-mono" x-text="item.name"></span>
+                                </div>
+                                <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-100/80 text-emerald-800" x-text="item.type"></span>
+                            </div>
+                        </template>
+
+                        <template x-if="toInstallList.length === 0">
+                            <p class="text-xs text-slate-400 italic py-2">No new packages staged for installation.</p>
+                        </template>
                     </div>
                 </div>
 
-                <div class="space-y-2.5 text-xs">
-                    <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50">
-                        <span class="font-semibold text-slate-600">Host OS Environment:</span>
-                        <span class="font-bold text-slate-800">{{ os_info.pretty_name }} ({{ os_info.codename }})</span>
+                <!-- 2. Packages to Remove -->
+                <div class="bg-white rounded-xl border border-rose-200/80 p-5 shadow-xs space-y-3">
+                    <div class="flex items-center justify-between pb-3 border-b border-rose-100">
+                        <h4 class="font-bold text-sm text-rose-800 flex items-center gap-2">
+                            <i class="ti ti-square-minus text-base text-rose-600"></i>
+                            Packages to Remove
+                        </h4>
+                        <span class="px-2 py-0.5 rounded-full text-xs font-bold bg-rose-100 text-rose-800 font-mono" x-text="toUninstallList.length"></span>
                     </div>
-                    <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50">
-                        <span class="font-semibold text-slate-600">Catalog Filter:</span>
-                        <span class="font-bold text-emerald-700 flex items-center gap-1"><i class="ti ti-shield-check"></i> OS-Supported Only</span>
+
+                    <div class="space-y-2">
+                        <template x-for="item in toUninstallList" :key="item.key">
+                            <div class="p-2.5 rounded-lg bg-rose-50/60 border border-rose-200/70 flex items-center justify-between text-xs">
+                                <div class="flex items-center gap-2">
+                                    <i class="ti ti-circle-minus text-rose-600 text-sm"></i>
+                                    <span class="font-bold text-rose-950 font-mono" x-text="item.name"></span>
+                                </div>
+                                <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-100/80 text-rose-800" x-text="item.type"></span>
+                            </div>
+                        </template>
+
+                        <template x-if="toUninstallList.length === 0">
+                            <p class="text-xs text-slate-400 italic py-2">No currently installed packages marked for removal.</p>
+                        </template>
                     </div>
-                    <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50">
-                        <span class="font-semibold text-slate-600">Default PHP Runtime:</span>
-                        <span class="font-bold font-mono text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">PHP {{ default_php }}</span>
-                    </div>
-                    <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50">
-                        <span class="font-semibold text-slate-600">Installed PHP Stacks:</span>
-                        <div class="flex items-center gap-1">
-                            {% for v in installed_versions %}
-                            <span class="font-bold font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">{{ v }}</span>
-                            {% empty %}
-                            <span class="text-slate-400">None</span>
-                            {% endfor %}
+                </div>
+
+                <!-- 3. Packages to Keep (Collapsible) -->
+                <div x-data="{ openKept: false }" class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-3">
+                    <button type="button" @click="openKept = !openKept" class="w-full flex items-center justify-between text-left">
+                        <h4 class="font-bold text-sm text-slate-700 flex items-center gap-2">
+                            <i class="ti ti-check text-slate-500"></i>
+                            Unchanged Packages
+                        </h4>
+                        <div class="flex items-center gap-2">
+                            <span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 font-mono" x-text="keptList.length"></span>
+                            <i class="ti text-xs text-slate-400" :class="openKept ? 'ti-chevron-up' : 'ti-chevron-down'"></i>
                         </div>
-                    </div>
-                    <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50">
-                        <span class="font-semibold text-slate-600">PPA Upstream Repository:</span>
-                        {% if ppa_enabled %}
-                        <span class="font-bold text-emerald-700 flex items-center gap-1"><i class="ti ti-circle-check"></i> Enabled</span>
-                        {% else %}
-                        <span class="font-bold text-amber-700 flex items-center gap-1"><i class="ti ti-alert-triangle"></i> Not Configured</span>
-                        {% endif %}
-                    </div>
-                    <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50">
-                        <span class="font-semibold text-slate-600">Reverse Proxy & Web Server:</span>
-                        <span class="font-bold text-slate-800">Nginx (Event-Driven)</span>
+                    </button>
+
+                    <div x-show="openKept" class="space-y-2 pt-2 border-t border-slate-100">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <template x-for="item in keptList" :key="item.key">
+                                <div class="p-2 rounded bg-slate-50 border border-slate-200/60 flex items-center justify-between text-xs">
+                                    <span class="font-mono text-slate-700" x-text="item.name"></span>
+                                    <span class="text-[10px] text-slate-400" x-text="item.type"></span>
+                                </div>
+                            </template>
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Recommended Stack Profiles -->
-            <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
-                <div class="flex items-center gap-3 pb-3 border-b border-slate-100">
-                    <div class="size-9 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center text-lg">
-                        <i class="ti ti-sparkles"></i>
-                    </div>
-                    <div>
-                        <h4 class="font-bold text-sm text-slate-900">Recommended Stacks</h4>
-                        <p class="text-xs text-slate-500">Popular full-stack configurations.</p>
-                    </div>
-                </div>
+            <!-- Right Col: Provision Form & Actions -->
+            <div class="space-y-4">
+                <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
+                    <h4 class="font-bold text-sm text-slate-900 flex items-center gap-2">
+                        <i class="ti ti-tool text-blue-600"></i>
+                        Apply Configuration
+                    </h4>
+                    <p class="text-xs text-slate-500">Executing provision will invoke APT batch transactions and safely reload Nginx and PHP FastCGI daemons.</p>
 
-                <div class="space-y-3">
-                    {% for prof in recommended_profiles %}
-                    <div class="p-3 rounded-lg border border-slate-200 bg-slate-50/50 space-y-1.5">
-                        <div class="flex items-center justify-between">
-                            <span class="font-bold text-xs text-slate-900">{{ prof.name }}</span>
-                            <span class="text-[10px] font-bold {{ prof.badge_class }} px-2 py-0.5 rounded border">{{ prof.badge }}</span>
+                    <!-- Profile Saving Form -->
+                    <form method="post" action="{% url 'admin_w3packager' %}" @submit="prepareSubmit($event)" class="space-y-4">
+                        {% csrf_token %}
+                        <input type="hidden" name="action" value="provision">
+                        
+                        <!-- Dynamic Submission Inputs Container -->
+                        <div id="provision-inputs"></div>
+
+                        <div class="space-y-1.5">
+                            <label class="block text-xs font-bold text-slate-700">Save as Custom Profile (Optional)</label>
+                            <input type="text" name="save_profile_name" x-model="customProfileName" placeholder="e.g. My Agency Production Stack"
+                                   class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-800 placeholder-slate-400 focus:border-blue-600 outline-none">
+                            <p class="text-[11px] text-slate-400">If specified, this selection will be saved in your Profiles list for future re-use.</p>
                         </div>
-                        <p class="text-[11px] text-slate-500">{{ prof.description }}</p>
-                    </div>
-                    {% endfor %}
+
+                        <button type="submit"
+                                class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition shadow-sm flex items-center justify-center gap-2 cursor-pointer">
+                            <i class="ti ti-player-play-filled text-sm"></i>
+                            <span>Provision Stack / Apply Changes</span>
+                        </button>
+                    </form>
+
+                    <button type="button" @click="step = 'runtimes'" class="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold transition text-center">
+                        Back to Customize
+                    </button>
                 </div>
             </div>
         </div>
     </div>
 
+    <!-- Persistent Bottom Step Navigation Bar (Steps 2 to 5) -->
+    <div x-show="step !== 'profiles' && step !== 'review'"
+         class="sticky bottom-4 z-20 bg-white/95 backdrop-blur-md rounded-xl border border-slate-200 p-3.5 shadow-md flex items-center justify-between gap-3 text-xs">
+        
+        <button type="button" @click="previousStep()" class="px-4 py-2 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 font-bold transition flex items-center gap-1.5">
+            <i class="ti ti-arrow-left"></i>
+            <span>Back</span>
+        </button>
+
+        <div class="flex items-center gap-2">
+            <span class="text-slate-500 hidden sm:inline">Current step:</span>
+            <span class="font-bold text-slate-800" x-text="stepTitle"></span>
+            <template x-if="changesCount > 0">
+                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800" x-text="changesCount + ' changes staged'"></span>
+            </template>
+        </div>
+
+        <div class="flex items-center gap-2">
+            <button type="button" @click="nextStep()" class="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold transition flex items-center gap-1.5 shadow-xs">
+                <span>Next</span>
+                <i class="ti ti-arrow-right"></i>
+            </button>
+            <button type="button" @click="step = 'review'" class="px-3.5 py-2 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold transition flex items-center gap-1">
+                <span>Review</span>
+                <i class="ti ti-chevron-right"></i>
+            </button>
+        </div>
+    </div>
+
 </div>
+
+<script>
+function w3packagerApp() {
+    const initData = JSON.parse(document.getElementById('packager-init-data').textContent);
+
+    // Initial runtimes map
+    const runtimesState = {};
+    initData.supported_runtimes.forEach(v => {
+        runtimesState[v] = initData.installed_runtimes.includes(v) || v === initData.default_php;
+    });
+
+    // Initial extensions map
+    const extensionsState = {};
+    initData.all_extensions.forEach(ext => {
+        extensionsState[ext.pkg_name] = initData.installed_extensions.includes(ext.pkg_name);
+    });
+
+    // Initial web components map
+    const webState = {};
+    initData.web_components.forEach(w => {
+        webState[w.key] = initData.installed_web.includes(w.key) || w.required;
+    });
+
+    // Initial CLI tools map
+    const cliState = {};
+    initData.cli_components.forEach(c => {
+        cliState[c.key] = initData.installed_cli.includes(c.key);
+    });
+
+    return {
+        step: '{{ active_tab|default:"profiles" }}',
+        defaultPhp: initData.default_php,
+        supportedRuntimes: initData.supported_runtimes,
+        installedRuntimes: initData.installed_runtimes,
+        allExtensions: initData.all_extensions,
+        installedExtensions: initData.installed_extensions,
+        installedWeb: initData.installed_web,
+        installedCli: initData.installed_cli,
+        profiles: initData.profiles,
+
+        activeExtPhp: initData.default_php,
+        extSearch: '{{ search_query|default:"" }}',
+        extCategory: 'all',
+        customProfileName: '',
+        activeProfileName: 'Currently Installed Packages',
+
+        runtimes: runtimesState,
+        extensions: extensionsState,
+        web: webState,
+        cli: cliState,
+
+        // Step titles
+        get stepTitle() {
+            switch(this.step) {
+                case 'profiles': return '1. Profiles';
+                case 'runtimes': return '2. PHP Runtimes';
+                case 'extensions': return '3. PHP Extensions';
+                case 'webserver': return '4. Web & Proxy Modules';
+                case 'cli': return '5. CLI Tools & Extra Runtimes';
+                case 'review': return '6. Review & Apply';
+                default: return '';
+            }
+        },
+
+        // Navigation
+        nextStep() {
+            const steps = ['profiles', 'runtimes', 'extensions', 'webserver', 'cli', 'review'];
+            const idx = steps.indexOf(this.step);
+            if (idx >= 0 && idx < steps.length - 1) {
+                this.step = steps[idx + 1];
+            }
+        },
+
+        previousStep() {
+            const steps = ['profiles', 'runtimes', 'extensions', 'webserver', 'cli', 'review'];
+            const idx = steps.indexOf(this.step);
+            if (idx > 0) {
+                this.step = steps[idx - 1];
+            }
+        },
+
+        // Profile application
+        applyProfile(prof) {
+            this.activeProfileName = prof.name;
+
+            // 1. Runtimes
+            Object.keys(this.runtimes).forEach(v => {
+                this.runtimes[v] = prof.runtimes.includes(v) || v === this.defaultPhp;
+            });
+
+            // 2. Extensions
+            this.allExtensions.forEach(ext => {
+                const parts = ext.pkg_name.split('-');
+                const ver = parts[0].replace('php', '');
+                const extName = parts.slice(1).join('-');
+                
+                // If extension is in profile's target list and the runtime is selected
+                if (this.runtimes[ver] && prof.extensions.includes(extName)) {
+                    this.extensions[ext.pkg_name] = true;
+                } else if (!prof.extensions.includes(extName)) {
+                    this.extensions[ext.pkg_name] = false;
+                }
+            });
+
+            // 3. Web
+            Object.keys(this.web).forEach(k => {
+                this.web[k] = prof.web.includes(k) || k === 'nginx';
+            });
+
+            // 4. CLI
+            Object.keys(this.cli).forEach(k => {
+                this.cli[k] = prof.cli.includes(k);
+            });
+
+            // Advance to runtimes
+            this.step = 'runtimes';
+        },
+
+        toggleRuntime(v, isChecked) {
+            if (v === this.defaultPhp) return;
+            this.runtimes[v] = isChecked;
+            // If unchecked, deselect its extensions
+            if (!isChecked) {
+                this.allExtensions.forEach(ext => {
+                    if (ext.pkg_name.startsWith(`php${v}-`)) {
+                        this.extensions[ext.pkg_name] = false;
+                    }
+                });
+            }
+        },
+
+        get selectedRuntimesCount() {
+            return Object.values(this.runtimes).filter(Boolean).length;
+        },
+
+        get selectedExtensionsCount() {
+            return Object.values(this.extensions).filter(Boolean).length;
+        },
+
+        // Filtered extensions for current activeExtPhp tab
+        get filteredExtensions() {
+            return this.allExtensions.filter(e => {
+                if (e.php_version !== this.activeExtPhp) return false;
+                if (this.extCategory !== 'all' && e.category !== this.extCategory) return false;
+                if (this.extSearch) {
+                    const q = this.extSearch.toLowerCase();
+                    if (!e.name.toLowerCase().includes(q) && !e.category.toLowerCase().includes(q) && !e.description.toLowerCase().includes(q)) {
+                        return false;
+                    }
+                }
+                return true;
+            });
+        },
+
+        setAllFilteredExtensions(ver, val) {
+            this.filteredExtensions.forEach(ext => {
+                this.extensions[ext.pkg_name] = val;
+            });
+        },
+
+        // Diff lists
+        get toInstallList() {
+            const list = [];
+            // Runtimes
+            Object.keys(this.runtimes).forEach(v => {
+                if (this.runtimes[v] && !this.installedRuntimes.includes(v)) {
+                    list.push({ type: 'PHP Runtime', name: `PHP ${v} (php${v}-fpm)`, key: `rt_${v}` });
+                }
+            });
+            // Extensions
+            Object.keys(this.extensions).forEach(pkg => {
+                if (this.extensions[pkg] && !this.installedExtensions.includes(pkg)) {
+                    list.push({ type: 'PHP Extension', name: pkg, key: `ext_${pkg}` });
+                }
+            });
+            // Web
+            Object.keys(this.web).forEach(k => {
+                if (this.web[k] && !this.installedWeb.includes(k)) {
+                    list.push({ type: 'Web Module', name: k, key: `web_${k}` });
+                }
+            });
+            // CLI
+            Object.keys(this.cli).forEach(k => {
+                if (this.cli[k] && !this.installedCli.includes(k)) {
+                    list.push({ type: 'CLI Tool', name: k, key: `cli_${k}` });
+                }
+            });
+            return list;
+        },
+
+        get toUninstallList() {
+            const list = [];
+            // Runtimes
+            this.installedRuntimes.forEach(v => {
+                if (!this.runtimes[v] && v !== this.defaultPhp) {
+                    list.push({ type: 'PHP Runtime', name: `PHP ${v} (php${v}-fpm)`, key: `rt_rm_${v}` });
+                }
+            });
+            // Extensions
+            this.installedExtensions.forEach(pkg => {
+                if (!this.extensions[pkg]) {
+                    list.push({ type: 'PHP Extension', name: pkg, key: `ext_rm_${pkg}` });
+                }
+            });
+            // Web
+            this.installedWeb.forEach(k => {
+                if (!this.web[k] && k !== 'nginx') {
+                    list.push({ type: 'Web Module', name: k, key: `web_rm_${k}` });
+                }
+            });
+            // CLI
+            this.installedCli.forEach(k => {
+                if (!this.cli[k]) {
+                    list.push({ type: 'CLI Tool', name: k, key: `cli_rm_${k}` });
+                }
+            });
+            return list;
+        },
+
+        get keptList() {
+            const list = [];
+            this.installedRuntimes.forEach(v => {
+                if (this.runtimes[v]) list.push({ type: 'PHP Runtime', name: `PHP ${v}`, key: `k_rt_${v}` });
+            });
+            this.installedExtensions.forEach(pkg => {
+                if (this.extensions[pkg]) list.push({ type: 'PHP Extension', name: pkg, key: `k_ext_${pkg}` });
+            });
+            this.installedWeb.forEach(k => {
+                if (this.web[k]) list.push({ type: 'Web Module', name: k, key: `k_web_${k}` });
+            });
+            this.installedCli.forEach(k => {
+                if (this.cli[k]) list.push({ type: 'CLI Tool', name: k, key: `k_cli_${k}` });
+            });
+            return list;
+        },
+
+        get changesCount() {
+            return this.toInstallList.length + this.toUninstallList.length;
+        },
+
+        prepareSubmit(e) {
+            const count = this.changesCount;
+            if (count === 0 && !this.customProfileName) {
+                if (!confirm('No package changes are staged. Do you wish to re-apply the current stack?')) {
+                    e.preventDefault();
+                    return false;
+                }
+            } else {
+                const msg = `Are you sure you want to provision this configuration?\n\n` +
+                            `• ${this.toInstallList.length} package(s) will be INSTALLED\n` +
+                            `• ${this.toUninstallList.length} package(s) will be REMOVED\n\n` +
+                            `Nginx and active PHP-FPM services will be reloaded.`;
+                if (!confirm(msg)) {
+                    e.preventDefault();
+                    return false;
+                }
+            }
+
+            // Populate form inputs
+            const container = document.getElementById('provision-inputs');
+            container.innerHTML = '';
+
+            Object.keys(this.runtimes).forEach(v => {
+                if (this.runtimes[v]) {
+                    const inp = document.createElement('input');
+                    inp.type = 'hidden';
+                    inp.name = 'selected_runtimes';
+                    inp.value = v;
+                    container.appendChild(inp);
+                }
+            });
+
+            Object.keys(this.extensions).forEach(pkg => {
+                if (this.extensions[pkg]) {
+                    const inp = document.createElement('input');
+                    inp.type = 'hidden';
+                    inp.name = 'selected_extensions';
+                    inp.value = pkg;
+                    container.appendChild(inp);
+                }
+            });
+
+            Object.keys(this.web).forEach(k => {
+                if (this.web[k]) {
+                    const inp = document.createElement('input');
+                    inp.type = 'hidden';
+                    inp.name = 'selected_web';
+                    inp.value = k;
+                    container.appendChild(inp);
+                }
+            });
+
+            Object.keys(this.cli).forEach(k => {
+                if (this.cli[k]) {
+                    const inp = document.createElement('input');
+                    inp.type = 'hidden';
+                    inp.name = 'selected_cli';
+                    inp.value = k;
+                    container.appendChild(inp);
+                }
+            });
+
+            return true;
+        }
+    };
+}
+</script>
 {% endblock %}

@@ -4,6 +4,7 @@ Complete administration interface implementations.
 """
 import os
 import re
+import json
 import shutil
 import psutil
 import platform
@@ -1982,8 +1983,13 @@ def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
     candidate_web_pkgs = ['nginx', 'libnginx-mod-http-brotli-filter', 'libnginx-mod-brotli', 'python3-certbot-nginx', 'certbot']
     candidate_cli_pkgs = ['nodejs', 'npm', 'composer', 'wp-cli', 'redis-server']
 
-    # Query all candidate packages in one fast APT batch (0.04s)
-    all_check_pkgs = candidate_runtimes + [f"php{selected_php}-{e['name']}" for e in extension_defs] + candidate_web_pkgs + candidate_cli_pkgs
+    # Query all candidate packages in one fast APT batch (0.2s)
+    all_check_pkgs = (
+        candidate_runtimes +
+        [f"php{r['version']}-{e['name']}" for r in all_runtime_defs for e in extension_defs] +
+        candidate_web_pkgs +
+        candidate_cli_pkgs
+    )
     available_apt_pkgs = get_available_apt_packages(all_check_pkgs)
 
     # 1. Filter PHP Runtimes strictly to OS-supported versions
@@ -2017,36 +2023,39 @@ def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
                 'supported': True,
             })
 
+    supported_versions = [r['version'] for r in runtimes]
+
     # Validate selected_php
-    if selected_php not in installed_versions:
-        selected_php = default_php if default_php in installed_versions else (installed_versions[0] if installed_versions else '8.3')
+    if selected_php not in supported_versions:
+        selected_php = default_php if default_php in supported_versions else (supported_versions[0] if supported_versions else '8.3')
 
-    # 2. Filter PHP Extensions strictly to OS-supported modules for selected_php
-    extensions = []
-    for ext in extension_defs:
-        pkg = f"php{selected_php}-{ext['name']}"
-        mods_avail = Path(f"/etc/php/{selected_php}/mods-available/{ext['name']}.ini")
-        is_inst = (pkg in installed_pkgs) or mods_avail.exists()
-        is_supported_by_os = is_inst or (pkg in available_apt_pkgs)
+    # 2. Build extensions for all supported runtimes
+    all_extensions = []
+    for v in supported_versions:
+        for ext in extension_defs:
+            pkg = f"php{v}-{ext['name']}"
+            mods_avail = Path(f"/etc/php/{v}/mods-available/{ext['name']}.ini")
+            is_inst = (pkg in installed_pkgs) or mods_avail.exists()
+            is_supported_by_os = is_inst or (pkg in available_apt_pkgs)
 
-        # STRICT FILTER: Only show modules supported by the OS version
-        if not is_supported_by_os:
-            continue
-
-        # Search filter
-        if search_query:
-            q = search_query.lower()
-            if q not in ext['name'].lower() and q not in ext['category'].lower() and q not in ext['desc'].lower():
+            if not is_supported_by_os:
                 continue
 
-        extensions.append({
-            'name': ext['name'],
-            'pkg_name': pkg,
-            'category': ext['category'],
-            'description': ext['desc'],
-            'installed': is_inst,
-            'supported': True,
-        })
+            all_extensions.append({
+                'php_version': v,
+                'name': ext['name'],
+                'pkg_name': pkg,
+                'category': ext['category'],
+                'description': ext['desc'],
+                'installed': is_inst,
+                'supported': True,
+            })
+
+    # Filter extensions for selected_php and search query for tab backward compatibility
+    extensions = [e for e in all_extensions if e['php_version'] == selected_php]
+    if search_query:
+        q = search_query.lower()
+        extensions = [e for e in extensions if q in e['name'].lower() or q in e['category'].lower() or q in e['description'].lower()]
 
     # 3. Filter Web Server Components strictly to OS-supported packages
     web_components = []
@@ -2058,10 +2067,11 @@ def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
             'name': 'Nginx Reverse Proxy & HTTP Server',
             'pkg_name': 'nginx',
             'installed': ('nginx' in installed_pkgs) or bool(shutil.which('nginx')),
+            'required': True,
             'description': 'High-performance event-driven HTTP reverse proxy, virtualhost engine, and static file server.',
         })
 
-    # Brotli (check OS-supported package name: noble uses libnginx-mod-http-brotli-filter)
+    # Brotli
     brotli_pkg = None
     if ('libnginx-mod-http-brotli-filter' in available_apt_pkgs) or ('libnginx-mod-http-brotli-filter' in installed_pkgs):
         brotli_pkg = 'libnginx-mod-http-brotli-filter'
@@ -2075,6 +2085,7 @@ def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
             'name': 'Nginx Brotli Compression Module',
             'pkg_name': brotli_pkg,
             'installed': is_brotli_inst,
+            'required': False,
             'description': 'Google Brotli next-gen compression providing up to 25% better compression ratio than gzip.',
         })
 
@@ -2086,6 +2097,7 @@ def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
             'name': "Let's Encrypt SSL/TLS Automation (Certbot)",
             'pkg_name': certbot_pkg,
             'installed': (certbot_pkg in installed_pkgs) or bool(shutil.which('certbot')),
+            'required': False,
             'description': 'Automated SSL certificate issuance, domain verification, and 60-day renewal daemon.',
         })
 
@@ -2114,7 +2126,7 @@ def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
             'description': 'Standard dependency management tool for PHP applications, Laravel frameworks, and WordPress plugins.',
         })
 
-    # WP-CLI (only show if installed on system or available in APT)
+    # WP-CLI
     is_wp_inst = bool(shutil.which('wp')) or Path('/usr/local/bin/wp').exists()
     if is_wp_inst or ('wp-cli' in available_apt_pkgs):
         cli_runtimes.append({
@@ -2137,32 +2149,99 @@ def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
             'description': 'In-memory persistent key-value database used for WordPress Object Cache and Laravel queues.',
         })
 
-    # 5. Recommended Stack Profiles filtered by OS support
-    supported_versions = [r['version'] for r in runtimes]
-    recommended_profiles = []
-
+    # 5. EasyApache 4 Profiles
     wp_php = default_php if default_php in supported_versions else (supported_versions[0] if supported_versions else '8.3')
-    recommended_profiles.append({
-        'name': 'WordPress High-Performance Stack',
-        'badge': 'Recommended',
-        'badge_class': 'text-emerald-700 bg-emerald-50 border-emerald-200',
-        'description': f'PHP {wp_php} + OPcache + Redis Cache + Imagick + Nginx',
-    })
+    profiles = [
+        {
+            'id': 'current',
+            'name': 'Currently Installed Packages',
+            'badge': 'Active Baseline',
+            'badge_class': 'text-emerald-700 bg-emerald-50 border-emerald-200',
+            'description': 'The existing live packages and runtimes active on this server.',
+            'tags': [f'PHP {v}' for v in installed_versions] + ['Installed Modules'],
+            'runtimes': installed_versions,
+            'extensions': [e['name'] for e in all_extensions if e['installed']],
+            'web': [w['key'] for w in web_components if w['installed']],
+            'cli': [c['key'] for c in cli_runtimes if c['installed']],
+            'is_custom': False,
+        },
+        {
+            'id': 'wordpress',
+            'name': 'WordPress High-Performance',
+            'badge': 'Recommended',
+            'badge_class': 'text-blue-700 bg-blue-50 border-blue-200',
+            'description': 'Optimized for WordPress and WooCommerce with Redis Object Caching and Brotli.',
+            'tags': [f'PHP {wp_php}', 'Redis', 'OPcache', 'Imagick', 'Brotli', 'WP-CLI'],
+            'runtimes': [wp_php],
+            'extensions': ['opcache', 'redis', 'imagick', 'gd', 'mysql', 'curl', 'mbstring', 'xml', 'zip'],
+            'web': ['nginx', 'brotli', 'certbot'],
+            'cli': ['wp-cli', 'redis-server', 'composer'],
+            'is_custom': False,
+        },
+        {
+            'id': 'laravel',
+            'name': 'Laravel Full-Stack',
+            'badge': 'Modern',
+            'badge_class': 'text-indigo-700 bg-indigo-50 border-indigo-200',
+            'description': 'Full-stack Laravel profile with Redis Queue, Composer, and Node.js.',
+            'tags': [f'PHP {wp_php}', 'Redis Queue', 'Composer', 'Node.js', 'PostgreSQL/MySQL'],
+            'runtimes': [wp_php],
+            'extensions': ['opcache', 'redis', 'bcmath', 'gmp', 'mysql', 'pgsql', 'curl', 'mbstring', 'xml', 'zip'],
+            'web': ['nginx', 'brotli', 'certbot'],
+            'cli': ['nodejs', 'composer', 'redis-server'],
+            'is_custom': False,
+        },
+        {
+            'id': 'multiphp',
+            'name': 'Multi-PHP Hosting Stack',
+            'badge': 'Multi-PHP',
+            'badge_class': 'text-purple-700 bg-purple-50 border-purple-200',
+            'description': f'All supported PHP versions ({", ".join(supported_versions)}) provisioned for multi-tenant hosting.',
+            'tags': [f'PHP {v}' for v in supported_versions] + ['Standard Extensions', 'Composer'],
+            'runtimes': supported_versions,
+            'extensions': ['opcache', 'mysql', 'curl', 'mbstring', 'xml', 'zip', 'gd', 'intl'],
+            'web': ['nginx', 'brotli', 'certbot'],
+            'cli': ['composer'],
+            'is_custom': False,
+        },
+        {
+            'id': 'minimal',
+            'name': 'Minimal Core',
+            'badge': 'Lightweight',
+            'badge_class': 'text-slate-700 bg-slate-100 border-slate-200',
+            'description': f'Lean minimal profile with PHP {wp_php} and essential drivers only.',
+            'tags': [f'PHP {wp_php}', 'OPcache', 'cURL', 'MySQL'],
+            'runtimes': [wp_php],
+            'extensions': ['opcache', 'curl', 'mbstring', 'mysql'],
+            'web': ['nginx'],
+            'cli': [],
+            'is_custom': False,
+        },
+    ]
 
-    recommended_profiles.append({
-        'name': 'Laravel Full-Stack Profile',
-        'badge': 'Modern',
-        'badge_class': 'text-blue-700 bg-blue-50 border-blue-200',
-        'description': f'PHP {wp_php} + Redis Queue + Composer 2.x + Node.js LTS + Nginx',
-    })
+    # Load custom saved profiles
+    saved_raw = SystemSetting.get('w3packager_saved_profiles', '[]')
+    try:
+        custom_saved = json.loads(saved_raw)
+        if isinstance(custom_saved, list):
+            for c_prof in custom_saved:
+                c_prof['is_custom'] = True
+                profiles.append(c_prof)
+    except Exception:
+        pass
 
-    if '7.4' in supported_versions:
-        recommended_profiles.append({
-            'name': 'Legacy PHP 7.4 Compatibility Stack',
-            'badge': 'Legacy',
-            'badge_class': 'text-amber-700 bg-amber-50 border-amber-200',
-            'description': 'PHP 7.4 + MySQLnd + cURL + MBString for legacy applications',
-        })
+    packager_init = {
+        'default_php': default_php,
+        'supported_runtimes': supported_versions,
+        'installed_runtimes': installed_versions,
+        'all_extensions': all_extensions,
+        'installed_extensions': [e['pkg_name'] for e in all_extensions if e['installed']],
+        'web_components': [{'key': w['key'], 'name': w['name'], 'pkg_name': w['pkg_name'], 'installed': w['installed'], 'required': w.get('required', False)} for w in web_components],
+        'installed_web': [w['key'] for w in web_components if w['installed']],
+        'cli_components': [{'key': c['key'], 'name': c['name'], 'pkg_name': c['pkg_name'], 'installed': c['installed']} for c in cli_runtimes],
+        'installed_cli': [c['key'] for c in cli_runtimes if c['installed']],
+        'profiles': profiles,
+    }
 
     return {
         'os_info': os_info,
@@ -2173,17 +2252,20 @@ def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
         'runtimes': runtimes,
         'installed_versions': installed_versions,
         'extensions': extensions,
+        'all_extensions': all_extensions,
         'web_components': web_components,
         'cli_runtimes': cli_runtimes,
-        'recommended_profiles': recommended_profiles,
+        'profiles': profiles,
+        'recommended_profiles': profiles,
+        'packager_init_json': json.dumps(packager_init),
     }
 
 
 def admin_w3packager(request):
     """
     W3Packager — Software & Stack Provisioner (EasyApache 4 Parity).
-    Manages PHP runtimes, extensions, web server modules,
-    and CLI tools with real-time provisioning filtered strictly to OS-supported components.
+    Supports sequential steps, profiling, package selection checkboxes,
+    review diff calculation, and full stack provisioning.
     """
     default_php = SystemSetting.get('default_php', '8.3')
     os_info = get_os_info()
@@ -2206,6 +2288,173 @@ def admin_w3packager(request):
             else:
                 messages.error(request, f"Failed to disable repository: {out[:250]}")
             return redirect('/software/w3packager/?tab=runtimes')
+
+        elif action == 'provision':
+            selected_runtimes = request.POST.getlist('selected_runtimes')
+            selected_extensions = request.POST.getlist('selected_extensions')
+            selected_web = request.POST.getlist('selected_web')
+            selected_cli = request.POST.getlist('selected_cli')
+            save_profile_name = request.POST.get('save_profile_name', '').strip()
+
+            # Always ensure default_php and nginx are kept
+            if default_php not in selected_runtimes:
+                selected_runtimes.append(default_php)
+            if 'nginx' not in selected_web:
+                selected_web.append('nginx')
+
+            installed_runtimes = get_installed_php_versions()
+            installed_pkgs = get_installed_dpkg_packages()
+
+            # Check for domain locks on runtimes to be removed
+            runtimes_to_remove = [v for v in installed_runtimes if v not in selected_runtimes and v != default_php]
+            for v in runtimes_to_remove:
+                domain_count = Website.objects.filter(php_version=v).count()
+                if domain_count > 0:
+                    messages.error(request, f"Cannot remove PHP {v}: Currently used by {domain_count} domain(s). Change domain versions in MultiPHP Manager first.")
+                    return redirect('/software/w3packager/?tab=review')
+
+            apt_install_pkgs = []
+            apt_remove_pkgs = []
+
+            avail_brotli = get_available_apt_packages(['libnginx-mod-http-brotli-filter', 'libnginx-mod-brotli'])
+            brotli_pkg_name = 'libnginx-mod-http-brotli-filter' if 'libnginx-mod-http-brotli-filter' in avail_brotli else 'libnginx-mod-brotli'
+            certbot_pkg_name = 'python3-certbot-nginx'
+
+            web_pkg_map = {
+                'nginx': 'nginx',
+                'brotli': brotli_pkg_name,
+                'certbot': certbot_pkg_name,
+            }
+            cli_pkg_map = {
+                'nodejs': ['nodejs', 'npm'],
+                'composer': ['composer'],
+                'redis-server': ['redis-server'],
+            }
+
+            # 1. Runtimes to install
+            runtimes_to_install = [v for v in selected_runtimes if v not in installed_runtimes]
+            for v in runtimes_to_install:
+                apt_install_pkgs.extend([
+                    f'php{v}-fpm', f'php{v}-cli', f'php{v}-common',
+                    f'php{v}-opcache', f'php{v}-curl', f'php{v}-mbstring',
+                    f'php{v}-xml', f'php{v}-zip', f'php{v}-mysql'
+                ])
+
+            # 2. Extensions to install & remove
+            for ext_pkg in selected_extensions:
+                if ext_pkg not in installed_pkgs:
+                    apt_install_pkgs.append(ext_pkg)
+
+            catalog = get_w3packager_catalog()
+            all_known_ext_pkgs = [e['pkg_name'] for e in catalog['all_extensions']]
+            for ext_pkg in all_known_ext_pkgs:
+                if ext_pkg in installed_pkgs and ext_pkg not in selected_extensions:
+                    apt_remove_pkgs.append(ext_pkg)
+
+            # 3. Web components
+            for k, pkg in web_pkg_map.items():
+                if k in selected_web and pkg not in installed_pkgs:
+                    apt_install_pkgs.append(pkg)
+                elif k not in selected_web and pkg in installed_pkgs and k != 'nginx':
+                    apt_remove_pkgs.append(pkg)
+
+            # 4. CLI components
+            for k, pkgs in cli_pkg_map.items():
+                if k in selected_cli:
+                    for p in pkgs:
+                        if p not in installed_pkgs:
+                            apt_install_pkgs.append(p)
+                else:
+                    for p in pkgs:
+                        if p in installed_pkgs:
+                            apt_remove_pkgs.append(p)
+
+            # 5. Runtimes to remove
+            for v in runtimes_to_remove:
+                subprocess.run(['systemctl', 'stop', f'php{v}-fpm'], capture_output=True)
+                subprocess.run(['systemctl', 'disable', f'php{v}-fpm'], capture_output=True)
+                apt_remove_pkgs.append(f'php{v}-*')
+
+            # Deduplicate package lists
+            apt_install_pkgs = list(dict.fromkeys(apt_install_pkgs))
+            apt_remove_pkgs = list(dict.fromkeys(apt_remove_pkgs))
+
+            installed_count = len(apt_install_pkgs)
+            removed_count = len(apt_remove_pkgs)
+            err_msg = ""
+
+            # Execute removals first
+            if apt_remove_pkgs:
+                ok, out = _run_apt_transaction(['apt-get', 'remove', '-y', '--purge'] + apt_remove_pkgs)
+                if not ok:
+                    err_msg += f" Removal notice: {out[:150]}"
+
+            # Execute installations
+            if apt_install_pkgs:
+                ok, out = _run_apt_transaction(['apt-get', 'install', '-y'] + apt_install_pkgs)
+                if not ok:
+                    err_msg += f" Install error: {out[:200]}"
+
+            # Handle WP-CLI (PHAR)
+            if 'wp-cli' in selected_cli and not shutil.which('wp'):
+                cmd = "curl -s -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar && chmod +x wp-cli.phar && sudo -n mv wp-cli.phar /usr/local/bin/wp"
+                subprocess.run(cmd, shell=True, capture_output=True)
+                installed_count += 1
+            elif 'wp-cli' not in selected_cli and shutil.which('wp'):
+                subprocess.run("sudo -n rm -f /usr/local/bin/wp", shell=True, capture_output=True)
+                removed_count += 1
+
+            # Ensure runtimes have active daemons started
+            newly_installed = get_installed_php_versions()
+            for v in newly_installed:
+                fpm_svc = f'php{v}-fpm'
+                subprocess.run(['systemctl', 'enable', fpm_svc], capture_output=True)
+                subprocess.run(['systemctl', 'restart', fpm_svc], capture_output=True)
+
+            subprocess.run(['systemctl', 'reload', 'nginx'], capture_output=True)
+
+            # Save Profile if requested
+            if save_profile_name:
+                saved_raw = SystemSetting.get('w3packager_saved_profiles', '[]')
+                try:
+                    saved = json.loads(saved_raw)
+                except Exception:
+                    saved = []
+                profile_obj = {
+                    'id': f"custom_{re.sub(r'[^a-zA-Z0-9_]', '', save_profile_name.lower().replace(' ', '_'))}",
+                    'name': save_profile_name,
+                    'badge': 'Custom',
+                    'badge_class': 'text-purple-700 bg-purple-50 border-purple-200',
+                    'description': f"User profile: PHP {', '.join(selected_runtimes)} + {len(selected_extensions)} extensions",
+                    'tags': [f'PHP {v}' for v in selected_runtimes] + [f'{len(selected_extensions)} Extensions'],
+                    'runtimes': selected_runtimes,
+                    'extensions': [p.split('-', 1)[1] if '-' in p else p for p in selected_extensions],
+                    'web': selected_web,
+                    'cli': selected_cli,
+                    'is_custom': True,
+                }
+                saved = [p for p in saved if p.get('id') != profile_obj['id']]
+                saved.append(profile_obj)
+                SystemSetting.set('w3packager_saved_profiles', json.dumps(saved))
+
+            if err_msg:
+                messages.warning(request, f"Stack provisioned with warnings: {err_msg}")
+            else:
+                messages.success(request, f"Stack provisioned successfully! ({installed_count} packages installed, {removed_count} packages removed). Services reloaded.")
+
+            return redirect('/software/w3packager/?tab=review')
+
+        elif action == 'delete_profile':
+            prof_id = request.POST.get('profile_id', '')
+            saved_raw = SystemSetting.get('w3packager_saved_profiles', '[]')
+            try:
+                saved = json.loads(saved_raw)
+                saved = [p for p in saved if p.get('id') != prof_id]
+                SystemSetting.set('w3packager_saved_profiles', json.dumps(saved))
+                messages.success(request, "Custom profile deleted.")
+            except Exception:
+                pass
+            return redirect('/software/w3packager/?tab=profiles')
 
         elif action == 'install_runtime':
             ver = request.POST.get('php_version', '').strip()
@@ -2247,7 +2496,6 @@ def admin_w3packager(request):
 
         elif action == 'install_component':
             comp = request.POST.get('component', '').strip()
-            # Detect OS-supported package name for brotli
             avail_brotli = get_available_apt_packages(['libnginx-mod-http-brotli-filter', 'libnginx-mod-brotli'])
             brotli_pkg_name = 'libnginx-mod-http-brotli-filter' if 'libnginx-mod-http-brotli-filter' in avail_brotli else 'libnginx-mod-brotli'
 
@@ -2277,7 +2525,7 @@ def admin_w3packager(request):
             return redirect(f'/software/w3packager/?tab={tab}')
 
     # GET
-    active_tab = request.GET.get('tab', 'runtimes').strip()
+    active_tab = request.GET.get('tab', 'profiles').strip()
     selected_php = request.GET.get('php_version', default_php).strip()
     search_query = request.GET.get('q', '').strip()
 

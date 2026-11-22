@@ -569,5 +569,29 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(resp_wiz_sury.status_code, 302)
         self.assertEqual(SystemSetting.get('sury_repo_enabled'), 'true')
 
+        # 10. Test EasyApache-style batch provision action & custom profile saving
+        resp_prov = self.client.post('/software/w3packager/', {
+            'action': 'provision',
+            'selected_runtimes': ['8.3'],
+            'selected_extensions': ['php8.3-opcache', 'php8.3-curl'],
+            'selected_web': ['nginx'],
+            'selected_cli': ['composer'],
+            'save_profile_name': 'My Custom Agency Profile',
+        })
+        self.assertEqual(resp_prov.status_code, 302)
+        import json
+        saved_profiles = json.loads(SystemSetting.get('w3packager_saved_profiles', '[]'))
+        self.assertTrue(any(p.get('name') == 'My Custom Agency Profile' for p in saved_profiles))
+
+        # 11. Test delete_profile
+        custom_id = [p['id'] for p in saved_profiles if p.get('name') == 'My Custom Agency Profile'][0]
+        resp_del_prof = self.client.post('/software/w3packager/', {
+            'action': 'delete_profile',
+            'profile_id': custom_id,
+        })
+        self.assertEqual(resp_del_prof.status_code, 302)
+        saved_profiles_after = json.loads(SystemSetting.get('w3packager_saved_profiles', '[]'))
+        self.assertFalse(any(p.get('id') == custom_id for p in saved_profiles_after))
+
 
 
