@@ -394,7 +394,7 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(resp_mgr.status_code, 200)
         self.assertContains(resp_mgr, 'MultiPHP Manager')
         self.assertContains(resp_mgr, 'System Default PHP')
-        self.assertContains(resp_mgr, 'Installed PHP Runtimes')
+        self.assertNotContains(resp_mgr, 'Installed PHP Runtimes')
         self.assertContains(resp_mgr, 'Per-Domain PHP Version Assignment')
         self.assertContains(resp_mgr, 'multiphp.local')
         # Ensure DiamondWish is renamed to Enterprise Performance Profile
