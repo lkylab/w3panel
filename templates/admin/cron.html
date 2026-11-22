@@ -78,7 +78,8 @@
                     <select id="userFilter" name="user" onchange="this.form.submit()"
                             class="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-800 bg-white font-medium focus:border-blue-600 outline-none">
                         <option value="all" {% if selected_user == 'all' %}selected{% endif %}>All Accounts (System & Tenants)</option>
-                        <option value="root" {% if selected_user == 'root' %}selected{% endif %}>root (System Root Administrator)</option>
+                        <option value="root" {% if selected_user == 'root' or selected_user == 'admin' %}selected{% endif %}>root (Server Administrator)</option>
+                        {% if users %}
                         <optgroup label="Tenant Accounts">
                             {% for u in users %}
                             <option value="{{ u.username }}" {% if selected_user == u.username %}selected{% endif %}>
@@ -86,20 +87,21 @@
                             </option>
                             {% endfor %}
                         </optgroup>
+                        {% endif %}
                     </select>
                 </form>
             </div>
 
             <div class="flex items-center gap-3 text-xs text-slate-500">
-                <span>Showing: <strong class="text-slate-800">{{ selected_user|capfirst }}</strong></span>
+                <span>Showing: <strong class="text-slate-800">{% if selected_user == 'admin' %}root{% else %}{{ selected_user|capfirst }}{% endif %}</strong></span>
                 {% if selected_user != 'all' %}
                 <a href="{% url 'admin_cron' %}?user=all" class="text-blue-600 hover:underline font-medium text-xs">Reset to All</a>
                 {% endif %}
             </div>
         </div>
 
-        <!-- Root Crontab Entries Card (if root or (all and root_cron_entries)) -->
-        {% if selected_user == 'root' or root_cron_entries %}
+        <!-- Root Crontab Entries Card (if root, admin, or (all and root_cron_entries)) -->
+        {% if selected_user == 'root' or selected_user == 'admin' or root_cron_entries %}
         <div class="bg-white rounded-xl border border-purple-200/80 overflow-hidden shadow-xs">
             <div class="px-5 py-3.5 bg-gradient-to-r from-purple-50/80 to-indigo-50/40 border-b border-purple-200 flex items-center justify-between">
                 <div class="flex items-center gap-2">
@@ -147,8 +149,8 @@
         </div>
         {% endif %}
 
-        <!-- Tenant Scheduled Tasks Table (when not filtering solely for root) -->
-        {% if selected_user != 'root' %}
+        <!-- Tenant Scheduled Tasks Table (when not filtering solely for root/admin) -->
+        {% if selected_user != 'root' and selected_user != 'admin' %}
         <div class="bg-white rounded-xl border border-slate-200/80 overflow-hidden shadow-xs">
             <div class="px-5 py-3.5 bg-slate-50/70 border-b border-slate-200 flex items-center justify-between">
                 <h3 class="font-bold text-xs uppercase tracking-wider text-slate-700">
@@ -407,12 +409,14 @@
                     <label class="block text-xs font-bold uppercase tracking-wider text-slate-700">Run As User *</label>
                     <select name="target_user" x-model="modalUser" required
                             class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-900 bg-white outline-none focus:border-blue-600">
-                        <option value="root">root (System Administrator — direct /etc/crontab)</option>
+                        <option value="root">root (Server Administrator — direct /etc/crontab)</option>
+                        {% if users %}
                         <optgroup label="Tenant Accounts">
                             {% for u in users %}
                             <option value="{{ u.username }}">{{ u.username }} (Tenant)</option>
                             {% endfor %}
                         </optgroup>
+                        {% endif %}
                     </select>
                 </div>
 

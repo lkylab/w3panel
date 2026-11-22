@@ -310,11 +310,20 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(resp_all.status_code, 200)
         self.assertContains(resp_all, 'Server Scheduled Tasks & Crontabs')
         self.assertContains(resp_all, 'All Accounts (System & Tenants)')
+        self.assertContains(resp_all, 'root (Server Administrator)')
         self.assertContains(resp_all, 'System Crontabs')
         self.assertContains(resp_all, 'Maintenance Intervals')
         self.assertContains(resp_all, 'WP Cron Task')
+        # Admin should NOT be listed as a tenant account in the dropdown
+        self.assertNotContains(resp_all, 'admin_test (admin)')
 
-        # 3. Test filter by specific user
+        # 3. Test filter by root or admin (shows live root crontab card, suppresses tenant table)
+        resp_root = self.client.get('/services/cron/?user=root')
+        self.assertEqual(resp_root.status_code, 200)
+        self.assertContains(resp_root, 'crontab -l -u root')
+        self.assertNotContains(resp_root, 'All Tenant User Scheduled Tasks')
+
+        # 4. Test filter by specific tenant user
         resp_user = self.client.get('/services/cron/?user=client_test')
         self.assertEqual(resp_user.status_code, 200)
         self.assertContains(resp_user, 'WP Cron Task')

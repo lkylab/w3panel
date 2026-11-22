@@ -1015,7 +1015,7 @@ def admin_cron(request):
             description = request.POST.get('description', '').strip()
 
             if command:
-                if target_user_str == 'root':
+                if target_user_str in ('root', 'admin'):
                     try:
                         res = subprocess.run(['sudo', '-n', 'crontab', '-l', '-u', 'root'], capture_output=True, text=True, timeout=3)
                         current = res.stdout if res.returncode == 0 else ""
@@ -1027,20 +1027,24 @@ def admin_cron(request):
                     except Exception as e:
                         messages.error(request, f'Failed to write root crontab: {e}')
                 else:
-                    target_user = User.objects.filter(username=target_user_str).first()
+                    target_user = User.objects.filter(username=target_user_str, role__in=['user', 'reseller']).first()
                     if not target_user:
-                        target_user = request.panel_user or User.objects.filter(role='admin').first()
+                        target_user = User.objects.filter(role='user').first()
                     
-                    CronJob.objects.create(
-                        owner=target_user,
-                        command=command,
-                        schedule=schedule,
-                        description=description,
-                        is_active=True
-                    )
-                    sync_cron_jobs(target_user.username, target_user.cron_jobs.all())
-                    messages.success(request, f'Cron job scheduled for {target_user.username}.')
-                    return redirect(f'/services/cron/?user={target_user.username}')
+                    if target_user:
+                        CronJob.objects.create(
+                            owner=target_user,
+                            command=command,
+                            schedule=schedule,
+                            description=description,
+                            is_active=True
+                        )
+                        sync_cron_jobs(target_user.username, target_user.cron_jobs.all())
+                        messages.success(request, f'Cron job scheduled for tenant {target_user.username}.')
+                        return redirect(f'/services/cron/?user={target_user.username}')
+                    else:
+                        messages.error(request, 'No valid tenant account found to assign cron job.')
+                        return redirect('/services/cron/')
 
         elif action == 'delete_root_cron':
             raw_entry = request.POST.get('raw_entry', '').strip()
@@ -1061,16 +1065,17 @@ def admin_cron(request):
     selected_user = request.GET.get('user', 'all').strip()
     active_tab = request.GET.get('tab', 'user').strip()
     
-    users = User.objects.all().order_by('username')
+    # Filter tenant users only (admin role is the root panel administrator, not a tenant)
+    tenant_users = User.objects.filter(role__in=['user', 'reseller']).order_by('username')
     
-    # Filter tenant cron jobs
-    cron_jobs = CronJob.objects.select_related('owner').all().order_by('-created_at')
-    if selected_user and selected_user not in ('all', 'root'):
+    # Filter tenant cron jobs (exclude admin from tenant jobs table)
+    cron_jobs = CronJob.objects.select_related('owner').filter(owner__role__in=['user', 'reseller']).order_by('-created_at')
+    if selected_user and selected_user not in ('all', 'root', 'admin'):
         cron_jobs = cron_jobs.filter(owner__username=selected_user)
 
     # Fetch root crontab entries
     root_cron_entries = []
-    if selected_user in ('all', 'root'):
+    if selected_user in ('all', 'root', 'admin'):
         root_cron_entries = get_root_cron_entries()
 
     # Parse system crontabs and maintenance intervals
@@ -1079,7 +1084,7 @@ def admin_cron(request):
 
     return render(request, 'admin/cron.html', {
         **_sidebar_context('cron'),
-        'users': users,
+        'users': tenant_users,
         'selected_user': selected_user,
         'active_tab': active_tab,
         'cron_jobs': cron_jobs,
