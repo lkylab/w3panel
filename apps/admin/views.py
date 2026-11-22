@@ -876,28 +876,216 @@ def admin_system_logs(request):
     })
 
 
-def admin_cron(request):
-    """Host Scheduled Tasks & Cron Jobs manager across all accounts."""
-    cron_jobs = CronJob.objects.select_related('owner').all().order_by('-created_at')
+def get_root_cron_entries():
+    """Retrieve crontab entries for root user."""
+    try:
+        res = subprocess.run(['sudo', '-n', 'crontab', '-l', '-u', 'root'], capture_output=True, text=True, timeout=3)
+        if res.returncode == 0:
+            entries = []
+            for line in res.stdout.splitlines():
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    parts = line.split(None, 5)
+                    if len(parts) >= 6:
+                        entries.append({
+                            'schedule': ' '.join(parts[:5]),
+                            'command': parts[5],
+                            'raw': line,
+                        })
+                    else:
+                        entries.append({
+                            'schedule': 'Custom',
+                            'command': line,
+                            'raw': line,
+                        })
+            return entries
+    except Exception:
+        pass
+    return []
+
+
+def get_system_crontabs():
+    """Parse /etc/crontab and files in /etc/cron.d/ into structured entries."""
+    system_entries = []
     
-    system_cron_files = []
-    cron_d = Path('/etc/cron.d')
-    if cron_d.exists():
+    # 1. /etc/crontab
+    crontab_file = Path('/etc/crontab')
+    if crontab_file.exists():
         try:
-            for p in sorted(cron_d.glob('*')):
-                if p.is_file():
-                    system_cron_files.append({
-                        'name': p.name,
-                        'path': str(p),
-                        'size': p.stat().st_size,
+            for line in crontab_file.read_text(errors='ignore').splitlines():
+                line = line.strip()
+                if not line or line.startswith('#') or '=' in line.split()[0]:
+                    continue
+                parts = line.split(None, 6)
+                if len(parts) >= 7:
+                    system_entries.append({
+                        'source': '/etc/crontab',
+                        'file': 'crontab',
+                        'schedule': ' '.join(parts[:5]),
+                        'user': parts[5],
+                        'command': parts[6],
                     })
         except Exception:
             pass
 
+    # 2. /etc/cron.d/*
+    cron_d = Path('/etc/cron.d')
+    if cron_d.exists():
+        try:
+            for p in sorted(cron_d.glob('*')):
+                if p.is_file() and not p.name.startswith('.'):
+                    try:
+                        content = p.read_text(errors='ignore')
+                        for line in content.splitlines():
+                            line = line.strip()
+                            if not line or line.startswith('#') or line.startswith(('SHELL=', 'PATH=', 'MAILTO=')):
+                                continue
+                            parts = line.split(None, 6)
+                            if len(parts) >= 7:
+                                system_entries.append({
+                                    'source': str(p),
+                                    'file': p.name,
+                                    'schedule': ' '.join(parts[:5]),
+                                    'user': parts[5],
+                                    'command': parts[6],
+                                })
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    return system_entries
+
+
+def get_cron_interval_scripts():
+    """List scripts in /etc/cron.daily, /etc/cron.hourly, /etc/cron.weekly, /etc/cron.monthly."""
+    intervals = {}
+    for name in ('hourly', 'daily', 'weekly', 'monthly'):
+        dirpath = Path(f'/etc/cron.{name}')
+        scripts = []
+        if dirpath.exists():
+            try:
+                for s in sorted(dirpath.glob('*')):
+                    if s.is_file() and not s.name.startswith('.'):
+                        scripts.append({
+                            'name': s.name,
+                            'path': str(s),
+                            'executable': os.access(s, os.X_OK),
+                            'size': s.stat().st_size,
+                        })
+            except Exception:
+                pass
+        intervals[name] = scripts
+    return intervals
+
+
+def admin_cron(request):
+    """
+    Host Scheduled Tasks & Server Cron Manager.
+    Allows inspecting root crontab, filtering by tenant account,
+    viewing /etc/crontab & /etc/cron.d/ system tasks, and maintenance intervals.
+    """
+    from services.cron.manager import sync_cron_jobs
+    
+    if request.method == 'POST':
+        action = request.POST.get('action')
+        job_id = request.POST.get('job_id')
+        
+        if action == 'toggle_status' and job_id:
+            job = get_object_or_404(CronJob, id=job_id)
+            job.is_active = not job.is_active
+            job.save(update_fields=['is_active'])
+            sync_cron_jobs(job.owner.username, job.owner.cron_jobs.all())
+            state = "activated" if job.is_active else "paused"
+            messages.success(request, f'Cron job for {job.owner.username} was {state}.')
+            return redirect(f'/services/cron/?user={job.owner.username}')
+
+        elif action == 'delete' and job_id:
+            job = get_object_or_404(CronJob, id=job_id)
+            owner = job.owner
+            job.delete()
+            sync_cron_jobs(owner.username, owner.cron_jobs.all())
+            messages.success(request, f'Cron job for {owner.username} was permanently deleted.')
+            return redirect(f'/services/cron/?user={owner.username}')
+
+        elif action == 'create_cron':
+            target_user_str = request.POST.get('target_user', '').strip()
+            schedule = request.POST.get('schedule', '').strip() or '0 0 * * *'
+            command = request.POST.get('command', '').strip()
+            description = request.POST.get('description', '').strip()
+
+            if command:
+                if target_user_str == 'root':
+                    try:
+                        res = subprocess.run(['sudo', '-n', 'crontab', '-l', '-u', 'root'], capture_output=True, text=True, timeout=3)
+                        current = res.stdout if res.returncode == 0 else ""
+                        new_content = current.rstrip() + f"\n{schedule} {command}\n"
+                        proc = subprocess.Popen(['sudo', '-n', 'crontab', '-u', 'root', '-'], stdin=subprocess.PIPE, text=True)
+                        proc.communicate(input=new_content, timeout=5)
+                        messages.success(request, f'Root crontab entry added: {schedule} {command}')
+                        return redirect('/services/cron/?user=root')
+                    except Exception as e:
+                        messages.error(request, f'Failed to write root crontab: {e}')
+                else:
+                    target_user = User.objects.filter(username=target_user_str).first()
+                    if not target_user:
+                        target_user = request.panel_user or User.objects.filter(role='admin').first()
+                    
+                    CronJob.objects.create(
+                        owner=target_user,
+                        command=command,
+                        schedule=schedule,
+                        description=description,
+                        is_active=True
+                    )
+                    sync_cron_jobs(target_user.username, target_user.cron_jobs.all())
+                    messages.success(request, f'Cron job scheduled for {target_user.username}.')
+                    return redirect(f'/services/cron/?user={target_user.username}')
+
+        elif action == 'delete_root_cron':
+            raw_entry = request.POST.get('raw_entry', '').strip()
+            if raw_entry:
+                try:
+                    res = subprocess.run(['sudo', '-n', 'crontab', '-l', '-u', 'root'], capture_output=True, text=True, timeout=3)
+                    if res.returncode == 0:
+                        lines = [l for l in res.stdout.splitlines() if l.strip() != raw_entry]
+                        new_content = "\n".join(lines) + "\n"
+                        proc = subprocess.Popen(['sudo', '-n', 'crontab', '-u', 'root', '-'], stdin=subprocess.PIPE, text=True)
+                        proc.communicate(input=new_content, timeout=5)
+                        messages.success(request, 'Root crontab entry removed.')
+                except Exception as e:
+                    messages.error(request, f'Failed to delete root crontab entry: {e}')
+            return redirect('/services/cron/?user=root')
+
+    # GET handling
+    selected_user = request.GET.get('user', 'all').strip()
+    active_tab = request.GET.get('tab', 'user').strip()
+    
+    users = User.objects.all().order_by('username')
+    
+    # Filter tenant cron jobs
+    cron_jobs = CronJob.objects.select_related('owner').all().order_by('-created_at')
+    if selected_user and selected_user not in ('all', 'root'):
+        cron_jobs = cron_jobs.filter(owner__username=selected_user)
+
+    # Fetch root crontab entries
+    root_cron_entries = []
+    if selected_user in ('all', 'root'):
+        root_cron_entries = get_root_cron_entries()
+
+    # Parse system crontabs and maintenance intervals
+    system_crontabs = get_system_crontabs()
+    interval_scripts = get_cron_interval_scripts()
+
     return render(request, 'admin/cron.html', {
         **_sidebar_context('cron'),
+        'users': users,
+        'selected_user': selected_user,
+        'active_tab': active_tab,
         'cron_jobs': cron_jobs,
-        'system_cron_files': system_cron_files,
+        'root_cron_entries': root_cron_entries,
+        'system_crontabs': system_crontabs,
+        'interval_scripts': interval_scripts,
     })
 
 

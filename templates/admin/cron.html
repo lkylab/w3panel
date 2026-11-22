@@ -5,85 +5,446 @@
 {% block page_title %}Cron Jobs & Scheduled Tasks{% endblock %}
 
 {% block content %}
-<div class="space-y-6">
+<div x-data="{
+    tab: '{{ active_tab|default:'user' }}',
+    addModal: false,
+    selectedUser: '{{ selected_user|default:'all' }}',
+    modalUser: 'root',
+    modalSchedule: '0 0 * * *',
+    modalCommand: '',
+    modalDesc: ''
+}" class="space-y-6">
+
     <!-- Header -->
-    <div class="flex items-center justify-between">
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-            <h2 class="text-lg font-bold text-slate-900">Server Scheduled Tasks & Crontabs</h2>
-            <p class="text-xs text-slate-500">Monitor all automated cron jobs across system daemons and tenant user accounts</p>
-        </div>
-    </div>
-
-    <!-- Tenant Cron Jobs Table -->
-    <div class="bg-white rounded-xl border border-slate-200/80 overflow-hidden shadow-sm">
-        <div class="px-5 py-3.5 bg-slate-50/70 border-b border-slate-200 flex items-center justify-between">
-            <h3 class="font-bold text-xs uppercase tracking-wider text-slate-700">Tenant Account Cron Jobs ({{ cron_jobs|length }})</h3>
-        </div>
-
-        <div class="overflow-x-auto">
-            <table class="w-full text-left text-sm">
-                <thead class="bg-slate-50/50 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                    <tr>
-                        <th class="px-5 py-3.5">User</th>
-                        <th class="px-5 py-3.5">Status</th>
-                        <th class="px-5 py-3.5">Schedule</th>
-                        <th class="px-5 py-3.5">Command</th>
-                        <th class="px-5 py-3.5">Description</th>
-                        <th class="px-5 py-3.5">Created</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-100">
-                    {% for c in cron_jobs %}
-                    <tr class="hover:bg-slate-50/60 transition">
-                        <td class="px-5 py-3.5 font-mono text-xs font-bold text-blue-600">{{ c.owner.username }}</td>
-                        <td class="px-5 py-3.5">
-                            {% if c.is_active %}
-                            <span class="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                                <span class="size-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Active
-                            </span>
-                            {% else %}
-                            <span class="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">
-                                Paused
-                            </span>
-                            {% endif %}
-                        </td>
-                        <td class="px-5 py-3.5 font-mono text-xs font-bold text-slate-900">{{ c.schedule }}</td>
-                        <td class="px-5 py-3.5 font-mono text-xs text-slate-700 truncate max-w-md" title="{{ c.command }}">{{ c.command }}</td>
-                        <td class="px-5 py-3.5 text-xs text-slate-500">{{ c.description|default:"—" }}</td>
-                        <td class="px-5 py-3.5 text-xs text-slate-400">{{ c.created_at|date:"M d, Y" }}</td>
-                    </tr>
-                    {% empty %}
-                    <tr>
-                        <td colspan="6" class="px-5 py-8 text-center text-slate-400 text-sm">
-                            No tenant cron jobs configured on this server yet.
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <!-- System Crontab Files in /etc/cron.d -->
-    {% if system_cron_files %}
-    <div class="bg-white rounded-xl border border-slate-200/80 overflow-hidden shadow-sm">
-        <div class="px-5 py-3.5 bg-slate-50/70 border-b border-slate-200 flex items-center justify-between">
-            <h3 class="font-bold text-xs uppercase tracking-wider text-slate-700">System Crontabs in /etc/cron.d/ ({{ system_cron_files|length }})</h3>
-        </div>
-
-        <div class="divide-y divide-slate-100 text-xs">
-            {% for f in system_cron_files %}
-            <div class="px-5 py-3 flex items-center justify-between hover:bg-slate-50 transition">
-                <div class="flex items-center gap-2 font-mono">
-                    <i class="ti ti-file-text text-slate-400"></i>
-                    <span class="font-bold text-slate-800">{{ f.name }}</span>
-                    <span class="text-slate-400 text-[11px]">({{ f.path }})</span>
-                </div>
-                <span class="text-slate-500 font-mono">{{ f.size }} bytes</span>
+            <div class="flex items-center gap-2 text-xs text-slate-500 mb-1">
+                <a href="{% url 'admin_services_status' %}" class="hover:text-blue-600 transition">Services</a>
+                <i class="ti ti-chevron-right text-[10px]"></i>
+                <span class="text-slate-800 font-semibold">Scheduled Tasks & Crontabs</span>
             </div>
-            {% endfor %}
+            <h2 class="text-xl font-bold text-slate-900 flex items-center gap-2">
+                <i class="ti ti-clock-play text-blue-600"></i>
+                Server Scheduled Tasks & Crontabs
+            </h2>
+            <p class="text-xs text-slate-500 mt-0.5">Audit, schedule, and police automated background jobs across system daemons, root, and tenant user accounts</p>
+        </div>
+
+        <div class="flex items-center gap-2">
+            <button @click="addModal = true"
+                    class="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition shadow-sm">
+                <i class="ti ti-plus text-sm"></i> Add Scheduled Task
+            </button>
         </div>
     </div>
-    {% endif %}
+
+    <!-- Navigation Tabs -->
+    <div class="flex items-center justify-between border-b border-slate-200">
+        <div class="flex space-x-6 text-xs font-bold">
+            <button @click="tab = 'user'"
+                    :class="tab === 'user' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500 hover:text-slate-700'"
+                    class="pb-3 flex items-center gap-2 transition outline-none">
+                <i class="ti ti-users text-sm"></i>
+                <span>User & Root Crontabs</span>
+                <span class="px-1.5 py-0.5 rounded-full text-[10px] bg-slate-100 text-slate-700 font-mono">{{ cron_jobs|length|add:root_cron_entries|length }}</span>
+            </button>
+
+            <button @click="tab = 'system'"
+                    :class="tab === 'system' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500 hover:text-slate-700'"
+                    class="pb-3 flex items-center gap-2 transition outline-none">
+                <i class="ti ti-server-2 text-sm"></i>
+                <span>System Crontabs (/etc/cron.d)</span>
+                <span class="px-1.5 py-0.5 rounded-full text-[10px] bg-slate-100 text-slate-700 font-mono">{{ system_crontabs|length }}</span>
+            </button>
+
+            <button @click="tab = 'maintenance'"
+                    :class="tab === 'maintenance' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500 hover:text-slate-700'"
+                    class="pb-3 flex items-center gap-2 transition outline-none">
+                <i class="ti ti-calendar-time text-sm"></i>
+                <span>Maintenance Intervals (Daily/Hourly)</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 1: User & Root Crontabs -->
+    <!-- ===================================================================== -->
+    <div x-show="tab === 'user'" class="space-y-5">
+        <!-- Account Filter Bar -->
+        <div class="bg-white rounded-xl border border-slate-200/80 p-4 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div class="flex items-center gap-3">
+                <label for="userFilter" class="text-xs font-bold uppercase tracking-wider text-slate-600 shrink-0">Filter by Account:</label>
+                <form method="get" action="{% url 'admin_cron' %}" class="inline">
+                    <select id="userFilter" name="user" onchange="this.form.submit()"
+                            class="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-800 bg-white font-medium focus:border-blue-600 outline-none">
+                        <option value="all" {% if selected_user == 'all' %}selected{% endif %}>All Accounts (System & Tenants)</option>
+                        <option value="root" {% if selected_user == 'root' %}selected{% endif %}>root (System Root Administrator)</option>
+                        <optgroup label="Tenant Accounts">
+                            {% for u in users %}
+                            <option value="{{ u.username }}" {% if selected_user == u.username %}selected{% endif %}>
+                                {{ u.username }} ({{ u.role }})
+                            </option>
+                            {% endfor %}
+                        </optgroup>
+                    </select>
+                </form>
+            </div>
+
+            <div class="flex items-center gap-3 text-xs text-slate-500">
+                <span>Showing: <strong class="text-slate-800">{{ selected_user|capfirst }}</strong></span>
+                {% if selected_user != 'all' %}
+                <a href="{% url 'admin_cron' %}?user=all" class="text-blue-600 hover:underline font-medium text-xs">Reset to All</a>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Root Crontab Entries Card (if root or all) -->
+        {% if root_cron_entries %}
+        <div class="bg-white rounded-xl border border-purple-200/80 overflow-hidden shadow-xs">
+            <div class="px-5 py-3.5 bg-gradient-to-r from-purple-50/80 to-indigo-50/40 border-b border-purple-200 flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <span class="size-6 rounded-lg bg-purple-600 text-white flex items-center justify-center text-xs font-bold">#</span>
+                    <h3 class="font-bold text-xs uppercase tracking-wider text-purple-900">root User Live Crontab ({{ root_cron_entries|length }})</h3>
+                </div>
+                <span class="text-[11px] font-mono text-purple-700 bg-purple-100 px-2 py-0.5 rounded">crontab -l -u root</span>
+            </div>
+
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-slate-50/60 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                        <tr>
+                            <th class="px-5 py-3">Schedule</th>
+                            <th class="px-5 py-3">Command</th>
+                            <th class="px-5 py-3 text-right">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 font-mono text-xs">
+                        {% for r in root_cron_entries %}
+                        <tr class="hover:bg-slate-50/60 transition">
+                            <td class="px-5 py-3 font-bold text-purple-700 whitespace-nowrap">{{ r.schedule }}</td>
+                            <td class="px-5 py-3 text-slate-800 break-all">{{ r.command }}</td>
+                            <td class="px-5 py-3 text-right whitespace-nowrap">
+                                <form method="post" action="{% url 'admin_cron' %}" onsubmit="return confirm('Remove root cron job?');" class="inline">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="action" value="delete_root_cron">
+                                    <input type="hidden" name="raw_entry" value="{{ r.raw }}">
+                                    <button type="submit" class="p-1 text-slate-400 hover:text-red-600 rounded transition" title="Delete from root crontab">
+                                        <i class="ti ti-trash text-sm"></i>
+                                    </button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Tenant Scheduled Tasks Table -->
+        <div class="bg-white rounded-xl border border-slate-200/80 overflow-hidden shadow-xs">
+            <div class="px-5 py-3.5 bg-slate-50/70 border-b border-slate-200 flex items-center justify-between">
+                <h3 class="font-bold text-xs uppercase tracking-wider text-slate-700">
+                    {% if selected_user == 'all' %}
+                    All Tenant User Scheduled Tasks ({{ cron_jobs|length }})
+                    {% elif selected_user == 'root' %}
+                    Database Tracked Jobs for root
+                    {% else %}
+                    Scheduled Tasks for {{ selected_user }} ({{ cron_jobs|length }})
+                    {% endif %}
+                </h3>
+            </div>
+
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-slate-50/50 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                        <tr>
+                            <th class="px-5 py-3.5">Account</th>
+                            <th class="px-5 py-3.5">Status</th>
+                            <th class="px-5 py-3.5">Schedule</th>
+                            <th class="px-5 py-3.5">Command</th>
+                            <th class="px-5 py-3.5">Description</th>
+                            <th class="px-5 py-3.5 text-right">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        {% for c in cron_jobs %}
+                        <tr class="hover:bg-slate-50/60 transition">
+                            <td class="px-5 py-3.5 font-medium text-xs text-slate-900 flex items-center gap-2">
+                                <div class="size-6 rounded-md bg-blue-50 text-blue-600 flex items-center justify-center text-xs font-bold">
+                                    {{ c.owner.username|slice:':1'|upper }}
+                                </div>
+                                <span class="font-bold">{{ c.owner.username }}</span>
+                            </td>
+                            <td class="px-5 py-3.5">
+                                {% if c.is_active %}
+                                <span class="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                                    <span class="size-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Active
+                                </span>
+                                {% else %}
+                                <span class="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">
+                                    Paused
+                                </span>
+                                {% endif %}
+                            </td>
+                            <td class="px-5 py-3.5 font-mono text-xs font-bold text-slate-900 whitespace-nowrap">{{ c.schedule }}</td>
+                            <td class="px-5 py-3.5 font-mono text-xs text-slate-700 truncate max-w-sm" title="{{ c.command }}">
+                                <span class="bg-slate-100 px-2 py-1 rounded select-all">{{ c.command }}</span>
+                            </td>
+                            <td class="px-5 py-3.5 text-xs text-slate-500">{{ c.description|default:"—" }}</td>
+                            <td class="px-5 py-3.5 text-right whitespace-nowrap">
+                                <div class="flex items-center justify-end gap-1.5">
+                                    <!-- Toggle Active/Paused -->
+                                    <form method="post" action="{% url 'admin_cron' %}" class="inline">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="action" value="toggle_status">
+                                        <input type="hidden" name="job_id" value="{{ c.id }}">
+                                        {% if c.is_active %}
+                                        <button type="submit" class="px-2 py-1 bg-slate-100 hover:bg-amber-50 text-slate-600 hover:text-amber-700 rounded text-xs font-semibold transition" title="Pause Cron Job">
+                                            <i class="ti ti-player-pause"></i> Pause
+                                        </button>
+                                        {% else %}
+                                        <button type="submit" class="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded text-xs font-semibold transition" title="Resume Cron Job">
+                                            <i class="ti ti-player-play"></i> Resume
+                                        </button>
+                                        {% endif %}
+                                    </form>
+
+                                    <!-- Delete Rogue Cron Job -->
+                                    <form method="post" action="{% url 'admin_cron' %}" onsubmit="return confirm('Permanently delete this cron job?');" class="inline">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="action" value="delete">
+                                        <input type="hidden" name="job_id" value="{{ c.id }}">
+                                        <button type="submit" class="p-1.5 text-slate-400 hover:text-red-600 rounded hover:bg-red-50 transition" title="Delete Cron Job">
+                                            <i class="ti ti-trash text-sm"></i>
+                                        </button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="6" class="px-5 py-8 text-center text-slate-400 text-sm">
+                                {% if selected_user != 'all' %}
+                                No scheduled tasks found for account "{{ selected_user }}".
+                                {% else %}
+                                No tenant cron jobs configured on this server yet.
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 2: System Crontabs in /etc/cron.d/ and /etc/crontab -->
+    <!-- ===================================================================== -->
+    <div x-show="tab === 'system'" class="space-y-5">
+        <div class="bg-white rounded-xl border border-slate-200/80 overflow-hidden shadow-xs">
+            <div class="px-5 py-3.5 bg-slate-50/70 border-b border-slate-200 flex items-center justify-between">
+                <div>
+                    <h3 class="font-bold text-xs uppercase tracking-wider text-slate-700">Parsed System Daemon Crontabs ({{ system_crontabs|length }})</h3>
+                    <p class="text-[11px] text-slate-400 mt-0.5">Automated schedules defined in /etc/crontab and /etc/cron.d/*</p>
+                </div>
+            </div>
+
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-slate-50/50 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                        <tr>
+                            <th class="px-5 py-3.5">Source File</th>
+                            <th class="px-5 py-3.5">Run As</th>
+                            <th class="px-5 py-3.5">Schedule</th>
+                            <th class="px-5 py-3.5">Command / Script</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 font-mono text-xs">
+                        {% for s in system_crontabs %}
+                        <tr class="hover:bg-slate-50/60 transition">
+                            <td class="px-5 py-3.5 text-slate-900 font-bold whitespace-nowrap flex items-center gap-2">
+                                <i class="ti ti-file-code text-blue-600"></i>
+                                <span>{{ s.file }}</span>
+                                <span class="text-[10px] text-slate-400 font-normal">({{ s.source }})</span>
+                            </td>
+                            <td class="px-5 py-3.5 whitespace-nowrap">
+                                <span class="px-2 py-0.5 rounded text-[10px] font-bold {% if s.user == 'root' %}bg-purple-100 text-purple-800{% else %}bg-slate-100 text-slate-700{% endif %}">
+                                    {{ s.user }}
+                                </span>
+                            </td>
+                            <td class="px-5 py-3.5 font-bold text-slate-800 whitespace-nowrap">{{ s.schedule }}</td>
+                            <td class="px-5 py-3.5 text-slate-700 break-all select-all">{{ s.command }}</td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="4" class="px-5 py-8 text-center text-slate-400 text-sm">No system crontabs discovered.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 3: Maintenance Intervals (Daily, Hourly, Weekly, Monthly) -->
+    <!-- ===================================================================== -->
+    <div x-show="tab === 'maintenance'" class="space-y-5">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <!-- Hourly -->
+            <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-xs space-y-3">
+                <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <h4 class="font-bold text-xs uppercase tracking-wider text-slate-800 flex items-center gap-2">
+                        <i class="ti ti-clock text-blue-600"></i> Hourly Tasks (/etc/cron.hourly/)
+                    </h4>
+                    <span class="text-xs font-mono text-slate-400">{{ interval_scripts.hourly|length }} scripts</span>
+                </div>
+                <div class="space-y-1.5 text-xs font-mono">
+                    {% for s in interval_scripts.hourly %}
+                    <div class="flex items-center justify-between p-2 rounded bg-slate-50 border border-slate-100">
+                        <span class="font-bold text-slate-800">{{ s.name }}</span>
+                        <span class="text-[10px] text-emerald-600 font-bold font-sans">Executable</span>
+                    </div>
+                    {% empty %}
+                    <div class="text-slate-400 text-xs py-2">No custom hourly maintenance scripts.</div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Daily -->
+            <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-xs space-y-3">
+                <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <h4 class="font-bold text-xs uppercase tracking-wider text-slate-800 flex items-center gap-2">
+                        <i class="ti ti-calendar-event text-emerald-600"></i> Daily Tasks (/etc/cron.daily/)
+                    </h4>
+                    <span class="text-xs font-mono text-slate-400">{{ interval_scripts.daily|length }} scripts</span>
+                </div>
+                <div class="space-y-1.5 text-xs font-mono">
+                    {% for s in interval_scripts.daily %}
+                    <div class="flex items-center justify-between p-2 rounded bg-slate-50 border border-slate-100">
+                        <span class="font-bold text-slate-800">{{ s.name }}</span>
+                        <span class="text-[10px] text-emerald-600 font-bold font-sans">Active</span>
+                    </div>
+                    {% empty %}
+                    <div class="text-slate-400 text-xs py-2">No daily maintenance scripts.</div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Weekly -->
+            <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-xs space-y-3">
+                <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <h4 class="font-bold text-xs uppercase tracking-wider text-slate-800 flex items-center gap-2">
+                        <i class="ti ti-calendar text-indigo-600"></i> Weekly Tasks (/etc/cron.weekly/)
+                    </h4>
+                    <span class="text-xs font-mono text-slate-400">{{ interval_scripts.weekly|length }} scripts</span>
+                </div>
+                <div class="space-y-1.5 text-xs font-mono">
+                    {% for s in interval_scripts.weekly %}
+                    <div class="flex items-center justify-between p-2 rounded bg-slate-50 border border-slate-100">
+                        <span class="font-bold text-slate-800">{{ s.name }}</span>
+                        <span class="text-[10px] text-emerald-600 font-bold font-sans">Active</span>
+                    </div>
+                    {% empty %}
+                    <div class="text-slate-400 text-xs py-2">No weekly maintenance scripts.</div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Monthly -->
+            <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-xs space-y-3">
+                <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <h4 class="font-bold text-xs uppercase tracking-wider text-slate-800 flex items-center gap-2">
+                        <i class="ti ti-calendar-stats text-amber-600"></i> Monthly Tasks (/etc/cron.monthly/)
+                    </h4>
+                    <span class="text-xs font-mono text-slate-400">{{ interval_scripts.monthly|length }} scripts</span>
+                </div>
+                <div class="space-y-1.5 text-xs font-mono">
+                    {% for s in interval_scripts.monthly %}
+                    <div class="flex items-center justify-between p-2 rounded bg-slate-50 border border-slate-100">
+                        <span class="font-bold text-slate-800">{{ s.name }}</span>
+                        <span class="text-[10px] text-emerald-600 font-bold font-sans">Active</span>
+                    </div>
+                    {% empty %}
+                    <div class="text-slate-400 text-xs py-2">No monthly maintenance scripts.</div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- Alpine Modal: Add Scheduled Task -->
+    <!-- ===================================================================== -->
+    <div x-show="addModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+        <div @click.away="addModal = false" class="bg-white rounded-2xl p-6 max-w-lg w-full shadow-xl space-y-4">
+            <div class="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div class="flex items-center gap-2.5">
+                    <div class="size-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center text-lg">
+                        <i class="ti ti-plus"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-bold text-slate-900 text-sm">Add Server Scheduled Task</h3>
+                        <p class="text-xs text-slate-500">Schedule a background command for root or any tenant user</p>
+                    </div>
+                </div>
+                <button @click="addModal = false" class="text-slate-400 hover:text-slate-600 p-1"><i class="ti ti-x"></i></button>
+            </div>
+
+            <form method="post" action="{% url 'admin_cron' %}" class="space-y-4">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="create_cron">
+
+                <div>
+                    <label class="block text-xs font-bold uppercase tracking-wider text-slate-700">Run As User *</label>
+                    <select name="target_user" x-model="modalUser" required
+                            class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-900 bg-white outline-none focus:border-blue-600">
+                        <option value="root">root (System Administrator — direct /etc/crontab)</option>
+                        <optgroup label="Tenant Accounts">
+                            {% for u in users %}
+                            <option value="{{ u.username }}">{{ u.username }} (Tenant)</option>
+                            {% endfor %}
+                        </optgroup>
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-bold uppercase tracking-wider text-slate-700">Cron Schedule Expression *</label>
+                    <div class="mt-1.5 flex gap-2">
+                        <input type="text" name="schedule" x-model="modalSchedule" required placeholder="0 0 * * *"
+                               class="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono text-slate-900 outline-none focus:border-blue-600">
+                    </div>
+                    <!-- Quick Preset Buttons -->
+                    <div class="flex flex-wrap gap-1.5 mt-2">
+                        <button type="button" @click="modalSchedule = '*/5 * * * *'" class="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-[10px] font-mono text-slate-700">Every 5m</button>
+                        <button type="button" @click="modalSchedule = '0 * * * *'" class="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-[10px] font-mono text-slate-700">Every Hour</button>
+                        <button type="button" @click="modalSchedule = '0 0 * * *'" class="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-[10px] font-mono text-slate-700">Daily Midnight</button>
+                        <button type="button" @click="modalSchedule = '0 0 * * 0'" class="px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-[10px] font-mono text-slate-700">Weekly Sunday</button>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-bold uppercase tracking-wider text-slate-700">Command to Execute *</label>
+                    <input type="text" name="command" x-model="modalCommand" required placeholder="/usr/bin/php /var/www/script.php >/dev/null 2>&1"
+                           class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono text-slate-900 outline-none focus:border-blue-600">
+                </div>
+
+                <div>
+                    <label class="block text-xs font-bold uppercase tracking-wider text-slate-700">Description / Label (Optional)</label>
+                    <input type="text" name="description" x-model="modalDesc" placeholder="e.g. Nightly cleanup task"
+                           class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-900 outline-none focus:border-blue-600">
+                </div>
+
+                <div class="flex justify-end gap-2 pt-3 border-t border-slate-100">
+                    <button type="button" @click="addModal = false" class="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 rounded-lg">Cancel</button>
+                    <button type="submit" class="inline-flex items-center gap-1.5 px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold shadow-sm transition">
+                        <i class="ti ti-check"></i> Schedule Task
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
 </div>
 {% endblock %}

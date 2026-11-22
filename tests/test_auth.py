@@ -292,3 +292,71 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(resp_wizards.status_code, 200)
         self.assertContains(resp_wizards, 'Baseline Setup Active')
 
+    def test_admin_cron_management(self):
+        from packages.core.models import CronJob
+        self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
+
+        # 1. Seed tenant cron job
+        job = CronJob.objects.create(
+            owner=self.user,
+            command='/usr/bin/php /home/client_test/public_html/cron.php',
+            schedule='*/15 * * * *',
+            description='WP Cron Task',
+            is_active=True
+        )
+
+        # 2. Test GET /services/cron/ (Default: tab=user, user=all)
+        resp_all = self.client.get('/services/cron/')
+        self.assertEqual(resp_all.status_code, 200)
+        self.assertContains(resp_all, 'Server Scheduled Tasks & Crontabs')
+        self.assertContains(resp_all, 'All Accounts (System & Tenants)')
+        self.assertContains(resp_all, 'System Crontabs')
+        self.assertContains(resp_all, 'Maintenance Intervals')
+        self.assertContains(resp_all, 'WP Cron Task')
+
+        # 3. Test filter by specific user
+        resp_user = self.client.get('/services/cron/?user=client_test')
+        self.assertEqual(resp_user.status_code, 200)
+        self.assertContains(resp_user, 'WP Cron Task')
+
+        # 4. Test toggle status (pause)
+        resp_toggle = self.client.post('/services/cron/', {
+            'action': 'toggle_status',
+            'job_id': job.id,
+        })
+        self.assertEqual(resp_toggle.status_code, 302)
+        job.refresh_from_db()
+        self.assertFalse(job.is_active)
+
+        # 5. Test create cron job for tenant
+        resp_create = self.client.post('/services/cron/', {
+            'action': 'create_cron',
+            'target_user': 'client_test',
+            'schedule': '0 2 * * *',
+            'command': '/usr/bin/python3 /home/client_test/backup.py',
+            'description': 'Daily Tenant Backup',
+        })
+        self.assertEqual(resp_create.status_code, 302)
+        new_job = CronJob.objects.filter(owner=self.user, command__contains='backup.py').first()
+        self.assertIsNotNone(new_job)
+        self.assertEqual(new_job.schedule, '0 2 * * *')
+        self.assertEqual(new_job.description, 'Daily Tenant Backup')
+
+        # 6. Test delete tenant cron job
+        resp_delete = self.client.post('/services/cron/', {
+            'action': 'delete',
+            'job_id': new_job.id,
+        })
+        self.assertEqual(resp_delete.status_code, 302)
+        self.assertFalse(CronJob.objects.filter(id=new_job.id).exists())
+
+        # 7. Test system and maintenance interval tabs
+        resp_sys = self.client.get('/services/cron/?tab=system')
+        self.assertEqual(resp_sys.status_code, 200)
+        self.assertContains(resp_sys, 'Parsed System Daemon Crontabs')
+
+        resp_int = self.client.get('/services/cron/?tab=maintenance')
+        self.assertEqual(resp_int.status_code, 200)
+        self.assertContains(resp_int, 'Hourly Tasks (/etc/cron.hourly/)')
+
+
