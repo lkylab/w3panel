@@ -78,12 +78,11 @@ VBoxManage unattended install "$VM_NAME" \
   --user-password 123 \
   --admin-password 123 \
   --hostname w3panel-test.local \
-  --install-additions \
   --locale en_US \
   --country US \
   --time-zone UTC
 
-# 9. Inject SSH Public Key into autoinstall user-data
+# 9. Inject SSH Public Key and sanitize cloud-init config
 if [ -f "$PUB_KEY_PATH" ]; then
     echo "Injecting SSH public key from $PUB_KEY_PATH into cloud-init config..."
     USER_DATA_FILE=$(find "/home/lky/VirtualBox VMs/$VM_NAME" -name "Unattended-*-user-data" | head -n 1)
@@ -97,7 +96,10 @@ pub_key = Path(sys.argv[2]).read_text().strip()
 
 content = user_data_path.read_text()
 
-# Add ssh autoinstall block with public key
+# Strip any vboxpostinstall invocations that fail unattended setup
+content = '\n'.join([line for line in content.splitlines() if 'vboxpostinstall.sh' not in line]) + '\n'
+
+# Add ssh autoinstall block with public key and allow password
 if 'ssh:' in content:
     lines = content.splitlines()
     for idx, line in enumerate(lines):
@@ -110,8 +112,12 @@ else:
     content = content.replace('autoinstall:', f'autoinstall:\n  ssh:\n    install-server: true\n    allow-pw: true\n    authorized-keys:\n      - {pub_key}')
 
 user_data_path.write_text(content)
+
+# Also neutralize any auxiliary postinstall scripts
+for post_f in user_data_path.parent.glob('Unattended-*-vboxpostinstall.sh'):
+    post_f.write_text('#!/bin/bash\nexit 0\n')
 " "$USER_DATA_FILE" "$PUB_KEY_PATH"
-        echo "SSH key injected successfully."
+        echo "SSH key injected and postinstall sanitized successfully."
     else
         echo "Warning: autoinstall user-data file not found."
     fi
@@ -146,14 +152,21 @@ VBoxManage startvm "$VM_NAME" --type headless
 # 12. Wait for installation to complete and take snapshot
 echo ""
 echo "Waiting for Ubuntu installation to complete (SSH on port 2222)..."
+SSH_OK=false
 for i in $(seq 1 120); do
   if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o PasswordAuthentication=no \
       -i /home/lky/.ssh/id_ed25519 -p 2222 -o ConnectTimeout=5 lky@localhost true 2>/dev/null; then
-    echo "SSH is available. Taking snapshot..."
+    echo "SSH is available! Ubuntu installation successful."
+    SSH_OK=true
     break
   fi
   sleep 10
 done
+
+if [ "$SSH_OK" != "true" ]; then
+  echo "Error: Timed out waiting for SSH on port 2222."
+  exit 1
+fi
 
 echo "Taking snapshot 'clean-base'..."
 VBoxManage snapshot "$VM_NAME" take "clean-base" \
