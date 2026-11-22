@@ -1,156 +1,571 @@
 {% extends "base_admin.html" %}
 {% load static %}
 
-{% block title %}PHP & Performance Settings — W3Panel{% endblock %}
-{% block page_title %}PHP & Performance Settings{% endblock %}
+{% block title %}MultiPHP Manager & INI Editor — W3Host Manager{% endblock %}
+{% block page_title %}MultiPHP Manager & INI Editor{% endblock %}
 
 {% block content %}
-<div class="max-w-3xl mx-auto space-y-6">
+<div x-data="{
+    tab: '{{ active_tab|default:'manager' }}',
+    bulkVersion: '{{ default_php }}',
+    selectAll: false,
+    selectedDomains: []
+}" class="space-y-6">
+
     <!-- Header -->
-    <div class="flex items-center justify-between">
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-            <h2 class="text-lg font-bold text-gray-900">PHP & High-Performance Architecture</h2>
-            <p class="text-xs text-gray-500">Per-tenant pool isolation, kernel socket tuning, and production runtime limits</p>
+            <div class="flex items-center gap-2 text-xs text-slate-500 mb-1">
+                <a href="{% url 'admin_settings' %}" class="hover:text-blue-600 transition">Configuration</a>
+                <i class="ti ti-chevron-right text-[10px]"></i>
+                <span class="text-slate-800 font-semibold">MultiPHP & INI Settings</span>
+            </div>
+            <h2 class="text-xl font-bold text-slate-900 flex items-center gap-2">
+                <i class="ti ti-versions text-blue-600"></i>
+                MultiPHP Manager & INI Editor
+            </h2>
+            <p class="text-xs text-slate-500 mt-0.5">Manage system default PHP, provision PHP runtimes, switch per-domain PHP versions, and tune php.ini directives</p>
         </div>
+
         <div class="flex items-center gap-2">
-            <form method="post" class="inline">
+            <form method="post" action="{% url 'admin_php_settings' %}" class="inline">
                 {% csrf_token %}
                 <input type="hidden" name="action" value="reload_fpm">
-                <button type="submit" class="inline-flex items-center gap-1 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-medium rounded-lg transition border border-gray-200">
-                    <i class="ti ti-refresh"></i> Reload PHP-FPM
+                <input type="hidden" name="php_version" value="{{ default_php }}">
+                <button type="submit" class="inline-flex items-center gap-1.5 px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-lg border border-slate-300 transition shadow-xs">
+                    <i class="ti ti-refresh text-sm"></i> Reload PHP-FPM {{ default_php }}
                 </button>
             </form>
-            <form method="post" class="inline">
+            <form method="post" action="{% url 'admin_php_settings' %}" class="inline">
                 {% csrf_token %}
                 <input type="hidden" name="action" value="apply_tuning">
-                <button type="submit" class="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg shadow-sm transition">
-                    <i class="ti ti-bolt"></i> Apply Production Tuning
+                <button type="submit" class="inline-flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg shadow-sm transition">
+                    <i class="ti ti-bolt text-sm"></i> Apply Enterprise Tuning
                 </button>
             </form>
         </div>
     </div>
 
-    <!-- Production Tuning Status Overview -->
-    <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-sm space-y-4">
-        <div class="flex items-center justify-between pb-3 border-b border-gray-100">
-            <div class="flex items-center gap-2.5">
-                <div class="size-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center text-lg">
-                    <i class="ti ti-shield-check"></i>
+    <!-- Navigation Tabs -->
+    <div class="flex items-center border-b border-slate-200">
+        <div class="flex space-x-6 text-xs font-bold">
+            <button @click="tab = 'manager'"
+                    :class="tab === 'manager' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500 hover:text-slate-700'"
+                    class="pb-3 flex items-center gap-2 transition outline-none">
+                <i class="ti ti-versions text-sm"></i>
+                <span>MultiPHP Manager (Domains & Versions)</span>
+                <span class="px-1.5 py-0.5 rounded-full text-[10px] bg-slate-100 text-slate-700 font-mono">{{ websites|length }}</span>
+            </button>
+
+            <button @click="tab = 'ini'"
+                    :class="tab === 'ini' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500 hover:text-slate-700'"
+                    class="pb-3 flex items-center gap-2 transition outline-none">
+                <i class="ti ti-adjustments-code text-sm"></i>
+                <span>MultiPHP INI Editor</span>
+            </button>
+
+            <button @click="tab = 'performance'"
+                    :class="tab === 'performance' ? 'border-b-2 border-blue-600 text-blue-600' : 'text-slate-500 hover:text-slate-700'"
+                    class="pb-3 flex items-center gap-2 transition outline-none">
+                <i class="ti ti-shield-check text-sm"></i>
+                <span>Enterprise Performance Profile</span>
+                {% if tuning_status.fully_tuned %}
+                <span class="size-2 rounded-full bg-emerald-500"></span>
+                {% else %}
+                <span class="size-2 rounded-full bg-amber-400"></span>
+                {% endif %}
+            </button>
+        </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 1: MultiPHP Manager (System Default, Runtimes, Domain Table)      -->
+    <!-- ===================================================================== -->
+    <div x-show="tab === 'manager'" class="space-y-6">
+
+        <!-- Top Row: System Default & Quick Provisioning -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+            <!-- System Default PHP Card -->
+            <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
+                <div class="flex items-center gap-3">
+                    <div class="size-9 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center text-lg">
+                        <i class="ti ti-server-cog"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-bold text-xs uppercase tracking-wider text-slate-800">System Default PHP</h3>
+                        <p class="text-[11px] text-slate-500">Applied automatically to newly created websites</p>
+                    </div>
                 </div>
-                <div>
-                    <h3 class="text-sm font-semibold text-gray-900">DiamondWish Architecture Profile</h3>
-                    <p class="text-xs text-gray-500">Kernel socket backlogs, 1M file limits, OPcache JIT tracing, and tenant pool isolation</p>
+
+                <form method="post" action="{% url 'admin_php_settings' %}" class="space-y-3 pt-2">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="set_default_php">
+                    <div class="flex items-center gap-2">
+                        <select name="default_php" class="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-800 bg-white outline-none focus:border-blue-600">
+                            {% for p in installed_versions %}
+                            <option value="{{ p.version }}" {% if default_php == p.version %}selected{% endif %}>
+                                PHP {{ p.version }} {% if not p.installed %}(Not Installed){% endif %}
+                            </option>
+                            {% endfor %}
+                        </select>
+                        <button type="submit" class="px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition shadow-xs">
+                            Apply
+                        </button>
+                    </div>
+                    <div class="text-[11px] text-slate-500 flex items-center gap-1.5">
+                        <i class="ti ti-info-circle text-blue-500"></i>
+                        <span>Current System Default: <strong class="text-blue-700">PHP {{ default_php }}</strong></span>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Installed PHP Versions Grid (2 columns on wide) -->
+            <div class="lg:col-span-2 bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-3">
+                <div class="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                    <div>
+                        <h3 class="font-bold text-xs uppercase tracking-wider text-slate-800">Installed PHP Runtimes</h3>
+                        <p class="text-[11px] text-slate-500">MultiPHP runtime daemons and FPM services detected on this server</p>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
+                    {% for p in installed_versions %}
+                    <div class="p-3 rounded-lg border {% if p.active %}border-emerald-200 bg-emerald-50/30{% elif p.installed %}border-slate-200 bg-slate-50/50{% else %}border-dashed border-slate-300 bg-white{% endif %} space-y-2">
+                        <div class="flex items-center justify-between">
+                            <span class="font-bold text-xs text-slate-800">PHP {{ p.version }}</span>
+                            {% if p.active %}
+                            <span class="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded-full">
+                                <span class="size-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Active
+                            </span>
+                            {% elif p.installed %}
+                            <span class="inline-flex items-center text-[10px] font-medium text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">
+                                Inactive
+                            </span>
+                            {% else %}
+                            <span class="text-[10px] text-slate-400 font-medium">Missing</span>
+                            {% endif %}
+                        </div>
+
+                        <div class="text-[11px]">
+                            {% if p.installed %}
+                            <form method="post" action="{% url 'admin_php_settings' %}">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="reload_fpm">
+                                <input type="hidden" name="php_version" value="{{ p.version }}">
+                                <button type="submit" class="w-full text-center py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded text-[11px] font-medium transition">
+                                    Reload FPM
+                                </button>
+                            </form>
+                            {% else %}
+                            <form method="post" action="{% url 'admin_php_settings' %}" onsubmit="return confirm('Install PHP {{ p.version }} stack via APT?');">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="install_php">
+                                <input type="hidden" name="php_version" value="{{ p.version }}">
+                                <button type="submit" class="w-full text-center py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded text-[11px] font-bold transition flex items-center justify-center gap-1">
+                                    <i class="ti ti-download"></i> Install APT
+                                </button>
+                            </form>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
                 </div>
             </div>
-            {% if tuning_status.fully_tuned %}
-            <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                <i class="ti ti-circle-check"></i> Fully Optimized
-            </span>
-            {% else %}
-            <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">
-                <i class="ti ti-alert-triangle"></i> Tuning Pending
-            </span>
-            {% endif %}
         </div>
 
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div class="p-3 bg-gray-50 rounded-lg border border-gray-100">
-                <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wider">Kernel Sysctl</div>
-                <div class="mt-1 flex items-center gap-1.5">
-                    {% if tuning_status.sysctl %}
-                    <i class="ti ti-check text-emerald-600 text-base"></i>
-                    <span class="text-xs font-semibold text-gray-900">somaxconn 65535</span>
-                    {% else %}
-                    <i class="ti ti-x text-gray-400 text-base"></i>
-                    <span class="text-xs text-gray-400">Default</span>
-                    {% endif %}
+        <!-- Per-Domain PHP Version Table (WHM MultiPHP Manager Domain Table) -->
+        <div class="bg-white rounded-xl border border-slate-200/80 overflow-hidden shadow-xs space-y-0">
+            <!-- Filter & Bulk Actions Bar -->
+            <div class="p-4 bg-slate-50/70 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div class="flex items-center gap-3">
+                    <h3 class="font-bold text-xs uppercase tracking-wider text-slate-700">Per-Domain PHP Version Assignment</h3>
+                    <span class="text-xs text-slate-400">({{ websites|length }} domain{% if websites|length != 1 %}s{% endif %})</span>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-3">
+                    <!-- Search Input -->
+                    <form method="get" action="{% url 'admin_php_settings' %}" class="flex items-center gap-2">
+                        <input type="hidden" name="tab" value="manager">
+                        <div class="relative">
+                            <i class="ti ti-search absolute left-2.5 top-2 text-slate-400 text-xs"></i>
+                            <input type="text" name="q" value="{{ search_query }}" placeholder="Filter domains or users..."
+                                   class="rounded-lg border border-slate-300 pl-8 pr-3 py-1.5 text-xs text-slate-800 bg-white placeholder-slate-400 focus:border-blue-600 outline-none w-48 sm:w-60">
+                        </div>
+                        {% if search_query %}
+                        <a href="{% url 'admin_php_settings' %}?tab=manager" class="text-xs text-blue-600 hover:underline">Clear</a>
+                        {% endif %}
+                    </form>
+
+                    <!-- Bulk PHP Switcher Form -->
+                    <form method="post" action="{% url 'admin_php_settings' %}" id="bulkForm" class="flex items-center gap-1.5">
+                        {% csrf_token %}
+                        <input type="hidden" name="action" value="bulk_set_domain_php">
+                        <template x-for="id in selectedDomains">
+                            <input type="hidden" name="selected_websites" :value="id">
+                        </template>
+
+                        <div class="flex items-center gap-1.5" x-show="selectedDomains.length > 0" x-cloak>
+                            <span class="text-xs font-semibold text-slate-600" x-text="selectedDomains.length + ' selected:'"></span>
+                            <select name="target_php_version" x-model="bulkVersion" class="rounded-lg border border-slate-300 px-2.5 py-1 text-xs text-slate-800 bg-white font-medium focus:border-blue-600 outline-none">
+                                {% for p in installed_versions %}
+                                <option value="{{ p.version }}">PHP {{ p.version }}</option>
+                                {% endfor %}
+                            </select>
+                            <button type="submit" class="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition shadow-xs">
+                                Apply Bulk
+                            </button>
+                        </div>
+                    </form>
                 </div>
             </div>
 
-            <div class="p-3 bg-gray-50 rounded-lg border border-gray-100">
-                <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wider">File Descriptors</div>
-                <div class="mt-1 flex items-center gap-1.5">
-                    {% if tuning_status.limits %}
-                    <i class="ti ti-check text-emerald-600 text-base"></i>
-                    <span class="text-xs font-semibold text-gray-900">1,048,576 nofile</span>
-                    {% else %}
-                    <i class="ti ti-x text-gray-400 text-base"></i>
-                    <span class="text-xs text-gray-400">Standard (1024)</span>
-                    {% endif %}
-                </div>
-            </div>
-
-            <div class="p-3 bg-gray-50 rounded-lg border border-gray-100">
-                <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wider">OPcache JIT</div>
-                <div class="mt-1 flex items-center gap-1.5">
-                    {% if tuning_status.opcache %}
-                    <i class="ti ti-check text-emerald-600 text-base"></i>
-                    <span class="text-xs font-semibold text-gray-900">Tracing + 256MB</span>
-                    {% else %}
-                    <i class="ti ti-x text-gray-400 text-base"></i>
-                    <span class="text-xs text-gray-400">Default</span>
-                    {% endif %}
-                </div>
-            </div>
-
-            <div class="p-3 bg-gray-50 rounded-lg border border-gray-100">
-                <div class="text-[11px] font-medium text-gray-500 uppercase tracking-wider">Tenant Pools</div>
-                <div class="mt-1 flex items-center gap-1.5">
-                    <i class="ti ti-users text-blue-600 text-base"></i>
-                    <span class="text-xs font-semibold text-gray-900">{{ tuning_status.pool_count }} Pool{% if tuning_status.pool_count != 1 %}s{% endif %} Active</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="flex items-center justify-between text-xs text-gray-500 pt-1">
-            <div class="flex items-center gap-1.5">
-                <i class="ti ti-cloud-lock text-gray-400"></i>
-                <span>Nginx Real-IP Restoration:</span>
-                <span class="text-blue-700 font-medium">Per-Site (Configured in User Panel)</span>
-            </div>
-            <div class="flex items-center gap-1.5">
-                <i class="ti ti-lock text-gray-400"></i>
-                <span>Tenant Isolation: <strong class="text-gray-700">open_basedir + dedicated sockets</strong></span>
+            <!-- Table -->
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-slate-50/50 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                        <tr>
+                            <th class="px-5 py-3.5 w-10">
+                                <input type="checkbox" @change="
+                                    selectAll = !selectAll;
+                                    selectedDomains = selectAll ? [{% for w in websites %}'{{ w.id }}',{% endfor %}] : [];
+                                " :checked="selectAll" class="rounded text-blue-600 focus:ring-0">
+                            </th>
+                            <th class="px-5 py-3.5">Domain</th>
+                            <th class="px-5 py-3.5">Account / Owner</th>
+                            <th class="px-5 py-3.5">Framework</th>
+                            <th class="px-5 py-3.5">Assigned PHP Version</th>
+                            <th class="px-5 py-3.5">PHP-FPM Socket Handler</th>
+                            <th class="px-5 py-3.5 text-right">Change Version</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 font-sans text-xs">
+                        {% for w in websites %}
+                        <tr class="hover:bg-slate-50/60 transition">
+                            <td class="px-5 py-3.5">
+                                <input type="checkbox" value="{{ w.id }}" x-model="selectedDomains" class="rounded text-blue-600 focus:ring-0">
+                            </td>
+                            <td class="px-5 py-3.5 font-bold text-slate-900 whitespace-nowrap">
+                                <div class="flex items-center gap-2">
+                                    <i class="ti ti-world text-blue-600"></i>
+                                    <span>{{ w.domain }}</span>
+                                    {% if w.ssl_enabled %}
+                                    <i class="ti ti-lock text-emerald-600 text-[11px]" title="SSL Enabled"></i>
+                                    {% endif %}
+                                </div>
+                            </td>
+                            <td class="px-5 py-3.5 whitespace-nowrap">
+                                <span class="font-medium text-slate-700 bg-slate-100 px-2 py-0.5 rounded text-[11px]">
+                                    {{ w.owner.username }}
+                                </span>
+                            </td>
+                            <td class="px-5 py-3.5 whitespace-nowrap uppercase text-[10px] font-bold text-slate-500">
+                                {{ w.framework|default:"PHP" }}
+                            </td>
+                            <td class="px-5 py-3.5 whitespace-nowrap">
+                                <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold font-mono {% if w.php_version == default_php %}bg-blue-50 text-blue-700 border border-blue-200{% else %}bg-purple-50 text-purple-700 border border-purple-200{% endif %}">
+                                    PHP {{ w.php_version|default:default_php }}
+                                    {% if w.php_version == default_php %}<span class="text-[9px] font-sans font-normal opacity-75">(default)</span>{% endif %}
+                                </span>
+                            </td>
+                            <td class="px-5 py-3.5 font-mono text-[11px] text-slate-500 whitespace-nowrap">
+                                {% if w.framework == 'nodejs' %}
+                                <span class="text-slate-400">NodeJS Proxy (:{{ w.port }})</span>
+                                {% else %}
+                                <span>php{{ w.php_version|default:default_php }}-fpm-{{ w.owner.username }}.sock</span>
+                                {% endif %}
+                            </td>
+                            <td class="px-5 py-3.5 text-right whitespace-nowrap">
+                                <form method="post" action="{% url 'admin_php_settings' %}" class="inline-flex items-center gap-1.5">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="action" value="set_domain_php">
+                                    <input type="hidden" name="website_id" value="{{ w.id }}">
+                                    <select name="php_version" class="rounded border border-slate-300 px-2 py-1 text-xs text-slate-800 bg-white font-medium focus:border-blue-600 outline-none">
+                                        {% for p in installed_versions %}
+                                        <option value="{{ p.version }}" {% if w.php_version == p.version %}selected{% endif %}>
+                                            PHP {{ p.version }}
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                    <button type="submit" class="px-2.5 py-1 bg-slate-100 hover:bg-blue-50 hover:text-blue-600 text-slate-700 rounded text-xs font-bold transition">
+                                        Update
+                                    </button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="7" class="px-5 py-8 text-center text-slate-400 text-sm">
+                                {% if search_query %}
+                                No domains matched "{{ search_query }}".
+                                {% else %}
+                                No websites or domains hosted on this server yet.
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
 
-    <!-- PHP Directives Form -->
-    <div class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
-        <h3 class="text-sm font-semibold text-gray-900 mb-4 pb-2 border-b border-gray-100">PHP Global Directives</h3>
-        <form method="post" class="space-y-5">
-            {% csrf_token %}
-            <div>
-                <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">Default Global PHP Version</label>
-                <select name="default_php" class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm text-gray-900 bg-white outline-none focus:border-blue-600">
-                    <option value="8.4" {% if default_php == '8.4' %}selected{% endif %}>PHP 8.4</option>
-                    <option value="8.3" {% if default_php == '8.3' %}selected{% endif %}>PHP 8.3 (Standard Recommended)</option>
-                    <option value="8.2" {% if default_php == '8.2' %}selected{% endif %}>PHP 8.2</option>
-                    <option value="8.1" {% if default_php == '8.1' %}selected{% endif %}>PHP 8.1</option>
-                </select>
+    <!-- ===================================================================== -->
+    <!-- TAB 2: MultiPHP INI Editor (Directives per PHP version)               -->
+    <!-- ===================================================================== -->
+    <div x-show="tab === 'ini'" class="space-y-6" x-data="{
+        iniMem: '{{ ini_settings.memory_limit }}',
+        iniUpload: '{{ ini_settings.upload_max_filesize }}',
+        iniPost: '{{ ini_settings.post_max_size }}',
+        iniExec: '{{ ini_settings.max_execution_time }}',
+        iniInput: '{{ ini_settings.max_input_time }}',
+        iniErrors: '{{ ini_settings.display_errors }}'
+    }">
+        <div class="bg-white rounded-xl border border-slate-200/80 p-6 shadow-xs space-y-6">
+            <!-- Selector Header -->
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-5 border-b border-slate-200 gap-4">
+                <div>
+                    <h3 class="font-bold text-sm text-slate-900 flex items-center gap-2">
+                        <i class="ti ti-adjustments-alt text-blue-600"></i>
+                        MultiPHP INI Directives Editor
+                    </h3>
+                    <p class="text-xs text-slate-500 mt-0.5">Configure runtime limits and parameters for the selected PHP version</p>
+                </div>
+
+                <!-- PHP Version Switcher -->
+                <div class="flex items-center gap-2">
+                    <span class="text-xs font-semibold text-slate-600">Configuring:</span>
+                    <form method="get" action="{% url 'admin_php_settings' %}" class="inline">
+                        <input type="hidden" name="tab" value="ini">
+                        <select name="php_version" onchange="this.form.submit()"
+                                class="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-800 bg-white font-bold focus:border-blue-600 outline-none">
+                            {% for p in installed_versions %}
+                            <option value="{{ p.version }}" {% if selected_php == p.version %}selected{% endif %}>
+                                PHP {{ p.version }} {% if p.version == default_php %}(Default){% endif %}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </form>
+                </div>
             </div>
 
-            <div class="grid grid-cols-3 gap-4">
-                <div>
-                    <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">memory_limit</label>
-                    <input type="text" name="memory_limit" value="{{ memory_limit }}" class="mt-1.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 outline-none focus:border-blue-600">
-                </div>
-                <div>
-                    <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">max_execution</label>
-                    <input type="text" name="max_execution_time" value="{{ max_execution_time }}" class="mt-1.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 outline-none focus:border-blue-600">
-                </div>
-                <div>
-                    <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">upload_max</label>
-                    <input type="text" name="upload_max_filesize" value="{{ upload_max_filesize }}" class="mt-1.5 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 outline-none focus:border-blue-600">
-                </div>
-            </div>
-
-            <div class="pt-4 border-t border-gray-100 flex justify-end">
-                <button type="submit" class="inline-flex items-center gap-1.5 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-semibold shadow-sm transition">
-                    <i class="ti ti-check"></i> Save PHP Directives
+            <!-- Preset Buttons -->
+            <div class="flex flex-wrap items-center gap-2 pt-1 pb-2">
+                <span class="text-xs text-slate-400 font-medium">Quick Presets:</span>
+                <button type="button" @click="iniMem='128M'; iniUpload='32M'; iniPost='32M'; iniExec='60'; iniInput='60'; iniErrors='Off'"
+                        class="px-2.5 py-1 rounded bg-slate-100 hover:bg-slate-200 text-xs font-semibold text-slate-700 transition">
+                    Standard (128M)
+                </button>
+                <button type="button" @click="iniMem='256M'; iniUpload='64M'; iniPost='64M'; iniExec='120'; iniInput='60'; iniErrors='Off'"
+                        class="px-2.5 py-1 rounded bg-blue-50 hover:bg-blue-100 text-xs font-bold text-blue-700 transition">
+                    WordPress Recommended (256M)
+                </button>
+                <button type="button" @click="iniMem='512M'; iniUpload='128M'; iniPost='128M'; iniExec='300'; iniInput='120'; iniErrors='Off'"
+                        class="px-2.5 py-1 rounded bg-purple-50 hover:bg-purple-100 text-xs font-bold text-purple-700 transition">
+                    High-Resource / Heavy App (512M)
+                </button>
+                <button type="button" @click="iniErrors = (iniErrors === 'On' ? 'Off' : 'On')"
+                        class="px-2.5 py-1 rounded bg-amber-50 hover:bg-amber-100 text-xs font-bold text-amber-800 transition">
+                    Toggle Debug Errors (<span x-text="iniErrors"></span>)
                 </button>
             </div>
-        </form>
+
+            <!-- INI Form -->
+            <form method="post" action="{% url 'admin_php_settings' %}" class="space-y-5">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="save_ini">
+                <input type="hidden" name="php_version" value="{{ selected_php }}">
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+                    <!-- memory_limit -->
+                    <div class="space-y-1.5">
+                        <label class="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                            memory_limit
+                        </label>
+                        <input type="text" name="memory_limit" x-model="iniMem" required placeholder="256M"
+                               class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono text-slate-900 outline-none focus:border-blue-600">
+                        <p class="text-[11px] text-slate-400">Maximum script memory allocation (e.g. 256M, 512M)</p>
+                    </div>
+
+                    <!-- upload_max_filesize -->
+                    <div class="space-y-1.5">
+                        <label class="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                            upload_max_filesize
+                        </label>
+                        <input type="text" name="upload_max_filesize" x-model="iniUpload" required placeholder="64M"
+                               class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono text-slate-900 outline-none focus:border-blue-600">
+                        <p class="text-[11px] text-slate-400">Maximum single uploaded file size limit</p>
+                    </div>
+
+                    <!-- post_max_size -->
+                    <div class="space-y-1.5">
+                        <label class="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                            post_max_size
+                        </label>
+                        <input type="text" name="post_max_size" x-model="iniPost" required placeholder="64M"
+                               class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono text-slate-900 outline-none focus:border-blue-600">
+                        <p class="text-[11px] text-slate-400">Max size of POST request body (must be >= upload_max_filesize)</p>
+                    </div>
+
+                    <!-- max_execution_time -->
+                    <div class="space-y-1.5">
+                        <label class="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                            max_execution_time (seconds)
+                        </label>
+                        <input type="number" name="max_execution_time" x-model="iniExec" required placeholder="120"
+                               class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono text-slate-900 outline-none focus:border-blue-600">
+                        <p class="text-[11px] text-slate-400">Maximum execution timeout before termination</p>
+                    </div>
+
+                    <!-- max_input_time -->
+                    <div class="space-y-1.5">
+                        <label class="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                            max_input_time (seconds)
+                        </label>
+                        <input type="number" name="max_input_time" x-model="iniInput" required placeholder="60"
+                               class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono text-slate-900 outline-none focus:border-blue-600">
+                        <p class="text-[11px] text-slate-400">Maximum time to parse input data (POST, GET)</p>
+                    </div>
+
+                    <!-- display_errors -->
+                    <div class="space-y-1.5">
+                        <label class="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                            display_errors
+                        </label>
+                        <select name="display_errors" x-model="iniErrors" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono text-slate-900 bg-white outline-none focus:border-blue-600">
+                            <option value="Off">Off (Production Secure - Recommended)</option>
+                            <option value="On">On (Development & Debugging Only)</option>
+                        </select>
+                        <p class="text-[11px] text-slate-400">Controls whether PHP errors are printed to stdout</p>
+                    </div>
+                </div>
+
+                <div class="pt-4 border-t border-slate-100 flex items-center justify-between">
+                    <span class="text-xs text-slate-400">Configuration is saved to <code class="font-mono text-slate-600">/etc/php/{{ selected_php }}/fpm/conf.d/20-w3panel-directives.ini</code></span>
+                    <button type="submit" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition shadow-xs flex items-center gap-2">
+                        <i class="ti ti-device-floppy text-sm"></i>
+                        Save PHP {{ selected_php }} Directives & Reload
+                    </button>
+                </div>
+            </form>
+        </div>
     </div>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 3: Enterprise Performance Profile                                 -->
+    <!-- ===================================================================== -->
+    <div x-show="tab === 'performance'" class="space-y-6">
+        <div class="bg-white rounded-xl border border-slate-200/80 p-6 shadow-xs space-y-6">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-100 gap-3">
+                <div class="flex items-center gap-3">
+                    <div class="size-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-xl">
+                        <i class="ti ti-shield-check"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-sm font-bold text-slate-900">Enterprise High-Concurrency Performance Profile</h3>
+                        <p class="text-xs text-slate-500">Kernel socket backlogs, 1M file limits, OPcache JIT tracing, and tenant pool isolation</p>
+                    </div>
+                </div>
+
+                {% if tuning_status.fully_tuned %}
+                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    <i class="ti ti-circle-check"></i> Fully Optimized
+                </span>
+                {% else %}
+                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                    <i class="ti ti-alert-triangle"></i> Tuning Pending
+                </span>
+                {% endif %}
+            </div>
+
+            <!-- Metrics Grid -->
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div class="p-4 bg-slate-50 rounded-xl border border-slate-200/60">
+                    <div class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Kernel Sysctl</div>
+                    <div class="mt-2 flex items-center gap-2">
+                        {% if tuning_status.sysctl %}
+                        <i class="ti ti-check text-emerald-600 text-lg"></i>
+                        <span class="text-xs font-bold text-slate-900">somaxconn 65535</span>
+                        {% else %}
+                        <i class="ti ti-x text-slate-400 text-lg"></i>
+                        <span class="text-xs text-slate-400">Default (128)</span>
+                        {% endif %}
+                    </div>
+                    <div class="text-[10px] text-slate-400 mt-1">/etc/sysctl.d/99-w3panel.conf</div>
+                </div>
+
+                <div class="p-4 bg-slate-50 rounded-xl border border-slate-200/60">
+                    <div class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">File Descriptors</div>
+                    <div class="mt-2 flex items-center gap-2">
+                        {% if tuning_status.limits %}
+                        <i class="ti ti-check text-emerald-600 text-lg"></i>
+                        <span class="text-xs font-bold text-slate-900">1,048,576 nofile</span>
+                        {% else %}
+                        <i class="ti ti-x text-slate-400 text-lg"></i>
+                        <span class="text-xs text-slate-400">Standard (1024)</span>
+                        {% endif %}
+                    </div>
+                    <div class="text-[10px] text-slate-400 mt-1">/etc/security/limits.d/99-w3panel.conf</div>
+                </div>
+
+                <div class="p-4 bg-slate-50 rounded-xl border border-slate-200/60">
+                    <div class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">OPcache JIT Engine</div>
+                    <div class="mt-2 flex items-center gap-2">
+                        {% if tuning_status.opcache %}
+                        <i class="ti ti-check text-emerald-600 text-lg"></i>
+                        <span class="text-xs font-bold text-slate-900">Tracing + 256MB</span>
+                        {% else %}
+                        <i class="ti ti-x text-slate-400 text-lg"></i>
+                        <span class="text-xs text-slate-400">Default OPcache</span>
+                        {% endif %}
+                    </div>
+                    <div class="text-[10px] text-slate-400 mt-1">JIT Buffer 64M Enabled</div>
+                </div>
+
+                <div class="p-4 bg-slate-50 rounded-xl border border-slate-200/60">
+                    <div class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Tenant PHP Pools</div>
+                    <div class="mt-2 flex items-center gap-2">
+                        <i class="ti ti-users text-blue-600 text-lg"></i>
+                        <span class="text-xs font-bold text-slate-900">{{ tuning_status.pool_count }} Active Pool{% if tuning_status.pool_count != 1 %}s{% endif %}</span>
+                    </div>
+                    <div class="text-[10px] text-slate-400 mt-1">Dedicated User Sockets</div>
+                </div>
+            </div>
+
+            <div class="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 space-y-2">
+                <div class="font-bold text-slate-800">What This Performance Profile Enforces:</div>
+                <ul class="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
+                    <li class="flex items-center gap-2">
+                        <i class="ti ti-check text-emerald-600"></i>
+                        <span>High socket backlog (65,535) preventing dropped connections during traffic spikes</span>
+                    </li>
+                    <li class="flex items-center gap-2">
+                        <i class="ti ti-check text-emerald-600"></i>
+                        <span>TCP socket reuse (`tcp_tw_reuse`) to minimize TIME_WAIT socket exhaustion</span>
+                    </li>
+                    <li class="flex items-center gap-2">
+                        <i class="ti ti-check text-emerald-600"></i>
+                        <span>PHP JIT Tracing (Just-In-Time) compiler active for native code acceleration</span>
+                    </li>
+                    <li class="flex items-center gap-2">
+                        <i class="ti ti-check text-emerald-600"></i>
+                        <span>Isolated tenant Unix sockets with strict `open_basedir` security jailing</span>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="flex items-center justify-between pt-2">
+                <span class="text-xs text-slate-400">Applies kernel parameters, security limits, and OPcache configurations to the underlying OS</span>
+                <form method="post" action="{% url 'admin_php_settings' %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="apply_tuning">
+                    <button type="submit" class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition shadow-xs flex items-center gap-2">
+                        <i class="ti ti-bolt text-sm"></i>
+                        Apply Enterprise Performance Tuning
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
 </div>
 {% endblock %}

@@ -9,6 +9,7 @@ import platform
 import subprocess
 import logging
 from pathlib import Path
+from django.db.models import Q
 from django.http import JsonResponse, HttpResponse
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
@@ -53,7 +54,7 @@ def _sidebar_context(active_page=''):
         'sidebar_settings': [
             {'label': 'Basic WebHost Setup', 'url': '/settings/', 'active': 'settings'},
             {'label': 'Initial Setup Wizard', 'url': '/wizards/', 'active': 'wizards'},
-            {'label': 'PHP Configuration', 'url': '/settings/php/', 'active': 'php'},
+            {'label': 'MultiPHP Manager', 'url': '/settings/php/', 'active': 'php'},
             {'label': 'API Access', 'url': '/settings/api/', 'active': 'api'},
         ],
         'sidebar_security': [
@@ -1231,51 +1232,213 @@ def admin_api_settings(request):
     })
 
 
+def get_installed_php_versions():
+    """Detect installed PHP versions and runtime statuses on server."""
+    versions = ['8.1', '8.2', '8.3', '8.4']
+    results = []
+    for ver in versions:
+        fpm_bin = Path(f"/usr/sbin/php-fpm{ver}")
+        fpm_dir = Path(f"/etc/php/{ver}/fpm")
+        cli_bin = shutil.which(f"php{ver}")
+        
+        is_installed = fpm_dir.exists() or fpm_bin.exists()
+        if not is_installed and cli_bin:
+            try:
+                out = subprocess.run([cli_bin, '-v'], capture_output=True, text=True, timeout=2).stdout
+                if f"PHP {ver}" in out:
+                    is_installed = True
+            except Exception:
+                pass
+        
+        is_active = False
+        if is_installed:
+            try:
+                res = subprocess.run(['systemctl', 'is-active', f'php{ver}-fpm'], capture_output=True, text=True, timeout=2)
+                is_active = (res.stdout.strip() == 'active')
+            except Exception:
+                pass
+                
+        results.append({
+            'version': ver,
+            'installed': is_installed,
+            'active': is_active,
+            'fpm_dir': str(fpm_dir),
+        })
+    return results
+
+
+def save_php_ini_directives(php_version: str, directives: dict):
+    """Write customized INI directives to /etc/php/<ver>/fpm/conf.d/20-w3panel-directives.ini."""
+    content = f"""; W3Panel MultiPHP Managed Directives for PHP {php_version}
+memory_limit = {directives.get('memory_limit', '256M')}
+upload_max_filesize = {directives.get('upload_max_filesize', '64M')}
+post_max_size = {directives.get('post_max_size', '64M')}
+max_execution_time = {directives.get('max_execution_time', '120')}
+max_input_time = {directives.get('max_input_time', '60')}
+display_errors = {directives.get('display_errors', 'Off')}
+"""
+    target_dir = Path(f"/etc/php/{php_version}/fpm/conf.d")
+    if target_dir.exists():
+        from services.webserver.manager import _write_privileged_file
+        _write_privileged_file(target_dir / '20-w3panel-directives.ini', content)
+
+
 def admin_php_settings(request):
-    """PHP versions, performance tuning, and per-tenant pool configuration."""
-    from services.webserver import apply_system_tuning, get_system_tuning_status, reload_php_fpm
+    """
+    MultiPHP Manager & INI Editor (WHM Parity).
+    Manages system default PHP, installed runtimes, per-domain PHP handlers,
+    runtime directives (php.ini), and Enterprise performance profiles.
+    """
+    from services.webserver import (
+        apply_system_tuning,
+        get_system_tuning_status,
+        reload_php_fpm,
+        reload_webserver,
+        create_vhost,
+        create_user_php_pool,
+    )
 
     default_php = SystemSetting.get('default_php', '8.3')
 
     if request.method == 'POST':
         action = request.POST.get('action')
-        if action == 'apply_tuning':
+
+        if action == 'set_default_php':
+            new_default = request.POST.get('default_php', '8.3').strip()
+            SystemSetting.set('default_php', new_default)
+            messages.success(request, f"System default PHP updated to PHP {new_default}.")
+            return redirect('/settings/php/?tab=manager')
+
+        elif action == 'set_domain_php':
+            website_id = request.POST.get('website_id')
+            new_ver = request.POST.get('php_version', '8.3').strip()
+            site = get_object_or_404(Website, id=website_id)
+            site.php_version = new_ver
+            site.save(update_fields=['php_version'])
+            if site.owner and site.framework != 'nodejs':
+                try:
+                    create_user_php_pool(username=site.owner.username, php_version=new_ver)
+                except Exception as e:
+                    logger.warning(f"Failed to create PHP pool: {e}")
+            create_vhost(site)
+            reload_php_fpm(new_ver)
+            reload_webserver()
+            messages.success(request, f"Domain {site.domain} switched to PHP {new_ver}.")
+            return redirect('/settings/php/?tab=manager')
+
+        elif action == 'bulk_set_domain_php':
+            website_ids = request.POST.getlist('selected_websites')
+            target_ver = request.POST.get('target_php_version', '8.3').strip()
+            if not website_ids:
+                messages.warning(request, "No domains were selected for bulk PHP update.")
+                return redirect('/settings/php/?tab=manager')
+            sites = Website.objects.filter(id__in=website_ids).select_related('owner')
+            for site in sites:
+                site.php_version = target_ver
+                site.save(update_fields=['php_version'])
+                if site.owner and site.framework != 'nodejs':
+                    try:
+                        create_user_php_pool(username=site.owner.username, php_version=target_ver)
+                    except Exception as e:
+                        logger.warning(f"Failed to create PHP pool: {e}")
+                create_vhost(site)
+            reload_php_fpm(target_ver)
+            reload_webserver()
+            messages.success(request, f"Successfully switched {len(sites)} domain(s) to PHP {target_ver}.")
+            return redirect('/settings/php/?tab=manager')
+
+        elif action == 'install_php':
+            ver = request.POST.get('php_version', '').strip()
+            if ver in ('8.1', '8.2', '8.3', '8.4'):
+                cmd = [
+                    'sudo', '-n', 'apt-get', 'install', '-y',
+                    f'php{ver}-fpm', f'php{ver}-cli', f'php{ver}-mysql',
+                    f'php{ver}-curl', f'php{ver}-mbstring', f'php{ver}-xml',
+                    f'php{ver}-zip', f'php{ver}-intl', f'php{ver}-bcmath'
+                ]
+                try:
+                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                    if res.returncode == 0:
+                        messages.success(request, f"PHP {ver}-FPM stack provisioned successfully.")
+                    else:
+                        messages.error(request, f"Failed to install PHP {ver}: {res.stderr[:200]}")
+                except Exception as e:
+                    messages.error(request, f"PHP installation error: {e}")
+            return redirect('/settings/php/?tab=manager')
+
+        elif action == 'save_ini':
+            ver = request.POST.get('php_version', default_php).strip()
+            directives = {
+                'memory_limit': request.POST.get('memory_limit', '256M').strip(),
+                'upload_max_filesize': request.POST.get('upload_max_filesize', '64M').strip(),
+                'post_max_size': request.POST.get('post_max_size', '64M').strip(),
+                'max_execution_time': request.POST.get('max_execution_time', '120').strip(),
+                'max_input_time': request.POST.get('max_input_time', '60').strip(),
+                'display_errors': request.POST.get('display_errors', 'Off').strip(),
+            }
+            for k, v in directives.items():
+                SystemSetting.set(f"php_{ver}_{k}", v)
+            if ver == default_php:
+                SystemSetting.set('php_memory_limit', directives['memory_limit'])
+                SystemSetting.set('php_upload_max_filesize', directives['upload_max_filesize'])
+                SystemSetting.set('php_max_execution_time', directives['max_execution_time'])
+            save_php_ini_directives(ver, directives)
+            reload_php_fpm(ver)
+            messages.success(request, f"PHP {ver} INI directives updated and service reloaded.")
+            return redirect(f'/settings/php/?tab=ini&php_version={ver}')
+
+        elif action == 'apply_tuning':
             res = apply_system_tuning(default_php)
             if res.get('success'):
                 applied_str = ", ".join(res.get('applied', []))
-                messages.success(request, f"Production performance tuning applied successfully: {applied_str}.")
+                messages.success(request, f"Enterprise performance profile applied successfully: {applied_str}.")
             else:
                 messages.error(request, f"Could not apply tuning: {res.get('errors', ['Unknown error'])}")
-            return redirect('admin_php_settings')
+            return redirect('/settings/php/?tab=performance')
 
-        if action == 'reload_fpm':
-            if reload_php_fpm(default_php):
-                messages.success(request, f"PHP-FPM {default_php} reloaded successfully.")
+        elif action == 'reload_fpm':
+            target_fpm = request.POST.get('php_version', default_php).strip()
+            if reload_php_fpm(target_fpm):
+                messages.success(request, f"PHP-FPM {target_fpm} reloaded successfully.")
             else:
-                messages.warning(request, f"PHP-FPM {default_php} reload bypassed or service not active.")
-            return redirect('admin_php_settings')
+                messages.warning(request, f"PHP-FPM {target_fpm} reload bypassed or service not active.")
+            return redirect('/settings/php/?tab=manager')
 
-        default_php = request.POST.get('default_php', '8.3')
-        memory_limit = request.POST.get('memory_limit', '256M')
-        max_execution = request.POST.get('max_execution_time', '120')
-        upload_max = request.POST.get('upload_max_filesize', '64M')
-        
-        SystemSetting.set('default_php', default_php)
-        SystemSetting.set('php_memory_limit', memory_limit)
-        SystemSetting.set('php_max_execution_time', max_execution)
-        SystemSetting.set('php_upload_max_filesize', upload_max)
-        messages.success(request, 'PHP configuration updated.')
-        return redirect('admin_php_settings')
+    # GET handling
+    active_tab = request.GET.get('tab', 'manager').strip()
+    selected_php = request.GET.get('php_version', default_php).strip()
+    search_query = request.GET.get('q', '').strip()
+
+    installed_versions = get_installed_php_versions()
+
+    websites = Website.objects.select_related('owner').all().order_by('domain')
+    if search_query:
+        websites = websites.filter(Q(domain__icontains=search_query) | Q(owner__username__icontains=search_query))
+
+    ini_settings = {
+        'memory_limit': SystemSetting.get(f'php_{selected_php}_memory_limit') or SystemSetting.get('php_memory_limit', '256M'),
+        'upload_max_filesize': SystemSetting.get(f'php_{selected_php}_upload_max_filesize') or SystemSetting.get('php_upload_max_filesize', '64M'),
+        'post_max_size': SystemSetting.get(f'php_{selected_php}_post_max_size', '64M'),
+        'max_execution_time': SystemSetting.get(f'php_{selected_php}_max_execution_time') or SystemSetting.get('php_max_execution_time', '120'),
+        'max_input_time': SystemSetting.get(f'php_{selected_php}_max_input_time', '60'),
+        'display_errors': SystemSetting.get(f'php_{selected_php}_display_errors', 'Off'),
+    }
 
     tuning_status = get_system_tuning_status(default_php)
 
     return render(request, 'admin/php_settings.html', {
         **_sidebar_context('php'),
+        'active_tab': active_tab,
         'default_php': default_php,
-        'memory_limit': SystemSetting.get('php_memory_limit', '256M'),
-        'max_execution_time': SystemSetting.get('php_max_execution_time', '120'),
-        'upload_max_filesize': SystemSetting.get('php_upload_max_filesize', '64M'),
+        'selected_php': selected_php,
+        'search_query': search_query,
+        'installed_versions': installed_versions,
+        'websites': websites,
+        'ini_settings': ini_settings,
         'tuning_status': tuning_status,
+        'memory_limit': ini_settings['memory_limit'],
+        'max_execution_time': ini_settings['max_execution_time'],
+        'upload_max_filesize': ini_settings['upload_max_filesize'],
     })
 
 

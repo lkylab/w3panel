@@ -53,6 +53,7 @@ urlpatterns = [
     path('license/', views.license_management if hasattr(views, 'license_management') else views.admin_license, name='admin_license'),
     path('settings/api/', views.admin_api_settings, name='admin_api_settings'),
     path('settings/php/', views.admin_php_settings, name='admin_php_settings'),
+    path('php/', views.admin_php_settings, name='admin_php_shortcut'),
     path('settings/notifications/', views.admin_notifications_settings, name='admin_notifications_settings'),
     
     # Security

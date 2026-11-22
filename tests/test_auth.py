@@ -377,4 +377,67 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(resp_int.status_code, 200)
         self.assertContains(resp_int, 'Hourly Tasks (/etc/cron.hourly/)')
 
+    def test_multiphp_manager(self):
+        from packages.core.models import Website, SystemSetting
+        self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
+
+        # Seed website
+        site = Website.objects.create(
+            owner=self.user,
+            domain='multiphp.local',
+            doc_root='/tmp/w3panel_test/multiphp.local',
+            php_version='8.3'
+        )
+
+        # 1. Test GET /settings/php/ (Manager tab)
+        resp_mgr = self.client.get('/settings/php/')
+        self.assertEqual(resp_mgr.status_code, 200)
+        self.assertContains(resp_mgr, 'MultiPHP Manager')
+        self.assertContains(resp_mgr, 'System Default PHP')
+        self.assertContains(resp_mgr, 'Installed PHP Runtimes')
+        self.assertContains(resp_mgr, 'Per-Domain PHP Version Assignment')
+        self.assertContains(resp_mgr, 'multiphp.local')
+        # Ensure DiamondWish is renamed to Enterprise Performance Profile
+        self.assertNotContains(resp_mgr, 'DiamondWish')
+        self.assertContains(resp_mgr, 'Enterprise High-Concurrency Performance Profile')
+
+        # 2. Test GET /php/ shortcut route
+        resp_short = self.client.get('/php/')
+        self.assertEqual(resp_short.status_code, 200)
+        self.assertContains(resp_short, 'MultiPHP Manager')
+
+        # 3. Test POST set_default_php
+        resp_def = self.client.post('/settings/php/', {
+            'action': 'set_default_php',
+            'default_php': '8.2',
+        })
+        self.assertEqual(resp_def.status_code, 302)
+        self.assertEqual(SystemSetting.get('default_php'), '8.2')
+
+        # 4. Test POST set_domain_php
+        resp_dom = self.client.post('/settings/php/', {
+            'action': 'set_domain_php',
+            'website_id': site.id,
+            'php_version': '8.1',
+        })
+        self.assertEqual(resp_dom.status_code, 302)
+        site.refresh_from_db()
+        self.assertEqual(site.php_version, '8.1')
+
+        # 5. Test POST save_ini
+        resp_ini = self.client.post('/settings/php/', {
+            'action': 'save_ini',
+            'php_version': '8.3',
+            'memory_limit': '512M',
+            'upload_max_filesize': '128M',
+            'post_max_size': '128M',
+            'max_execution_time': '300',
+            'max_input_time': '120',
+            'display_errors': 'Off',
+        })
+        self.assertEqual(resp_ini.status_code, 302)
+        self.assertEqual(SystemSetting.get('php_8.3_memory_limit'), '512M')
+        self.assertEqual(SystemSetting.get('php_8.3_upload_max_filesize'), '128M')
+
+
 
