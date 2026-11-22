@@ -202,6 +202,7 @@ tailwind.config = { darkMode: 'class' }
 })();
 
 document.addEventListener('DOMContentLoaded', function() {
+    // Section collapse/expand toggle
     document.querySelectorAll('.sidebar-section-toggle').forEach(function(button) {
         button.addEventListener('click', function(e) {
             e.preventDefault();
@@ -222,6 +223,40 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     });
+
+    // Real-time Sidebar Feature Search Filter
+    const searchInput = document.querySelector('input[x-model="searchFilter"]');
+    if (searchInput) {
+        searchInput.addEventListener('input', function() {
+            const query = this.value.trim().toLowerCase();
+            document.querySelectorAll('.sidebar-section').forEach(function(sec) {
+                const items = sec.querySelectorAll('.sidebar-section-menu li');
+                let hasMatch = false;
+                items.forEach(function(li) {
+                    const text = (li.textContent || '').trim().toLowerCase();
+                    if (!query || text.includes(query)) {
+                        li.style.display = '';
+                        hasMatch = true;
+                    } else {
+                        li.style.display = 'none';
+                    }
+                });
+                const menu = sec.querySelector('.sidebar-section-menu');
+                const arrow = sec.querySelector('.sidebar-arrow');
+                if (query) {
+                    if (hasMatch) {
+                        sec.style.display = '';
+                        if (menu) menu.classList.remove('hidden');
+                        if (arrow) arrow.classList.add('rotate-180');
+                    } else {
+                        sec.style.display = 'none';
+                    }
+                } else {
+                    sec.style.display = '';
+                }
+            });
+        });
+    }
 });
 </script>
 {% endblock %}
