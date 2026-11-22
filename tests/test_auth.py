@@ -489,7 +489,6 @@ class AuthAndRoleTests(TestCase):
         resp = self.client.get('/software/w3packager/')
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'W3Packager')
-        self.assertContains(resp, 'EasyApache Parity')
         self.assertContains(resp, 'PHP Runtimes')
         self.assertContains(resp, 'PHP Extensions')
         self.assertContains(resp, 'Web &amp; Proxy Modules')

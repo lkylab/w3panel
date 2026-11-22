@@ -22,66 +22,10 @@
             <h2 class="text-xl font-bold text-slate-900 flex items-center gap-2">
                 <i class="ti ti-package text-blue-600"></i>
                 W3Packager
-                <span class="text-xs px-2.5 py-0.5 rounded-full font-bold bg-blue-50 text-blue-700 border border-blue-200">EasyApache Parity</span>
-                <span class="text-xs px-2.5 py-0.5 rounded-full font-semibold bg-slate-100 text-slate-700 border border-slate-200">
-                    <i class="ti ti-brand-ubuntu mr-0.5"></i> {{ os_info.pretty_name }}
-                </span>
             </h2>
-            <p class="text-xs text-slate-500 mt-0.5">Provision PHP runtimes, modules, and packages supported by {{ os_info.pretty_name }}</p>
-        </div>
-
-        <div class="flex items-center gap-2">
-            <a href="{% url 'admin_php_settings' %}" class="inline-flex items-center gap-1.5 px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-lg border border-slate-300 transition shadow-xs">
-                <i class="ti ti-versions text-sm"></i> MultiPHP Manager
-            </a>
-            <a href="{% url 'admin_php_settings' %}?tab=ini&mode=editor" class="inline-flex items-center gap-1.5 px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-lg border border-slate-300 transition shadow-xs">
-                <i class="ti ti-code text-sm"></i> Raw php.ini Editor
-            </a>
+            <p class="text-xs text-slate-500 mt-0.5">Provision and customize PHP runtimes, modules, and system packages.</p>
         </div>
     </div>
-
-    <!-- PPA Repository Status Notice -->
-    {% if ppa_enabled %}
-    <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-800 shadow-xs">
-        <div class="flex items-center gap-2.5">
-            <div class="size-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center text-base shrink-0 font-bold">
-                <i class="ti ti-check"></i>
-            </div>
-            <div>
-                <span class="font-bold">Ondřej Surý / deb.sury.org Multi-PHP Repository Active:</span>
-                <span class="text-emerald-700 ml-1">Upstream packages for {{ os_info.pretty_name }} are active. All repository-supported runtimes (7.4, 8.1, 8.2, 8.3, 8.4) are unlocked and ready for provisioning.</span>
-            </div>
-        </div>
-        <form method="post" action="{% url 'admin_w3packager' %}" class="shrink-0" onsubmit="return confirm('Disable Ondřej Surý / deb.sury.org repository? Only native OS packages will be shown.');">
-            {% csrf_token %}
-            <input type="hidden" name="action" value="disable_ppa">
-            <button type="submit" class="px-3.5 py-1.5 bg-white hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-lg text-xs font-semibold transition shadow-xs flex items-center gap-1.5 whitespace-nowrap">
-                <i class="ti ti-toggle-right text-sm text-emerald-600"></i>
-                Disable Repository
-            </button>
-        </form>
-    </div>
-    {% else %}
-    <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-900 shadow-xs">
-        <div class="flex items-center gap-2.5">
-            <div class="size-8 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center text-base shrink-0 font-bold">
-                <i class="ti ti-alert-triangle"></i>
-            </div>
-            <div>
-                <span class="font-bold">Multi-PHP Repository is not enabled on this server.</span>
-                <p class="text-amber-700 mt-0.5">{{ os_info.pretty_name }} natively supports PHP {{ default_php }}. Enable the Ondřej Surý / deb.sury.org repository to unlock additional PHP releases (7.4, 8.1, 8.2, 8.4).</p>
-            </div>
-        </div>
-        <form method="post" action="{% url 'admin_w3packager' %}" class="shrink-0">
-            {% csrf_token %}
-            <input type="hidden" name="action" value="enable_ppa">
-            <button type="submit" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-bold transition shadow-xs flex items-center gap-1.5 whitespace-nowrap">
-                <i class="ti ti-cloud-download text-sm"></i>
-                Enable Ondřej PHP Repository
-            </button>
-        </form>
-    </div>
-    {% endif %}
 
     <!-- EasyApache 4 Style Step Navigation Tabs -->
     <div class="flex items-center border-b border-slate-200 overflow-x-auto">
@@ -132,8 +76,8 @@
         <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
             <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-100 gap-2">
                 <div>
-                    <h3 class="font-bold text-sm text-slate-900">Supported PHP Runtimes</h3>
-                    <p class="text-xs text-slate-500">Only PHP versions verified and supported by {{ os_info.pretty_name }} are displayed. Incompatible versions are excluded.</p>
+                    <h3 class="font-bold text-sm text-slate-900">PHP Runtimes</h3>
+                    <p class="text-xs text-slate-500">Manage installed PHP versions and FastCGI process managers.</p>
                 </div>
                 <div class="flex items-center gap-2 text-xs font-semibold text-slate-600">
                     <span>Default:</span>
@@ -239,8 +183,8 @@
                         <i class="ti ti-puzzle"></i>
                     </div>
                     <div>
-                        <h3 class="font-bold text-sm text-slate-900">Supported PHP Extensions &amp; Modules</h3>
-                        <p class="text-xs text-slate-500">Only modules verified and available in {{ os_info.pretty_name }} repositories for PHP {{ selected_php }} are shown.</p>
+                        <h3 class="font-bold text-sm text-slate-900">PHP Extensions &amp; Modules</h3>
+                        <p class="text-xs text-slate-500">Manage extensions and modules for PHP {{ selected_php }}.</p>
                     </div>
                 </div>
 
@@ -356,8 +300,8 @@
     <div x-show="tab === 'webserver'" class="space-y-4" x-cloak>
         <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
             <div class="pb-3 border-b border-slate-100">
-                <h3 class="font-bold text-sm text-slate-900">Supported Web Server &amp; Reverse Proxy Components</h3>
-                <p class="text-xs text-slate-500">Nginx web server and compression modules supported on {{ os_info.pretty_name }}</p>
+                <h3 class="font-bold text-sm text-slate-900">Web Server &amp; Reverse Proxy</h3>
+                <p class="text-xs text-slate-500">Nginx web server and compression modules.</p>
             </div>
 
             <div class="grid grid-cols-1 gap-3.5">
@@ -414,8 +358,8 @@
     <div x-show="tab === 'cli'" class="space-y-4" x-cloak>
         <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
             <div class="pb-3 border-b border-slate-100">
-                <h3 class="font-bold text-sm text-slate-900">Supported CLI Tools &amp; Extra Application Runtimes</h3>
-                <p class="text-xs text-slate-500">Developer tools and caching daemons verified and supported on {{ os_info.pretty_name }}</p>
+                <h3 class="font-bold text-sm text-slate-900">CLI Tools &amp; Extra Runtimes</h3>
+                <p class="text-xs text-slate-500">Developer tools and caching daemons.</p>
             </div>
 
             <div class="grid grid-cols-1 gap-3.5">
@@ -536,7 +480,7 @@
                     </div>
                     <div>
                         <h4 class="font-bold text-sm text-slate-900">Recommended Stacks</h4>
-                        <p class="text-xs text-slate-500">Popular full-stack configurations verified for {{ os_info.pretty_name }}</p>
+                        <p class="text-xs text-slate-500">Popular full-stack configurations.</p>
                     </div>
                 </div>
 
