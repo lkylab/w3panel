@@ -2598,11 +2598,12 @@ def admin_w3packager_provision(request):
             })
 
         catalog_new = get_w3packager_catalog()
-        final_installed_runtimes = [r['version'] for r in catalog_new['runtimes'] if r['installed']]
-        final_installed_exts = catalog_new['installed_extensions']
-        final_installed_web = catalog_new['installed_web']
-        final_installed_cli = catalog_new['installed_cli']
-        final_profiles = catalog_new['profiles']
+        packager_init_dict = json.loads(catalog_new['packager_init_json'])
+        final_installed_runtimes = packager_init_dict.get('installed_runtimes', [])
+        final_installed_exts = packager_init_dict.get('installed_extensions', [])
+        final_installed_web = packager_init_dict.get('installed_web', [])
+        final_installed_cli = packager_init_dict.get('installed_cli', [])
+        final_profiles = packager_init_dict.get('profiles', [])
 
         yield sse({
             'status': 'running',

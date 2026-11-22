@@ -76,7 +76,11 @@ cat << 'EOF' > /usr/local/bin/w3panel-test
 #!/usr/bin/env bash
 cd /usr/local/w3panel || exit 1
 export DJANGO_SETTINGS_MODULE=panel.settings
-/usr/local/w3panel/venv/bin/python manage.py test tests "$@"
+if [[ $# -eq 0 ]]; then
+    /usr/local/w3panel/venv/bin/python manage.py test tests
+else
+    /usr/local/w3panel/venv/bin/python manage.py test "$@"
+fi
 EOF
 chmod +x /usr/local/bin/w3panel-test
 

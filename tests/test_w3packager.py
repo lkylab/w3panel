@@ -73,7 +73,7 @@ class W3PackagerTests(TestCase):
     @patch('apps.admin.views.get_installed_dpkg_packages', return_value=['nginx', 'php8.1-fpm', 'php8.3-fpm'])
     def test_domain_lock_prevents_removal_in_stream(self, mock_pkgs, mock_vers):
         """Ensure active website on PHP 8.1 halts removal with fatal error in SSE stream."""
-        pkg = Package.objects.create(name='TestPlan', max_domains=5, disk_limit=1000)
+        pkg = Package.objects.create(name='TestPlan', websites_limit=5, disk_limit_mb=1000)
         Website.objects.create(domain='locked-site.test', owner=self.admin, package=pkg, php_version='8.1')
 
         # Payload tries to keep only 8.3, removing 8.1
