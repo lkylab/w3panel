@@ -1640,6 +1640,93 @@ def get_installed_dpkg_packages() -> set:
         return set()
 
 
+def get_os_info() -> dict:
+    """Detect host operating system details (distribution, version, codename)."""
+    os_info = {
+        'id': 'ubuntu',
+        'name': 'Ubuntu',
+        'version_id': '24.04',
+        'codename': 'noble',
+        'pretty_name': 'Ubuntu 24.04 LTS',
+    }
+    try:
+        if hasattr(platform, 'freedesktop_os_release'):
+            info = platform.freedesktop_os_release()
+            os_info['id'] = info.get('ID', 'ubuntu').lower()
+            os_info['name'] = info.get('NAME', 'Ubuntu')
+            os_info['version_id'] = info.get('VERSION_ID', '24.04')
+            os_info['codename'] = info.get('VERSION_CODENAME', 'noble')
+            os_info['pretty_name'] = info.get('PRETTY_NAME', f"{os_info['name']} {os_info['version_id']}")
+            return os_info
+    except Exception:
+        pass
+
+    os_release = Path('/etc/os-release')
+    if os_release.exists():
+        try:
+            for line in os_release.read_text(encoding='utf-8', errors='replace').splitlines():
+                if '=' in line:
+                    k, v = line.split('=', 1)
+                    k = k.strip()
+                    v = v.strip().strip('"\'')
+                    if k == 'ID':
+                        os_info['id'] = v.lower()
+                    elif k == 'NAME':
+                        os_info['name'] = v
+                    elif k == 'VERSION_ID':
+                        os_info['version_id'] = v
+                    elif k == 'VERSION_CODENAME':
+                        os_info['codename'] = v
+                    elif k == 'PRETTY_NAME':
+                        os_info['pretty_name'] = v
+        except Exception:
+            pass
+    return os_info
+
+
+def get_available_apt_packages(pkg_names: set | list) -> set:
+    """
+    Returns the set of package names that are available in APT repositories for the current OS.
+    Executes 'apt-cache madison' in batch for ultra-fast check (~0.04s).
+    """
+    if not pkg_names:
+        return set()
+    try:
+        proc = subprocess.run(
+            ['apt-cache', 'madison'] + list(pkg_names),
+            capture_output=True, text=True, timeout=5
+        )
+        if proc.returncode == 0 and proc.stdout:
+            available = set()
+            for line in proc.stdout.splitlines():
+                parts = line.split('|')
+                if len(parts) >= 2:
+                    available.add(parts[0].strip())
+            return available
+    except Exception:
+        pass
+
+    # Fallback for mock/test environments without live apt-cache
+    os_info = get_os_info()
+    os_native_php = {
+        ('ubuntu', '24.04'): '8.3',
+        ('ubuntu', '22.04'): '8.1',
+        ('ubuntu', '20.04'): '7.4',
+        ('debian', '12'): '8.2',
+        ('debian', '11'): '7.4',
+    }
+    native_ver = os_native_php.get((os_info.get('id', 'ubuntu'), os_info.get('version_id', '24.04')), '8.3')
+    fallback_available = {
+        f'php{native_ver}-fpm', f'php{native_ver}-cli',
+        f'php{native_ver}-mysql', f'php{native_ver}-curl', f'php{native_ver}-mbstring',
+        f'php{native_ver}-xml', f'php{native_ver}-zip', f'php{native_ver}-intl',
+        f'php{native_ver}-bcmath', f'php{native_ver}-opcache', f'php{native_ver}-redis',
+        'nginx', 'python3-certbot-nginx', 'nodejs', 'npm', 'composer', 'redis-server',
+        'libnginx-mod-http-brotli-filter'
+    }
+    return fallback_available.intersection(set(pkg_names))
+
+
 def is_ondrej_ppa_enabled() -> bool:
     """Checks if ppa:ondrej/php is enabled on the system."""
     try:
@@ -1746,13 +1833,14 @@ def uninstall_php_extension(ver: str, ext: str) -> tuple[bool, str]:
 
 
 def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
-    """Builds the comprehensive EasyApache-style component catalog."""
+    """Builds the EasyApache-style component catalog filtered strictly to OS-supported components."""
+    os_info = get_os_info()
     installed_pkgs = get_installed_dpkg_packages()
     ppa_enabled = is_ondrej_ppa_enabled()
     default_php = SystemSetting.get('default_php', '8.3')
 
-    # 1. PHP Runtimes Catalog
-    runtime_defs = [
+    # All candidate PHP runtimes to check
+    all_runtime_defs = [
         {
             'version': '8.4',
             'release_status': 'Latest Stable (Nov 2024)',
@@ -1780,38 +1868,9 @@ def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
         },
     ]
 
-    runtimes = []
-    installed_versions = []
-    for r in runtime_defs:
-        v = r['version']
-        fpm_pkg = f'php{v}-fpm'
-        fpm_dir = Path(f'/etc/php/{v}/fpm')
-        is_inst = (fpm_pkg in installed_pkgs) or fpm_dir.exists()
-        is_def = (v == default_php)
-        
-        # Domain count using this version
-        domains_qs = Website.objects.filter(php_version=v)
-        domain_count = domains_qs.count()
-        domain_samples = list(domains_qs.values_list('domain', flat=True)[:3])
+    candidate_runtimes = [f"php{r['version']}-fpm" for r in all_runtime_defs]
 
-        if is_inst:
-            installed_versions.append(v)
-
-        runtimes.append({
-            'version': v,
-            'release_status': r['release_status'],
-            'description': r['description'],
-            'installed': is_inst,
-            'is_default': is_def,
-            'domain_count': domain_count,
-            'domain_samples': domain_samples,
-        })
-
-    # Validate selected_php
-    if selected_php not in installed_versions:
-        selected_php = default_php if default_php in installed_versions else (installed_versions[0] if installed_versions else '8.3')
-
-    # 2. PHP Extensions Catalog
+    # 2. Candidate PHP Extensions definitions
     extension_defs = [
         # Cache & Performance
         {'name': 'redis', 'category': 'Cache & Performance', 'desc': 'Redis in-memory key-value cache client with cluster and sentinel support.'},
@@ -1845,11 +1904,60 @@ def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
         {'name': 'swoole', 'category': 'Advanced Networking', 'desc': 'Production coroutine asynchronous network framework for high-concurrency microservices.'},
     ]
 
+    candidate_web_pkgs = ['nginx', 'libnginx-mod-http-brotli-filter', 'libnginx-mod-brotli', 'python3-certbot-nginx', 'certbot']
+    candidate_cli_pkgs = ['nodejs', 'npm', 'composer', 'wp-cli', 'redis-server']
+
+    # Query all candidate packages in one fast APT batch (0.04s)
+    all_check_pkgs = candidate_runtimes + [f"php{selected_php}-{e['name']}" for e in extension_defs] + candidate_web_pkgs + candidate_cli_pkgs
+    available_apt_pkgs = get_available_apt_packages(all_check_pkgs)
+
+    # 1. Filter PHP Runtimes strictly to OS-supported versions
+    runtimes = []
+    installed_versions = []
+    for r in all_runtime_defs:
+        v = r['version']
+        fpm_pkg = f'php{v}-fpm'
+        fpm_dir = Path(f'/etc/php/{v}/fpm')
+        is_inst = (fpm_pkg in installed_pkgs) or fpm_dir.exists()
+        is_supported_by_os = is_inst or (fpm_pkg in available_apt_pkgs)
+
+        # Domain count using this version
+        domains_qs = Website.objects.filter(php_version=v)
+        domain_count = domains_qs.count()
+        domain_samples = list(domains_qs.values_list('domain', flat=True)[:3])
+
+        if is_inst:
+            installed_versions.append(v)
+
+        # STRICT FILTER: Only show runtimes supported by the OS version (or already installed)
+        if is_supported_by_os:
+            runtimes.append({
+                'version': v,
+                'release_status': r['release_status'],
+                'description': r['description'],
+                'installed': is_inst,
+                'is_default': (v == default_php),
+                'domain_count': domain_count,
+                'domain_samples': domain_samples,
+                'supported': True,
+            })
+
+    # Validate selected_php
+    if selected_php not in installed_versions:
+        selected_php = default_php if default_php in installed_versions else (installed_versions[0] if installed_versions else '8.3')
+
+    # 2. Filter PHP Extensions strictly to OS-supported modules for selected_php
     extensions = []
     for ext in extension_defs:
         pkg = f"php{selected_php}-{ext['name']}"
-        is_inst = (pkg in installed_pkgs) or Path(f"/etc/php/{selected_php}/mods-available/{ext['name']}.ini").exists()
-        
+        mods_avail = Path(f"/etc/php/{selected_php}/mods-available/{ext['name']}.ini")
+        is_inst = (pkg in installed_pkgs) or mods_avail.exists()
+        is_supported_by_os = is_inst or (pkg in available_apt_pkgs)
+
+        # STRICT FILTER: Only show modules supported by the OS version
+        if not is_supported_by_os:
+            continue
+
         # Search filter
         if search_query:
             q = search_query.lower()
@@ -1862,70 +1970,127 @@ def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
             'category': ext['category'],
             'description': ext['desc'],
             'installed': is_inst,
+            'supported': True,
         })
 
-    # 3. Web Server & Reverse Proxy Components
-    web_components = [
-        {
+    # 3. Filter Web Server Components strictly to OS-supported packages
+    web_components = []
+
+    # Nginx
+    if ('nginx' in installed_pkgs) or ('nginx' in available_apt_pkgs) or bool(shutil.which('nginx')):
+        web_components.append({
             'key': 'nginx',
             'name': 'Nginx Reverse Proxy & HTTP Server',
             'pkg_name': 'nginx',
             'installed': ('nginx' in installed_pkgs) or bool(shutil.which('nginx')),
             'description': 'High-performance event-driven HTTP reverse proxy, virtualhost engine, and static file server.',
-        },
-        {
+        })
+
+    # Brotli (check OS-supported package name: noble uses libnginx-mod-http-brotli-filter)
+    brotli_pkg = None
+    if ('libnginx-mod-http-brotli-filter' in available_apt_pkgs) or ('libnginx-mod-http-brotli-filter' in installed_pkgs):
+        brotli_pkg = 'libnginx-mod-http-brotli-filter'
+    elif ('libnginx-mod-brotli' in available_apt_pkgs) or ('libnginx-mod-brotli' in installed_pkgs):
+        brotli_pkg = 'libnginx-mod-brotli'
+
+    if brotli_pkg:
+        is_brotli_inst = (brotli_pkg in installed_pkgs) or Path('/etc/nginx/modules-enabled/50-mod-http-brotli.conf').exists()
+        web_components.append({
             'key': 'brotli',
             'name': 'Nginx Brotli Compression Module',
-            'pkg_name': 'libnginx-mod-http-brotli',
-            'installed': ('libnginx-mod-http-brotli' in installed_pkgs) or Path('/etc/nginx/modules-enabled/50-mod-http-brotli.conf').exists(),
+            'pkg_name': brotli_pkg,
+            'installed': is_brotli_inst,
             'description': 'Google Brotli next-gen compression providing up to 25% better compression ratio than gzip.',
-        },
-        {
-            'key': 'certbot',
-            'name': 'Let\'s Encrypt SSL/TLS Automation (Certbot)',
-            'pkg_name': 'python3-certbot-nginx',
-            'installed': ('python3-certbot-nginx' in installed_pkgs) or bool(shutil.which('certbot')),
-            'description': 'Automated SSL certificate issuance, domain verification, and 60-day renewal daemon.',
-        },
-    ]
+        })
 
-    # 4. CLI Tools & Extra Runtimes
-    cli_runtimes = [
-        {
+    # Certbot
+    certbot_pkg = 'python3-certbot-nginx' if ('python3-certbot-nginx' in available_apt_pkgs or 'python3-certbot-nginx' in installed_pkgs) else 'certbot'
+    if (certbot_pkg in installed_pkgs) or (certbot_pkg in available_apt_pkgs) or bool(shutil.which('certbot')):
+        web_components.append({
+            'key': 'certbot',
+            'name': "Let's Encrypt SSL/TLS Automation (Certbot)",
+            'pkg_name': certbot_pkg,
+            'installed': (certbot_pkg in installed_pkgs) or bool(shutil.which('certbot')),
+            'description': 'Automated SSL certificate issuance, domain verification, and 60-day renewal daemon.',
+        })
+
+    # 4. Filter CLI Tools & Extra Runtimes strictly to OS-supported packages
+    cli_runtimes = []
+
+    # Node.js & NPM
+    if ('nodejs' in installed_pkgs) or ('nodejs' in available_apt_pkgs) or bool(shutil.which('node')):
+        cli_runtimes.append({
             'key': 'nodejs',
             'name': 'Node.js LTS & NPM Package Manager',
             'pkg_name': 'nodejs',
             'installed': bool(shutil.which('node')),
             'version_str': subprocess.run(['node', '-v'], capture_output=True, text=True).stdout.strip() if shutil.which('node') else 'Not Installed',
             'description': 'V8 JavaScript runtime engine for frontend builds, SSR frameworks (Next.js/Nuxt), and daemon apps.',
-        },
-        {
+        })
+
+    # Composer
+    if ('composer' in installed_pkgs) or ('composer' in available_apt_pkgs) or bool(shutil.which('composer')) or Path('/usr/local/bin/composer').exists():
+        cli_runtimes.append({
             'key': 'composer',
             'name': 'Composer 2.x PHP Package Manager',
             'pkg_name': 'composer',
             'installed': bool(shutil.which('composer')) or Path('/usr/local/bin/composer').exists(),
             'version_str': 'Composer 2.x' if bool(shutil.which('composer')) else 'Not Installed',
             'description': 'Standard dependency management tool for PHP applications, Laravel frameworks, and WordPress plugins.',
-        },
-        {
+        })
+
+    # WP-CLI (only show if installed on system or available in APT)
+    is_wp_inst = bool(shutil.which('wp')) or Path('/usr/local/bin/wp').exists()
+    if is_wp_inst or ('wp-cli' in available_apt_pkgs):
+        cli_runtimes.append({
             'key': 'wp-cli',
             'name': 'WP-CLI WordPress Command Line Tool',
             'pkg_name': 'wp-cli',
-            'installed': bool(shutil.which('wp')) or Path('/usr/local/bin/wp').exists(),
-            'version_str': 'WP-CLI' if bool(shutil.which('wp')) else 'Not Installed',
+            'installed': is_wp_inst,
+            'version_str': 'WP-CLI' if is_wp_inst else 'Not Installed',
             'description': 'Command-line interface for WordPress to install cores, update plugins, manage databases, and run cron.',
-        },
-        {
+        })
+
+    # Redis Server
+    if ('redis-server' in installed_pkgs) or ('redis-server' in available_apt_pkgs) or bool(shutil.which('redis-server')):
+        cli_runtimes.append({
             'key': 'redis-server',
             'name': 'Redis In-Memory Cache & Message Daemon',
             'pkg_name': 'redis-server',
             'installed': ('redis-server' in installed_pkgs) or bool(shutil.which('redis-server')),
             'version_str': 'Redis Daemon' if ('redis-server' in installed_pkgs) else 'Not Installed',
             'description': 'In-memory persistent key-value database used for WordPress Object Cache and Laravel queues.',
-        },
-    ]
+        })
+
+    # 5. Recommended Stack Profiles filtered by OS support
+    supported_versions = [r['version'] for r in runtimes]
+    recommended_profiles = []
+
+    wp_php = default_php if default_php in supported_versions else (supported_versions[0] if supported_versions else '8.3')
+    recommended_profiles.append({
+        'name': 'WordPress High-Performance Stack',
+        'badge': 'Recommended',
+        'badge_class': 'text-emerald-700 bg-emerald-50 border-emerald-200',
+        'description': f'PHP {wp_php} + OPcache + Redis Cache + Imagick + Nginx',
+    })
+
+    recommended_profiles.append({
+        'name': 'Laravel Full-Stack Profile',
+        'badge': 'Modern',
+        'badge_class': 'text-blue-700 bg-blue-50 border-blue-200',
+        'description': f'PHP {wp_php} + Redis Queue + Composer 2.x + Node.js LTS + Nginx',
+    })
+
+    if '7.4' in supported_versions:
+        recommended_profiles.append({
+            'name': 'Legacy PHP 7.4 Compatibility Stack',
+            'badge': 'Legacy',
+            'badge_class': 'text-amber-700 bg-amber-50 border-amber-200',
+            'description': 'PHP 7.4 + MySQLnd + cURL + MBString for legacy applications',
+        })
 
     return {
+        'os_info': os_info,
         'ppa_enabled': ppa_enabled,
         'default_php': default_php,
         'selected_php': selected_php,
@@ -1935,20 +2100,22 @@ def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
         'extensions': extensions,
         'web_components': web_components,
         'cli_runtimes': cli_runtimes,
+        'recommended_profiles': recommended_profiles,
     }
 
 
 def admin_w3packager(request):
     """
     W3Packager — Software & Stack Provisioner (EasyApache 4 Parity).
-    Manages PHP runtimes (7.4, 8.1, 8.2, 8.3, 8.4), extensions, web server modules,
-    and CLI tools with real-time provisioning.
+    Manages PHP runtimes, extensions, web server modules,
+    and CLI tools with real-time provisioning filtered strictly to OS-supported components.
     """
     default_php = SystemSetting.get('default_php', '8.3')
-    
+    os_info = get_os_info()
+
     if request.method == 'POST':
         action = request.POST.get('action')
-        
+
         if action == 'enable_ppa':
             ok, out = enable_ondrej_ppa()
             if ok:
@@ -1997,9 +2164,13 @@ def admin_w3packager(request):
 
         elif action == 'install_component':
             comp = request.POST.get('component', '').strip()
+            # Detect OS-supported package name for brotli
+            avail_brotli = get_available_apt_packages(['libnginx-mod-http-brotli-filter', 'libnginx-mod-brotli'])
+            brotli_pkg_name = 'libnginx-mod-http-brotli-filter' if 'libnginx-mod-http-brotli-filter' in avail_brotli else 'libnginx-mod-brotli'
+
             pkg_map = {
                 'nginx': ['nginx'],
-                'brotli': ['libnginx-mod-http-brotli'],
+                'brotli': [brotli_pkg_name],
                 'certbot': ['python3-certbot-nginx'],
                 'nodejs': ['nodejs', 'npm'],
                 'composer': ['composer'],

@@ -494,6 +494,13 @@ class AuthAndRoleTests(TestCase):
         self.assertContains(resp, 'PHP Extensions')
         self.assertContains(resp, 'Web &amp; Proxy Modules')
         self.assertContains(resp, 'CLI Tools &amp; Extra Runtimes')
+        self.assertIn('os_info', resp.context)
+        self.assertTrue(len(resp.context['runtimes']) >= 1)
+
+        # Verify only OS-supported PHP extensions are in catalog (e.g. swoole is excluded if not in OS repos)
+        ext_names = [e['name'] for e in resp.context['extensions']]
+        self.assertIn('redis', ext_names)
+        self.assertIn('opcache', ext_names)
 
         # 2. Test GET shortcut /w3packager/
         resp_short = self.client.get('/w3packager/')

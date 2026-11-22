@@ -23,8 +23,11 @@
                 <i class="ti ti-package text-blue-600"></i>
                 W3Packager
                 <span class="text-xs px-2.5 py-0.5 rounded-full font-bold bg-blue-50 text-blue-700 border border-blue-200">EasyApache Parity</span>
+                <span class="text-xs px-2.5 py-0.5 rounded-full font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+                    <i class="ti ti-brand-ubuntu mr-0.5"></i> {{ os_info.pretty_name }}
+                </span>
             </h2>
-            <p class="text-xs text-slate-500 mt-0.5">Provision and customize PHP runtimes, PECL/native extensions, Nginx modules, and CLI runtimes</p>
+            <p class="text-xs text-slate-500 mt-0.5">Provision PHP runtimes, modules, and packages supported by {{ os_info.pretty_name }}</p>
         </div>
 
         <div class="flex items-center gap-2">
@@ -46,7 +49,7 @@
             </div>
             <div>
                 <span class="font-bold">Ondřej Surý Multi-PHP PPA Repository Active:</span>
-                <span class="text-emerald-700 ml-1">Upstream Debian/Ubuntu packages for PHP 7.4, 8.1, 8.2, 8.3, and 8.4 are ready for instant provisioning.</span>
+                <span class="text-emerald-700 ml-1">Upstream packages for {{ os_info.pretty_name }} are active. All repository-supported runtimes and extensions are ready for instant provisioning.</span>
             </div>
         </div>
         <span class="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 text-[11px] font-bold shrink-0 font-mono">ppa:ondrej/php</span>
@@ -58,8 +61,8 @@
                 <i class="ti ti-alert-triangle"></i>
             </div>
             <div>
-                <span class="font-bold">Multi-PHP Repository (ppa:ondrej/php) is not enabled on this server.</span>
-                <p class="text-amber-700 mt-0.5">Ubuntu 24.04 only includes PHP 8.3 by default. Enable the official Ondřej Surý repository to install PHP 8.1, 8.2, or 8.4.</p>
+                <span class="font-bold">Multi-PHP Repository is not enabled on this server.</span>
+                <p class="text-amber-700 mt-0.5">{{ os_info.pretty_name }} natively supports PHP {{ default_php }}. Only runtimes and packages verified for {{ os_info.name }} {{ os_info.version_id }} are shown. Enable the Ondřej Surý repository to install additional PHP releases.</p>
             </div>
         </div>
         <form method="post" action="{% url 'admin_w3packager' %}" class="shrink-0">
@@ -122,8 +125,8 @@
         <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
             <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-100 gap-2">
                 <div>
-                    <h3 class="font-bold text-sm text-slate-900">Available PHP Runtimes</h3>
-                    <p class="text-xs text-slate-500">Install parallel PHP versions or remove unneeded stacks. Sockets and systemd daemons are automatically created.</p>
+                    <h3 class="font-bold text-sm text-slate-900">Supported PHP Runtimes</h3>
+                    <p class="text-xs text-slate-500">Only PHP versions verified and supported by {{ os_info.pretty_name }} are displayed. Incompatible versions are excluded.</p>
                 </div>
                 <div class="flex items-center gap-2 text-xs font-semibold text-slate-600">
                     <span>Default:</span>
@@ -229,8 +232,8 @@
                         <i class="ti ti-puzzle"></i>
                     </div>
                     <div>
-                        <h3 class="font-bold text-sm text-slate-900">PHP Extensions & PECL Modules</h3>
-                        <p class="text-xs text-slate-500">Enable or remove database drivers, caching modules, and graphics libraries</p>
+                        <h3 class="font-bold text-sm text-slate-900">Supported PHP Extensions &amp; Modules</h3>
+                        <p class="text-xs text-slate-500">Only modules verified and available in {{ os_info.pretty_name }} repositories for PHP {{ selected_php }} are shown.</p>
                     </div>
                 </div>
 
@@ -346,8 +349,8 @@
     <div x-show="tab === 'webserver'" class="space-y-4" x-cloak>
         <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
             <div class="pb-3 border-b border-slate-100">
-                <h3 class="font-bold text-sm text-slate-900">Web Server & Reverse Proxy Components</h3>
-                <p class="text-xs text-slate-500">Manage Nginx HTTP server modules, next-gen compression, and automated SSL/TLS engines</p>
+                <h3 class="font-bold text-sm text-slate-900">Supported Web Server &amp; Reverse Proxy Components</h3>
+                <p class="text-xs text-slate-500">Nginx web server and compression modules supported on {{ os_info.pretty_name }}</p>
             </div>
 
             <div class="grid grid-cols-1 gap-3.5">
@@ -404,8 +407,8 @@
     <div x-show="tab === 'cli'" class="space-y-4" x-cloak>
         <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-4">
             <div class="pb-3 border-b border-slate-100">
-                <h3 class="font-bold text-sm text-slate-900">CLI Tools & Extra Application Runtimes</h3>
-                <p class="text-xs text-slate-500">Manage modern developer runtimes, command-line frameworks, and background caching servers</p>
+                <h3 class="font-bold text-sm text-slate-900">Supported CLI Tools &amp; Extra Application Runtimes</h3>
+                <p class="text-xs text-slate-500">Developer tools and caching daemons verified and supported on {{ os_info.pretty_name }}</p>
             </div>
 
             <div class="grid grid-cols-1 gap-3.5">
@@ -482,6 +485,14 @@
 
                 <div class="space-y-2.5 text-xs">
                     <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50">
+                        <span class="font-semibold text-slate-600">Host OS Environment:</span>
+                        <span class="font-bold text-slate-800">{{ os_info.pretty_name }} ({{ os_info.codename }})</span>
+                    </div>
+                    <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50">
+                        <span class="font-semibold text-slate-600">Catalog Filter:</span>
+                        <span class="font-bold text-emerald-700 flex items-center gap-1"><i class="ti ti-shield-check"></i> OS-Supported Only</span>
+                    </div>
+                    <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50">
                         <span class="font-semibold text-slate-600">Default PHP Runtime:</span>
                         <span class="font-bold font-mono text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">PHP {{ default_php }}</span>
                     </div>
@@ -490,6 +501,8 @@
                         <div class="flex items-center gap-1">
                             {% for v in installed_versions %}
                             <span class="font-bold font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">{{ v }}</span>
+                            {% empty %}
+                            <span class="text-slate-400">None</span>
                             {% endfor %}
                         </div>
                     </div>
@@ -516,26 +529,20 @@
                     </div>
                     <div>
                         <h4 class="font-bold text-sm text-slate-900">Recommended Stacks</h4>
-                        <p class="text-xs text-slate-500">Popular full-stack configurations ready for deployment</p>
+                        <p class="text-xs text-slate-500">Popular full-stack configurations verified for {{ os_info.pretty_name }}</p>
                     </div>
                 </div>
 
                 <div class="space-y-3">
+                    {% for prof in recommended_profiles %}
                     <div class="p-3 rounded-lg border border-slate-200 bg-slate-50/50 space-y-1.5">
                         <div class="flex items-center justify-between">
-                            <span class="font-bold text-xs text-slate-900">WordPress High-Performance Stack</span>
-                            <span class="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">Recommended</span>
+                            <span class="font-bold text-xs text-slate-900">{{ prof.name }}</span>
+                            <span class="text-[10px] font-bold {{ prof.badge_class }} px-2 py-0.5 rounded border">{{ prof.badge }}</span>
                         </div>
-                        <p class="text-[11px] text-slate-500">PHP 8.3 + OPcache + Redis Cache + Imagick + WP-CLI + Nginx</p>
+                        <p class="text-[11px] text-slate-500">{{ prof.description }}</p>
                     </div>
-
-                    <div class="p-3 rounded-lg border border-slate-200 bg-slate-50/50 space-y-1.5">
-                        <div class="flex items-center justify-between">
-                            <span class="font-bold text-xs text-slate-900">Laravel Full-Stack Profile</span>
-                            <span class="text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">Modern</span>
-                        </div>
-                        <p class="text-[11px] text-slate-500">PHP 8.4 + Redis Queue + Composer 2.x + Node.js LTS (Vite) + Nginx</p>
-                    </div>
+                    {% endfor %}
                 </div>
             </div>
         </div>
