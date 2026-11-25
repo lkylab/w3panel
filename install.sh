@@ -64,7 +64,7 @@ echo "  ██║███╗██║ ╚═══██╗██╔═══�
 echo "  ╚███╔███╔╝██████╔╝██║     ██║  ██║██║ ╚████║███████╗███████╗"
 echo "  ╚══╝╚══╝ ╚═════╝ ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝╚══════╝"
 echo -e "${NC}"
-echo -e "  ${CYAN}W3Panel v2 — Container-Native Hosting Panel${NC}"
+echo -e "  ${CYAN}W3Panel v2 — Modern Web Hosting Control Panel${NC}"
 echo -e "  Arch: ${ARCH_LABEL}   OS: ${OS_ID} ${OS_VER}"
 echo ""
 

@@ -1,6 +1,6 @@
 # W3Panel v2
 
-Container-native hosting control panel with Podman-based per-user isolation.
+Modern, lightweight web hosting control panel with isolated tenant environments and modular stack provisioning.
 
 ## Features
 
