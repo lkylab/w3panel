@@ -54,7 +54,6 @@ def _sidebar_context(active_page=''):
         ],
         'sidebar_settings': [
             {'label': 'Basic WebHost Setup', 'url': '/settings/', 'active': 'settings'},
-            {'label': 'Initial Setup Wizard', 'url': '/wizards/', 'active': 'wizards'},
             {'label': 'W3Packager (Software)', 'url': '/software/w3packager/', 'active': 'w3packager'},
             {'label': 'MultiPHP Manager', 'url': '/settings/php/', 'active': 'php'},
             {'label': 'API Access', 'url': '/settings/api/', 'active': 'api'},

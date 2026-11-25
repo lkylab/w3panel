@@ -63,6 +63,10 @@ class AuthAndRoleTests(TestCase):
             self.assertNotContains(wiz_resp, dup)
         self.assertNotContains(wiz_resp, 'href="/users/"')
         self.assertNotContains(wiz_resp, 'href="/dashboard"')
+        wiz_html = wiz_resp.content.decode('utf-8')
+        aside_html = wiz_html.split('<aside', 1)[1].split('</aside>', 1)[0]
+        self.assertNotIn('Initial Setup Wizard', aside_html)
+        self.assertNotIn('/logout/', aside_html)
 
         # Failed SSE provisioning keeps wizard mandatory
         with patch('apps.admin.views.subprocess.run') as mock_run, \
@@ -94,6 +98,10 @@ class AuthAndRoleTests(TestCase):
             dash_resp = self.client.get('/dashboard/')
         self.assertEqual(dash_resp.status_code, 200)
         self.assertContains(dash_resp, 'href="/users/"')
+        dash_html = dash_resp.content.decode('utf-8')
+        dash_aside = dash_html.split('<aside', 1)[1].split('</aside>', 1)[0]
+        self.assertNotIn('Initial Setup Wizard', dash_aside)
+        self.assertNotIn('/logout/', dash_aside)
 
     def test_invalid_login_fails(self):
         response = self.client.post('/login/', {'username': 'admin_test', 'password': 'WrongPassword!'})
