@@ -303,7 +303,8 @@ class RoleEnforcementMiddleware:
                     return redirect('user_login')
             else:
                 # Enforce role isolation even behind reverse proxy / non-standard port
-                if role not in ('admin', 'reseller') and not path.startswith(USER_PREFIX) and not path.startswith(API_PREFIX):
+                is_db_tool = path.startswith('/phpmyadmin') or path.startswith('/pgadmin4')
+                if role not in ('admin', 'reseller') and not is_db_tool and not path.startswith(USER_PREFIX) and not path.startswith(API_PREFIX):
                     _log_unauthorized(user, request)
                     from django.shortcuts import redirect
                     return redirect('user_dashboard')
@@ -312,6 +313,8 @@ class RoleEnforcementMiddleware:
                 reseller_allowed = (
                     path in ('/', '/dashboard/', '/dashboard', '/plans/', '/plans', '/notifications/', '/notifications', '/api/metrics/', '/api/metrics')
                     or path.startswith('/users/')
+                    or path.startswith('/phpmyadmin')
+                    or path.startswith('/pgadmin4')
                 )
                 if not reseller_allowed:
                     if path.startswith('/terminal/exec/') or '/inspect/' in path or '/execute/' in path:

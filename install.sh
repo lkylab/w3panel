@@ -262,7 +262,7 @@ WorkingDirectory=$INSTALL_DIR
 ExecStart=$VENV_DIR/bin/gunicorn panel.wsgi:application \\
     --bind 0.0.0.0:$ADMIN_PORT \\
     --workers 2 \\
-    --timeout 120 \\
+    --timeout 300 \\
     --certfile=$SSL_DIR/panel.crt \\
     --keyfile=$SSL_DIR/panel.key \\
     --access-logfile $LOG_DIR/access.log \\
@@ -290,7 +290,7 @@ WorkingDirectory=$INSTALL_DIR
 ExecStart=$VENV_DIR/bin/gunicorn panel.wsgi:application \\
     --bind 0.0.0.0:$USER_PORT \\
     --workers 2 \\
-    --timeout 120 \\
+    --timeout 300 \\
     --certfile=$SSL_DIR/panel.crt \\
     --keyfile=$SSL_DIR/panel.key \\
     --access-logfile $LOG_DIR/access.log \\

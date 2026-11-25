@@ -3,13 +3,17 @@ W3Panel v2 — Database Provisioning & Performance Manager
 Executes database/user creation on local MariaDB / MySQL / PostgreSQL engines,
 and enforces low-memory, high-throughput database engine optimization.
 """
+import http.client
+from http.cookies import SimpleCookie
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import logging
 import secrets
 import string
+import tempfile
 from pathlib import Path
 
 logger = logging.getLogger('w3panel.database')
@@ -421,9 +425,15 @@ def is_phpmyadmin_installed() -> bool:
 
 
 def is_pgadmin4_installed() -> bool:
-    """Return True if pgAdmin 4 web package is installed on host."""
+    """Return True if pgAdmin 4 web package and systemd service are installed."""
     pg_dir = _get_pgadmin4_dir()
-    return (pg_dir / 'web' / 'pgAdmin4.py').exists() or (pg_dir / 'venv' / 'bin' / 'gunicorn').exists()
+    has_web = (pg_dir / 'web' / 'pgAdmin4.py').exists() or (pg_dir / 'venv' / 'bin' / 'gunicorn').exists()
+    if not has_web:
+        return False
+    if os.environ.get('W3PANEL_PGADMIN4_DIR') and not os.environ.get('W3PANEL_SYSTEMD_DIR'):
+        return True
+    systemd_dir = Path(os.environ.get('W3PANEL_SYSTEMD_DIR', '/etc/systemd/system'))
+    return (systemd_dir / 'pgadmin4.service').exists()
 
 
 def is_pgadmin4_running() -> bool:
@@ -455,24 +465,9 @@ def get_db_admin_tools_status() -> dict:
 
 
 def get_db_tool_url(request, tool: str) -> str:
-    """Build external web URL (/phpmyadmin/ or /pgadmin4/) pointing at host HTTP/HTTPS port."""
+    """Return same-origin URL (/phpmyadmin/ or /pgadmin4/) preserving active panel scheme, host, and port."""
     slug = 'phpmyadmin' if tool == 'phpmyadmin' else 'pgadmin4'
-    host = ''
-    if request is not None:
-        raw_host = request.get_host() or ''
-        host = raw_host.split(':')[0].strip()
-    if not host:
-        try:
-            from packages.core.models import SystemSetting
-            host = SystemSetting.get('server_ip', '').strip() or '127.0.0.1'
-        except Exception:
-            host = '127.0.0.1'
-
-    ssl_dir = Path(os.environ.get('W3PANEL_SSL_DIR', '/etc/w3panel/ssl'))
-    has_ssl = (ssl_dir / 'panel.crt').exists() and (ssl_dir / 'panel.key').exists()
-    is_https = bool(has_ssl and request is not None and (request.is_secure() or request.META.get('HTTP_X_FORWARDED_PROTO') == 'https'))
-    scheme = 'https' if is_https else 'http'
-    return f"{scheme}://{host}/{slug}/"
+    return f"/{slug}/"
 
 
 def _detect_php_fpm_socket() -> str:
@@ -512,9 +507,14 @@ def _render_db_tools_locations(pma_on: bool, pg4_on: bool, php_sock: str) -> str
         index index.php;
 
         location ~ ^/phpmyadmin/(.+\\.php)$ {{
+            set $pma_https "";
+            if ($http_x_forwarded_proto = "https") {{
+                set $pma_https "on";
+            }}
             fastcgi_split_path_info ^/phpmyadmin/(.+\\.php)(/.*)$;
             include fastcgi_params;
             fastcgi_index index.php;
+            fastcgi_param HTTPS $pma_https;
             fastcgi_param SCRIPT_FILENAME {pma_dir}/$1;
             fastcgi_param DOCUMENT_ROOT {pma_dir};
             fastcgi_pass unix:{php_sock};
@@ -590,6 +590,13 @@ def configure_db_admin_webserver() -> dict:
     names_str = ' '.join(server_names)
     nginx_body = [
         f"""server {{
+    listen 127.0.0.1:8090;
+    server_name _;
+    client_max_body_size 128M;
+
+{locations}
+}}""",
+        f"""server {{
     {listen_80}
     server_name {names_str};
     client_max_body_size 128M;
@@ -663,11 +670,156 @@ def ensure_db_admin_webserver_configured() -> dict:
     if not status['phpmyadmin_available'] and not status['pgadmin4_available']:
         return {'success': True, 'configured': False}
     sites_enabled = Path(os.environ.get('W3PANEL_NGINX_ENABLED_DIR', '/etc/nginx/sites-enabled'))
-    if (sites_enabled / 'w3panel-dbtools.conf').exists():
-        return {'success': True, 'configured': True}
+    conf_link = sites_enabled / 'w3panel-dbtools.conf'
+    if conf_link.exists():
+        try:
+            if '127.0.0.1:8090' in conf_link.read_text(errors='ignore'):
+                return {'success': True, 'configured': True}
+        except Exception:
+            return {'success': True, 'configured': True}
     if not _find_bin('nginx', 'apache2') and not os.environ.get('W3PANEL_NGINX_SITES_DIR'):
         return {'success': True, 'configured': False}
     return configure_db_admin_webserver()
+
+
+def proxy_db_tool_request(request, tool: str, subpath: str = ''):
+    """Reverse-proxy /phpmyadmin/... and /pgadmin4/... on the active panel host & port."""
+    from django.http import HttpResponse
+    from django.shortcuts import redirect
+
+    slug = 'phpmyadmin' if tool == 'phpmyadmin' else ('pgadmin4' if tool == 'pgadmin4' else '')
+    if not slug:
+        return HttpResponse('Unknown database tool.', status=404)
+
+    db_tools = get_db_admin_tools_status()
+    if (slug == 'phpmyadmin' and not db_tools['phpmyadmin_available']) or (slug == 'pgadmin4' and not db_tools['pgadmin4_available']):
+        return HttpResponse(f'{slug} is not installed or its database engine is unavailable.', status=404)
+
+    if not subpath and not request.path_info.endswith('/'):
+        qs = request.META.get('QUERY_STRING', '')
+        return redirect(f'/{slug}/' + (f'?{qs}' if qs else ''))
+
+    if slug == 'phpmyadmin':
+        ensure_db_admin_webserver_configured()
+        targets = [('127.0.0.1', 8090), ('127.0.0.1', 80)]
+    else:
+        targets = [('127.0.0.1', 5050)]
+
+    clean_sub = (subpath or '').lstrip('/')
+    upstream_path = f'/{slug}/{clean_sub}'
+    qs = request.META.get('QUERY_STRING', '')
+    if qs:
+        upstream_path = f'{upstream_path}?{qs}'
+
+    req_host = request.get_host()
+    proto = 'https' if (request.is_secure() or request.META.get('HTTP_X_FORWARDED_PROTO') == 'https') else 'http'
+    fwd_headers = {
+        'Host': req_host,
+        'X-Forwarded-Host': req_host,
+        'X-Forwarded-Proto': proto,
+        'X-Scheme': proto,
+        'Accept-Encoding': 'identity',
+    }
+    if slug == 'pgadmin4':
+        fwd_headers['X-Script-Name'] = '/pgadmin4'
+
+    for meta_key, hdr_name in (
+        ('CONTENT_TYPE', 'Content-Type'),
+        ('HTTP_COOKIE', 'Cookie'),
+        ('HTTP_ACCEPT', 'Accept'),
+        ('HTTP_ACCEPT_LANGUAGE', 'Accept-Language'),
+        ('HTTP_USER_AGENT', 'User-Agent'),
+        ('HTTP_X_REQUESTED_WITH', 'X-Requested-With'),
+        ('HTTP_X_CSRFTOKEN', 'X-CSRFToken'),
+    ):
+        val = request.META.get(meta_key)
+        if val:
+            fwd_headers[hdr_name] = val
+
+    body_bytes = request.body if request.method in ('POST', 'PUT', 'PATCH', 'DELETE') else None
+    if body_bytes is not None:
+        fwd_headers['Content-Length'] = str(len(body_bytes))
+
+    upstream_resp = None
+    upstream_body = b''
+    last_err = None
+    for host, port in targets:
+        conn = None
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=60)
+            conn.request(request.method, upstream_path, body=body_bytes, headers=fwd_headers)
+            upstream_resp = conn.getresponse()
+            upstream_body = upstream_resp.read()
+            break
+        except Exception as e:
+            last_err = e
+            upstream_resp = None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    if upstream_resp is None:
+        return HttpResponse(f'Unable to reach {slug} backend ({last_err}). Check service status in Service Manager.', status=502)
+
+    resp = HttpResponse(upstream_body, status=upstream_resp.status)
+    skip_headers = {'transfer-encoding', 'connection', 'keep-alive', 'content-encoding', 'content-length', 'set-cookie'}
+    host_no_port = req_host.split(':')[0]
+
+    for key, val in upstream_resp.getheaders():
+        low = key.lower()
+        if low in skip_headers:
+            continue
+        if low == 'location':
+            for prefix in (
+                'http://127.0.0.1:8090', 'https://127.0.0.1:8090',
+                'http://127.0.0.1:5050', 'https://127.0.0.1:5050',
+                'http://127.0.0.1:80', 'http://127.0.0.1',
+                f'https://{host_no_port}', f'http://{host_no_port}',
+            ):
+                if val.startswith(prefix + '/'):
+                    val = val[len(prefix):]
+                    break
+        resp[key] = val
+
+    for raw_cookie in (upstream_resp.headers.get_all('Set-Cookie') or []):
+        try:
+            parsed = SimpleCookie()
+            parsed.load(raw_cookie)
+            for cname, morsel in parsed.items():
+                resp.cookies[cname] = morsel.value
+                for attr in ('path', 'max-age', 'expires', 'httponly', 'samesite'):
+                    if morsel.get(attr):
+                        resp.cookies[cname][attr] = morsel[attr]
+                if request.is_secure():
+                    resp.cookies[cname]['secure'] = True
+        except Exception:
+            pass
+
+    return resp
+
+
+def _priv_prefix() -> list[str]:
+    """Return [] when running as root, else ['sudo', '-n']."""
+    return [] if os.geteuid() == 0 else ['sudo', '-n']
+
+
+def _run_apt_safe(apt_args: list[str], timeout: int = 360) -> subprocess.CompletedProcess:
+    """Run apt-get non-interactively waiting on dpkg locks and recovering interrupted dpkg."""
+    apt_env = {**os.environ, 'DEBIAN_FRONTEND': 'noninteractive'}
+    prefix = _priv_prefix()
+    cmd = prefix + ['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', '-o', 'DPkg::Lock::Timeout=120'] + apt_args
+    res = subprocess.run(cmd, env=apt_env, capture_output=True, text=True, timeout=timeout)
+    out_s = res.stdout.decode(errors='replace') if isinstance(res.stdout, bytes) else (res.stdout or '')
+    err_s = res.stderr.decode(errors='replace') if isinstance(res.stderr, bytes) else (res.stderr or '')
+    combined = f"{err_s}\n{out_s}"
+    if res.returncode != 0 and ('dpkg was interrupted' in combined or 'dpkg --configure -a' in combined):
+        cfg_cmd = prefix + ['env', 'DEBIAN_FRONTEND=noninteractive', 'dpkg', '--configure', '-a']
+        subprocess.run(cfg_cmd, env=apt_env, capture_output=True, text=True, timeout=180)
+        res = subprocess.run(cmd, env=apt_env, capture_output=True, text=True, timeout=timeout)
+    return res
 
 
 def install_phpmyadmin() -> dict:
@@ -676,6 +828,7 @@ def install_phpmyadmin() -> dict:
         return {'success': False, 'error': 'MariaDB / MySQL must be installed before installing phpMyAdmin.'}
 
     apt_env = {**os.environ, 'DEBIAN_FRONTEND': 'noninteractive'}
+    prefix = _priv_prefix()
     try:
         debconf_seed = (
             "phpmyadmin phpmyadmin/dbconfig-install boolean false\n"
@@ -683,7 +836,7 @@ def install_phpmyadmin() -> dict:
         )
         if shutil.which('debconf-set-selections'):
             subprocess.run(
-                ['sudo', '-n', 'debconf-set-selections'],
+                prefix + ['debconf-set-selections'],
                 input=debconf_seed,
                 text=True,
                 env=apt_env,
@@ -691,14 +844,10 @@ def install_phpmyadmin() -> dict:
                 timeout=10,
             )
 
-        subprocess.run(['sudo', '-n', 'apt-get', 'update', '-y'], env=apt_env, capture_output=True, text=True, timeout=120)
-        res = subprocess.run(
-            ['sudo', '-n', 'apt-get', 'install', '-y', 'phpmyadmin', 'php-mysql', 'php-mbstring', 'php-xml'],
-            env=apt_env,
-            capture_output=True,
-            text=True,
-            timeout=240,
-        )
+        upd_res = _run_apt_safe(['update', '-y'], timeout=120)
+        if upd_res.returncode != 0:
+            logger.warning(f"apt-get update warning during phpMyAdmin install: {upd_res.stderr}")
+        res = _run_apt_safe(['install', '-y', 'phpmyadmin', 'php-mysql', 'php-mbstring', 'php-xml'], timeout=300)
         if res.returncode != 0:
             return {'success': False, 'error': res.stderr or res.stdout or 'phpMyAdmin installation failed'}
 
@@ -721,15 +870,8 @@ $cfg['Servers'][1]['AllowNoPassword'] = false;
 
 def uninstall_phpmyadmin() -> dict:
     """Remove phpMyAdmin and refresh webserver dbtools configuration."""
-    apt_env = {**os.environ, 'DEBIAN_FRONTEND': 'noninteractive'}
     try:
-        res = subprocess.run(
-            ['sudo', '-n', 'apt-get', 'remove', '-y', 'phpmyadmin'],
-            env=apt_env,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        res = _run_apt_safe(['remove', '-y', 'phpmyadmin'], timeout=180)
         configure_db_admin_webserver()
         if res.returncode != 0:
             return {'success': False, 'error': res.stderr or res.stdout or 'phpMyAdmin removal failed'}
@@ -738,11 +880,8 @@ def uninstall_phpmyadmin() -> dict:
         return {'success': False, 'error': str(e)}
 
 
-def install_pgadmin4(admin_email: str = '', admin_password: str = '') -> dict:
-    """Install pgAdmin 4 Web Server Mode behind Gunicorn + Nginx/Apache (requires PostgreSQL)."""
-    if not is_postgresql_installed():
-        return {'success': False, 'error': 'PostgreSQL must be installed before installing pgAdmin 4.'}
-
+def configure_pgadmin4_runtime(admin_email: str = '', admin_password: str = '') -> dict:
+    """Write pgAdmin 4 config_local.py, initialize DB, install systemd unit, and configure Nginx/Apache."""
     email = (admin_email or '').strip()
     if not email:
         try:
@@ -754,63 +893,12 @@ def install_pgadmin4(admin_email: str = '', admin_password: str = '') -> dict:
         email = 'admin@localhost.localdomain'
 
     password = admin_password or generate_secure_password(16)
-    apt_env = {**os.environ, 'DEBIAN_FRONTEND': 'noninteractive'}
+    prefix = _priv_prefix()
+    pg_dir = _get_pgadmin4_dir()
 
-    try:
-        # Detect OS codename cleanly
-        codename = 'noble'
-        os_release = Path('/etc/os-release')
-        if os_release.exists():
-            for line in os_release.read_text(errors='ignore').splitlines():
-                if line.startswith('UBUNTU_CODENAME=') or line.startswith('VERSION_CODENAME='):
-                    val = line.split('=', 1)[1].strip().strip('"').lower()
-                    if re.match(r'^[a-z0-9-]+$', val):
-                        codename = val
-                        if line.startswith('UBUNTU_CODENAME='):
-                            break
-
-        keyring_path = '/etc/apt/keyrings/packages-pgadmin-org.gpg'
-        if not Path(keyring_path).exists():
-            subprocess.run(['sudo', '-n', 'mkdir', '-p', '/etc/apt/keyrings'], capture_output=True, timeout=5)
-            key_dl = subprocess.run(
-                ['curl', '-fsSL', 'https://www.pgadmin.org/static/packages_pgadmin_org.pub'],
-                capture_output=True,
-                timeout=30,
-            )
-            if key_dl.returncode != 0 or not key_dl.stdout:
-                return {'success': False, 'error': 'Failed to download pgAdmin GPG signing key.'}
-            gpg_res = subprocess.run(
-                ['sudo', '-n', 'gpg', '--dearmor', '--yes', '-o', keyring_path],
-                input=key_dl.stdout,
-                capture_output=True,
-                timeout=15,
-            )
-            if gpg_res.returncode != 0:
-                return {'success': False, 'error': 'Failed to install pgAdmin GPG signing key.'}
-
-        sources_content = (
-            "Types: deb\n"
-            f"URIs: https://ftp.postgresql.org/pub/pgadmin/pgadmin4/apt/{codename}\n"
-            "Suites: pgadmin4\n"
-            "Components: main\n"
-            f"Signed-By: {keyring_path}\n"
-        )
-        sources_path = Path(os.environ.get('W3PANEL_APT_SOURCES_DIR', '/etc/apt/sources.list.d')) / 'pgadmin4.sources'
-        _write_privileged_file(sources_path, sources_content)
-
-        subprocess.run(['sudo', '-n', 'apt-get', 'update', '-y'], env=apt_env, capture_output=True, text=True, timeout=120)
-        inst_res = subprocess.run(
-            ['sudo', '-n', 'apt-get', 'install', '-y', 'pgadmin4-web'],
-            env=apt_env,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-        if inst_res.returncode != 0:
-            return {'success': False, 'error': inst_res.stderr or inst_res.stdout or 'pgadmin4-web installation failed'}
-
-        pg_dir = _get_pgadmin4_dir()
-        config_local = """import os
+    config_local = """import http.client
+from http.cookies import SimpleCookie
+import os
 
 SERVER_MODE = True
 DATA_DIR = '/var/lib/pgadmin'
@@ -820,36 +908,53 @@ SESSION_DB_PATH = os.path.join(DATA_DIR, 'sessions')
 STORAGE_DIR = os.path.join(DATA_DIR, 'storage')
 MASTER_PASSWORD_REQUIRED = False
 """
-        _write_privileged_file(pg_dir / 'web' / 'config_local.py', config_local)
+    _write_privileged_file(pg_dir / 'web' / 'config_local.py', config_local)
 
-        subprocess.run(
-            ['sudo', '-n', 'mkdir', '-p', '/var/lib/pgadmin/sessions', '/var/lib/pgadmin/storage', '/var/log/pgadmin'],
-            capture_output=True,
-            timeout=5,
-        )
-        subprocess.run(['sudo', '-n', 'chown', '-R', 'www-data:www-data', '/var/lib/pgadmin', '/var/log/pgadmin'], capture_output=True, timeout=5)
+    subprocess.run(
+        prefix + ['mkdir', '-p', '/var/lib/pgadmin/sessions', '/var/lib/pgadmin/storage', '/var/log/pgadmin'],
+        capture_output=True,
+        timeout=5,
+    )
+    subprocess.run(prefix + ['chown', '-R', 'www-data:www-data', '/var/lib/pgadmin', '/var/log/pgadmin'], capture_output=True, timeout=5)
 
-        setup_env = {
-            **os.environ,
-            'PGADMIN_SETUP_EMAIL': email,
-            'PGADMIN_SETUP_PASSWORD': password,
-        }
+    # Pass credentials via 0600 script instead of CLI arguments or sudo -E (blocked without SETENV)
+    py_bin = shlex.quote(str(pg_dir / 'venv' / 'bin' / 'python'))
+    setup_py = shlex.quote(str(pg_dir / 'web' / 'setup.py'))
+    script_body = (
+        "#!/usr/bin/env bash\n"
+        "set -e\n"
+        f"export PGADMIN_SETUP_EMAIL={shlex.quote(email)}\n"
+        f"export PGADMIN_SETUP_PASSWORD={shlex.quote(password)}\n"
+        f"{py_bin} {setup_py} setup-db\n"
+    )
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(prefix='w3panel-pg4-', suffix='.sh')
+        os.chmod(tmp_path, 0o600)
+        with os.fdopen(fd, 'w') as fh:
+            fh.write(script_body)
         setup_res = subprocess.run(
-            ['sudo', '-n', '-E', str(pg_dir / 'venv' / 'bin' / 'python'), str(pg_dir / 'web' / 'setup.py'), 'setup-db'],
-            env=setup_env,
+            prefix + ['/bin/bash', tmp_path],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=90,
         )
         if setup_res.returncode != 0:
             return {'success': False, 'error': setup_res.stderr or setup_res.stdout or 'pgAdmin4 database initialization failed'}
-        subprocess.run(['sudo', '-n', 'chown', '-R', 'www-data:www-data', '/var/lib/pgadmin', '/var/log/pgadmin'], capture_output=True, timeout=5)
+    finally:
+        if tmp_path and Path(tmp_path).exists():
+            try:
+                Path(tmp_path).unlink()
+            except OSError:
+                pass
 
-        gunicorn_bin = str(pg_dir / 'venv' / 'bin' / 'gunicorn')
-        if not Path(gunicorn_bin).exists():
-            gunicorn_bin = '/usr/local/w3panel/venv/bin/gunicorn'
+    subprocess.run(prefix + ['chown', '-R', 'www-data:www-data', '/var/lib/pgadmin', '/var/log/pgadmin'], capture_output=True, timeout=5)
 
-        unit_content = f"""[Unit]
+    gunicorn_bin = str(pg_dir / 'venv' / 'bin' / 'gunicorn')
+    if not Path(gunicorn_bin).exists():
+        gunicorn_bin = '/usr/local/w3panel/venv/bin/gunicorn'
+
+    unit_content = f"""[Unit]
 Description=pgAdmin 4 Web Service (W3Panel)
 After=network.target postgresql.service
 
@@ -866,17 +971,76 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 """
-        systemd_dir = Path(os.environ.get('W3PANEL_SYSTEMD_DIR', '/etc/systemd/system'))
-        _write_privileged_file(systemd_dir / 'pgadmin4.service', unit_content)
+    systemd_dir = Path(os.environ.get('W3PANEL_SYSTEMD_DIR', '/etc/systemd/system'))
+    _write_privileged_file(systemd_dir / 'pgadmin4.service', unit_content)
 
-        subprocess.run(['sudo', '-n', 'systemctl', 'daemon-reload'], capture_output=True, timeout=10)
-        subprocess.run(['sudo', '-n', 'systemctl', 'enable', '--now', 'pgadmin4'], capture_output=True, timeout=15)
+    subprocess.run(prefix + ['systemctl', 'daemon-reload'], capture_output=True, timeout=10)
+    start_res = subprocess.run(prefix + ['systemctl', 'enable', '--now', 'pgadmin4'], capture_output=True, text=True, timeout=15)
+    if start_res.returncode != 0:
+        return {'success': False, 'error': start_res.stderr or start_res.stdout or 'Failed to start pgadmin4.service'}
 
-        web_res = configure_db_admin_webserver()
-        if not web_res.get('success'):
-            return {'success': False, 'error': web_res.get('error', 'Webserver configuration failed')}
+    web_res = configure_db_admin_webserver()
+    if not web_res.get('success'):
+        return {'success': False, 'error': web_res.get('error', 'Webserver configuration failed')}
 
-        return {'success': True, 'email': email, 'password': password}
+    return {'success': True, 'email': email, 'password': password}
+
+
+def install_pgadmin4(admin_email: str = '', admin_password: str = '') -> dict:
+    """Install pgAdmin 4 Web Server Mode behind Gunicorn + Nginx/Apache (requires PostgreSQL)."""
+    if not is_postgresql_installed():
+        return {'success': False, 'error': 'PostgreSQL must be installed before installing pgAdmin 4.'}
+
+    prefix = _priv_prefix()
+    try:
+        # Detect OS codename cleanly
+        codename = 'noble'
+        os_release = Path('/etc/os-release')
+        if os_release.exists():
+            for line in os_release.read_text(errors='ignore').splitlines():
+                if line.startswith('UBUNTU_CODENAME=') or line.startswith('VERSION_CODENAME='):
+                    val = line.split('=', 1)[1].strip().strip('"').lower()
+                    if re.match(r'^[a-z0-9-]+$', val):
+                        codename = val
+                        if line.startswith('UBUNTU_CODENAME='):
+                            break
+
+        keyring_path = '/etc/apt/keyrings/packages-pgadmin-org.gpg'
+        if not Path(keyring_path).exists():
+            subprocess.run(prefix + ['mkdir', '-p', '/etc/apt/keyrings'], capture_output=True, timeout=5)
+            key_dl = subprocess.run(
+                ['curl', '-fsSL', 'https://www.pgadmin.org/static/packages_pgadmin_org.pub'],
+                capture_output=True,
+                timeout=30,
+            )
+            if key_dl.returncode != 0 or not key_dl.stdout:
+                return {'success': False, 'error': 'Failed to download pgAdmin GPG signing key.'}
+            gpg_res = subprocess.run(
+                prefix + ['gpg', '--dearmor', '--yes', '-o', keyring_path],
+                input=key_dl.stdout,
+                capture_output=True,
+                timeout=15,
+            )
+            if gpg_res.returncode != 0:
+                return {'success': False, 'error': 'Failed to install pgAdmin GPG signing key.'}
+
+        sources_dir = Path(os.environ.get('W3PANEL_APT_SOURCES_DIR', '/etc/apt/sources.list.d'))
+        stale_sources = sources_dir / 'pgadmin4.sources'
+        if stale_sources.exists():
+            subprocess.run(prefix + ['rm', '-f', str(stale_sources)], capture_output=True, timeout=5)
+        list_content = (
+            f"deb [signed-by={keyring_path}] https://ftp.postgresql.org/pub/pgadmin/pgadmin4/apt/{codename} pgadmin4 main\n"
+        )
+        _write_privileged_file(sources_dir / 'pgadmin4.list', list_content)
+
+        upd_res = _run_apt_safe(['update', '-y'], timeout=120)
+        if upd_res.returncode != 0:
+            logger.warning(f"apt-get update warning during pgAdmin4 install: {upd_res.stderr}")
+        inst_res = _run_apt_safe(['install', '-y', 'pgadmin4-web'], timeout=420)
+        if inst_res.returncode != 0:
+            return {'success': False, 'error': inst_res.stderr or inst_res.stdout or 'pgadmin4-web installation failed'}
+
+        return configure_pgadmin4_runtime(admin_email=admin_email, admin_password=admin_password)
     except Exception as e:
         logger.error(f"pgAdmin4 install error: {e}")
         return {'success': False, 'error': str(e)}
@@ -884,20 +1048,14 @@ WantedBy=multi-user.target
 
 def uninstall_pgadmin4() -> dict:
     """Stop and remove pgAdmin 4 service/package and refresh webserver dbtools configuration."""
-    apt_env = {**os.environ, 'DEBIAN_FRONTEND': 'noninteractive'}
+    prefix = _priv_prefix()
     try:
-        subprocess.run(['sudo', '-n', 'systemctl', 'disable', '--now', 'pgadmin4'], capture_output=True, timeout=10)
+        subprocess.run(prefix + ['systemctl', 'disable', '--now', 'pgadmin4'], capture_output=True, timeout=10)
         unit_file = Path(os.environ.get('W3PANEL_SYSTEMD_DIR', '/etc/systemd/system')) / 'pgadmin4.service'
         if unit_file.exists():
-            subprocess.run(['sudo', '-n', 'rm', '-f', str(unit_file)], capture_output=True, timeout=5)
-            subprocess.run(['sudo', '-n', 'systemctl', 'daemon-reload'], capture_output=True, timeout=10)
-        res = subprocess.run(
-            ['sudo', '-n', 'apt-get', 'remove', '-y', 'pgadmin4-web'],
-            env=apt_env,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+            subprocess.run(prefix + ['rm', '-f', str(unit_file)], capture_output=True, timeout=5)
+            subprocess.run(prefix + ['systemctl', 'daemon-reload'], capture_output=True, timeout=10)
+        res = _run_apt_safe(['remove', '-y', 'pgadmin4-web'], timeout=180)
         configure_db_admin_webserver()
         if res.returncode != 0:
             return {'success': False, 'error': res.stderr or res.stdout or 'pgAdmin 4 removal failed'}

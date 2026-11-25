@@ -823,14 +823,15 @@ def admin_services_status(request):
     """Services status and individual 1-click management/installation."""
     from services.database import (
         configure_db_admin_webserver,
+        configure_pgadmin4_runtime,
         get_database_tuning_status,
         get_db_admin_tools_status,
-        get_db_tool_url,
         install_pgadmin4,
         install_phpmyadmin,
         uninstall_pgadmin4,
         uninstall_phpmyadmin,
     )
+    from services.database.manager import _run_apt_safe
 
     if request.method == 'POST':
         service_name = request.POST.get('service')
@@ -872,16 +873,15 @@ def admin_services_status(request):
                 return redirect('admin_services_status')
             pkgs = pkg_map[service_name]
             try:
-                subprocess.run(['sudo', 'apt-get', 'update', '-y'], timeout=60)
-                cmd = ['sudo', 'apt-get', 'install', '-y'] + pkgs
-                res = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
+                _run_apt_safe(['update', '-y'], timeout=120)
+                res = _run_apt_safe(['install', '-y'] + pkgs, timeout=300)
                 if res.returncode == 0:
                     daemon_name = 'mariadb' if service_name == 'mariadb' else service_name
-                    subprocess.run(['sudo', 'systemctl', 'enable', '--now', daemon_name], timeout=10)
+                    _run_privileged(['systemctl', 'enable', '--now', daemon_name], timeout=10)
                     configure_db_admin_webserver()
                     messages.success(request, f'{service_name.capitalize()} installed and started successfully!')
                 else:
-                    messages.error(request, f'Installation failed: {res.stderr}')
+                    messages.error(request, f'Installation failed: {res.stderr or res.stdout}')
             except Exception as e:
                 messages.error(request, f'Error installing {service_name}: {e}')
             return redirect('admin_services_status')
@@ -915,14 +915,13 @@ def admin_services_status(request):
                 return redirect('admin_services_status')
             pkgs = pkg_map[service_name]
             try:
-                subprocess.run(['sudo', 'systemctl', 'stop', service_name], timeout=10)
-                cmd = ['sudo', 'apt-get', 'remove', '-y'] + pkgs
-                res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                _run_privileged(['systemctl', 'stop', service_name], timeout=10)
+                res = _run_apt_safe(['remove', '-y'] + pkgs, timeout=180)
                 if res.returncode == 0:
                     configure_db_admin_webserver()
                     messages.success(request, f'{service_name.capitalize()} uninstalled successfully.')
                 else:
-                    messages.error(request, f'Uninstall failed: {res.stderr}')
+                    messages.error(request, f'Uninstall failed: {res.stderr or res.stdout}')
             except Exception as e:
                 messages.error(request, f'Error uninstalling {service_name}: {e}')
             return redirect('admin_services_status')
@@ -942,6 +941,15 @@ def admin_services_status(request):
                 messages.error(request, f'Invalid service: {service_name}')
                 return redirect('admin_services_status')
             try:
+                if service_name == 'pgadmin4' and action in ('start', 'restart'):
+                    pg_dir = Path(os.environ.get('W3PANEL_PGADMIN4_DIR', '/usr/pgadmin4'))
+                    systemd_dir = Path(os.environ.get('W3PANEL_SYSTEMD_DIR', '/etc/systemd/system'))
+                    if (pg_dir / 'web' / 'pgAdmin4.py').exists() and not (systemd_dir / 'pgadmin4.service').exists():
+                        actor_email = getattr(getattr(request, 'panel_user', None), 'email', '') or ''
+                        cfg_res = configure_pgadmin4_runtime(admin_email=actor_email)
+                        if not cfg_res.get('success'):
+                            messages.error(request, cfg_res.get('error', 'Failed to configure pgadmin4.service.'))
+                            return redirect('admin_services_status')
                 res = _run_privileged(['systemctl', action, service_name], timeout=15)
                 if res is None:
                     messages.error(request, f'Insufficient privileges to {action} {service_name}.')
@@ -1027,6 +1035,123 @@ def admin_db_tool_launch(request, tool):
         return redirect(get_db_tool_url(request, 'pgadmin4'))
     messages.error(request, 'Requested database admin tool is not available.')
     return redirect('admin_services_status')
+
+
+def admin_service_install_stream(request):
+    """Streaming SSE endpoint for service installation (prevents Gunicorn timeouts and apt lock aborts)."""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    service_name = (request.POST.get('service') or '').strip()
+    actor_email = getattr(getattr(request, 'panel_user', None), 'email', '') or ''
+    admin_email_setting = SystemSetting.get('admin_email', '').strip() or actor_email
+
+    from services.database import (
+        configure_db_admin_webserver,
+        configure_pgadmin4_runtime,
+        is_mariadb_installed,
+        is_postgresql_installed,
+    )
+    from services.database.manager import _priv_prefix
+
+    pkg_map = {
+        'nginx': ['nginx'],
+        'mariadb': ['mariadb-server', 'mariadb-client'],
+        'postgresql': ['postgresql', 'postgresql-contrib'],
+        'php8.3-fpm': ['php8.3-fpm', 'php8.3-mysql', 'php8.3-pgsql', 'php8.3-curl', 'php8.3-zip', 'php8.3-gd', 'php8.3-mbstring', 'php8.3-xml'],
+        'ufw': ['ufw'],
+        'phpmyadmin': ['phpmyadmin', 'php-mysql', 'php-mbstring', 'php-xml'],
+        'pgadmin4': ['pgadmin4-web'],
+    }
+    if service_name not in pkg_map:
+        return JsonResponse({'error': f'Unsupported service: {service_name}'}, status=400)
+
+    if service_name == 'phpmyadmin' and not is_mariadb_installed():
+        return JsonResponse({'error': 'MariaDB / MySQL must be installed before phpMyAdmin.'}, status=400)
+    if service_name == 'pgadmin4' and not is_postgresql_installed():
+        return JsonResponse({'error': 'PostgreSQL must be installed before pgAdmin 4.'}, status=400)
+
+    def event_stream():
+        def sse(payload):
+            return f"data: {json.dumps(payload)}\n\n"
+
+        has_error = False
+        pkgs = pkg_map[service_name]
+
+        yield sse({'status': 'running', 'percent': 10, 'step': f'Preparing {service_name}...', 'line': f'>> Recovering any interrupted dpkg state and waiting for APT lock...'})
+        for line in _stream_cmd(['dpkg', '--configure', '-a']):
+            yield sse({'status': 'running', 'percent': 14, 'step': 'Checking package state...', 'line': line})
+
+        if service_name == 'pgadmin4':
+            yield sse({'status': 'running', 'percent': 20, 'step': 'Adding pgAdmin 4 repository...', 'line': '>> Configuring official pgAdmin 4 APT repository...'})
+            codename = get_os_info().get('codename') or 'noble'
+            keyring_path = '/etc/apt/keyrings/packages-pgadmin-org.gpg'
+            prefix = _priv_prefix()
+            if not Path(keyring_path).exists():
+                subprocess.run(prefix + ['mkdir', '-p', '/etc/apt/keyrings'], capture_output=True, timeout=5)
+                key_dl = subprocess.run(['curl', '-fsSL', 'https://www.pgadmin.org/static/packages_pgadmin_org.pub'], capture_output=True, timeout=30)
+                if key_dl.returncode == 0 and key_dl.stdout:
+                    subprocess.run(prefix + ['gpg', '--dearmor', '--yes', '-o', keyring_path], input=key_dl.stdout, capture_output=True, timeout=15)
+                else:
+                    yield sse({'status': 'error', 'percent': 100, 'error': 'Failed to download pgAdmin GPG signing key.'})
+                    return
+            from services.webserver.manager import _write_privileged_file as _wpf
+            _wpf(Path('/etc/apt/sources.list.d/pgadmin4.list'), f"deb [signed-by={keyring_path}] https://ftp.postgresql.org/pub/pgadmin/pgadmin4/apt/{codename} pgadmin4 main\n")
+
+        yield sse({'status': 'running', 'percent': 28, 'step': 'Updating APT index...', 'line': '>> Running apt-get update...'})
+        for line in _stream_cmd(['apt-get', '-o', 'DPkg::Lock::Timeout=120', 'update', '-y']):
+            yield sse({'status': 'running', 'percent': 35, 'step': 'Updating APT index...', 'line': line})
+
+        if service_name == 'phpmyadmin' and shutil.which('debconf-set-selections'):
+            subprocess.run(
+                _priv_prefix() + ['debconf-set-selections'],
+                input="phpmyadmin phpmyadmin/dbconfig-install boolean false\nphpmyadmin phpmyadmin/reconfigure-webserver multiselect\n",
+                text=True,
+                capture_output=True,
+                timeout=10,
+            )
+
+        yield sse({'status': 'running', 'percent': 45, 'step': f'Installing {service_name}...', 'line': f'>> Installing packages: {" ".join(pkgs)}'})
+        for line in _stream_cmd(['apt-get', '-o', 'DPkg::Lock::Timeout=120', 'install', '-y'] + pkgs):
+            if line.startswith('>> [ERROR]'):
+                has_error = True
+            yield sse({'status': 'running', 'percent': 72, 'step': f'Installing {service_name}...', 'line': line})
+
+        if has_error:
+            yield sse({'status': 'error', 'percent': 100, 'error': f'Failed to install {service_name}. Check output above.'})
+            return
+
+        if service_name == 'pgadmin4':
+            yield sse({'status': 'running', 'percent': 86, 'step': 'Configuring pgAdmin 4 service & Nginx...', 'line': '>> Initializing pgAdmin 4 database, systemd service, and web proxy...'})
+            cfg_res = configure_pgadmin4_runtime(admin_email=admin_email_setting)
+            if not cfg_res.get('success'):
+                yield sse({'status': 'error', 'percent': 100, 'error': cfg_res.get('error', 'pgAdmin 4 configuration failed')})
+                return
+            yield sse({
+                'status': 'complete',
+                'percent': 100,
+                'step': 'pgAdmin 4 installed and running',
+                'line': f">> pgAdmin 4 ready! Login Email: {cfg_res.get('email')} | Password: {cfg_res.get('password')}",
+            })
+            return
+
+        if service_name == 'phpmyadmin':
+            from services.webserver.manager import _write_privileged_file as _wpf
+            pma_conf_dir = Path(os.environ.get('W3PANEL_PHPMYADMIN_CONF_DIR', '/etc/phpmyadmin')) / 'conf.d'
+            _wpf(pma_conf_dir / '99-w3panel.php', "<?php\n$cfg['Servers'][1]['auth_type'] = 'cookie';\n$cfg['Servers'][1]['host'] = 'localhost';\n$cfg['Servers'][1]['AllowNoPassword'] = false;\n")
+            configure_db_admin_webserver()
+            yield sse({'status': 'complete', 'percent': 100, 'step': 'phpMyAdmin ready', 'line': '>> phpMyAdmin configured successfully.'})
+            return
+
+        daemon_name = 'mariadb' if service_name == 'mariadb' else service_name
+        _run_privileged(['systemctl', 'enable', '--now', daemon_name], timeout=15)
+        configure_db_admin_webserver()
+        yield sse({'status': 'complete', 'percent': 100, 'step': f'{service_name} installed', 'line': f'>> {service_name} enabled and started.'})
+
+    resp = StreamingHttpResponse(event_stream(), content_type='text/event-stream')
+    resp['Cache-Control'] = 'no-cache'
+    resp['X-Accel-Buffering'] = 'no'
+    return resp
 
 
 def admin_ftp_service(request):
@@ -1980,17 +2105,25 @@ def is_ondrej_ppa_enabled() -> bool:
 
 
 def _run_apt_transaction(command_args: list) -> tuple[bool, str]:
-    """Safely executes an apt-get command with sudo -n and DEBIAN_FRONTEND=noninteractive."""
+    """Safely executes an apt-get command waiting on dpkg locks."""
     from services.webserver.manager import _has_sudo
+    args = list(command_args)
+    if args and args[0] == 'apt-get' and 'DPkg::Lock::Timeout' not in ' '.join(args):
+        args = ['apt-get', '-o', 'DPkg::Lock::Timeout=120'] + args[1:]
     if os.geteuid() == 0:
-        cmd = ['env', 'DEBIAN_FRONTEND=noninteractive'] + command_args
+        cmd = ['env', 'DEBIAN_FRONTEND=noninteractive'] + args
     elif _has_sudo():
-        cmd = ['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive'] + command_args
+        cmd = ['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive'] + args
     else:
-        return True, f"Mock transaction executed: apt-get {' '.join(command_args)}"
+        return True, f"Mock transaction executed: apt-get {' '.join(args)}"
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
         output = (proc.stdout or '') + '\n' + (proc.stderr or '')
+        if proc.returncode != 0 and ('dpkg was interrupted' in output or 'dpkg --configure -a' in output):
+            cfg_prefix = ['env', 'DEBIAN_FRONTEND=noninteractive'] if os.geteuid() == 0 else ['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive']
+            subprocess.run(cfg_prefix + ['dpkg', '--configure', '-a'], capture_output=True, text=True, timeout=180)
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
+            output = (proc.stdout or '') + '\n' + (proc.stderr or '')
         return (proc.returncode == 0), output.strip()
     except subprocess.TimeoutExpired:
         return False, "Transaction timed out after 240 seconds."

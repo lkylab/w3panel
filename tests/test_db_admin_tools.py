@@ -91,7 +91,7 @@ class DbAdminToolsIntegrationTests(TestCase):
 
                 launch_adm = c_adm.get('/services/db-tool/phpmyadmin/', **adm_extra)
                 self.assertEqual(launch_adm.status_code, 302)
-                self.assertTrue(launch_adm.url.endswith('/phpmyadmin/'))
+                self.assertEqual(launch_adm.url, '/phpmyadmin/')
 
                 u_db = c_usr.get('/databases/', **usr_extra)
                 self.assertContains(u_db, '/databases/launch/phpmyadmin/')
@@ -99,7 +99,7 @@ class DbAdminToolsIntegrationTests(TestCase):
 
                 launch_usr = c_usr.get('/databases/launch/phpmyadmin/', **usr_extra)
                 self.assertEqual(launch_usr.status_code, 302)
-                self.assertTrue(launch_usr.url.endswith('/phpmyadmin/'))
+                self.assertEqual(launch_usr.url, '/phpmyadmin/')
 
             with patch.dict(os.environ, {'W3PANEL_PHPMYADMIN_DIR': str(pma_dir), 'W3PANEL_PGADMIN4_DIR': str(pg4_dir)}), \
                  patch('services.database.manager.is_mariadb_installed', return_value=False), \
@@ -155,19 +155,68 @@ class DbAdminToolsIntegrationTests(TestCase):
              patch('services.database.manager._has_sudo', return_value=False), \
              patch('services.database.manager.shutil.which', return_value=None), \
              patch('services.database.manager.subprocess.run') as mock_run:
-            mock_ok = MagicMock(returncode=0, stdout=b'FAKE-GPG', stderr='')
-            mock_run.return_value = mock_ok
+            mock_run.side_effect = lambda cmd, **kw: MagicMock(returncode=0, stdout=(b'FAKE-GPG' if not kw.get('text') else ''), stderr=(b'' if not kw.get('text') else ''))
             res = install_pgadmin4(admin_email='pg@example.com', admin_password='SuperSecretValue99!')
             self.assertTrue(res['success'])
 
             for call_obj in mock_run.call_args_list:
                 cmd_args = call_obj.args[0] if call_obj.args else []
                 self.assertNotIn('SuperSecretValue99!', ' '.join(str(x) for x in cmd_args))
+                self.assertNotIn('-E', cmd_args)
 
-            setup_calls = [c for c in mock_run.call_args_list if 'setup.py' in ' '.join(str(x) for x in (c.args[0] if c.args else []))]
-            self.assertEqual(len(setup_calls), 1)
-            self.assertEqual(setup_calls[0].kwargs['env']['PGADMIN_SETUP_PASSWORD'], 'SuperSecretValue99!')
-            self.assertEqual(setup_calls[0].kwargs['env']['PGADMIN_SETUP_EMAIL'], 'pg@example.com')
+            bash_calls = [c for c in mock_run.call_args_list if '/bin/bash' in (c.args[0] if c.args else [])]
+            self.assertEqual(len(bash_calls), 1)
+            apt_calls = [c for c in mock_run.call_args_list if 'apt-get' in (c.args[0] if c.args else [])]
+            self.assertTrue(any('DPkg::Lock::Timeout=120' in ' '.join(c.args[0]) for c in apt_calls))
+
+    def test_pgadmin4_requires_service_unit_self_heals_and_recovers_dpkg(self):
+        """Partial pgadmin4 install without service unit stays not_installed until configured or self-healed on start."""
+        from services.database.manager import _run_apt_safe, is_pgadmin4_installed
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pg4_dir = Path(tmpdir) / 'pgadmin4'
+            sysd_dir = Path(tmpdir) / 'systemd'
+            (pg4_dir / 'web').mkdir(parents=True)
+            (pg4_dir / 'web' / 'pgAdmin4.py').write_text('# stub')
+            sysd_dir.mkdir()
+
+            with patch.dict(os.environ, {'W3PANEL_PGADMIN4_DIR': str(pg4_dir), 'W3PANEL_SYSTEMD_DIR': str(sysd_dir)}):
+                self.assertFalse(is_pgadmin4_installed())
+
+                c_adm, adm_extra = self._login('dbadmin', '/login/', '2087')
+                with patch('services.database.configure_pgadmin4_runtime', return_value={'success': True}) as mock_cfg, \
+                     patch('apps.admin.views._run_privileged', return_value=MagicMock(returncode=0, stdout='', stderr='')) as mock_priv:
+                    resp = c_adm.post('/services/', {'service': 'pgadmin4', 'action': 'start'}, **adm_extra)
+                    self.assertEqual(resp.status_code, 302)
+                    mock_cfg.assert_called_once()
+                    mock_priv.assert_called_once_with(['systemctl', 'start', 'pgadmin4'], timeout=15)
+
+                (sysd_dir / 'pgadmin4.service').write_text('[Unit]\nDescription=pgadmin4\n')
+                self.assertTrue(is_pgadmin4_installed())
+
+                # Verify streaming install endpoint handles pgadmin4 cleanly
+                with patch('services.database.is_postgresql_installed', return_value=True), \
+                     patch('services.database.manager._priv_prefix', return_value=[]), \
+                     patch('apps.admin.views.subprocess.run', return_value=MagicMock(returncode=0, stdout=b'FAKE', stderr='')), \
+                     patch('apps.admin.views._stream_cmd', return_value=iter(['>> ok'])), \
+                     patch('services.webserver.manager._write_privileged_file', return_value=True), \
+                     patch('services.database.configure_pgadmin4_runtime', return_value={'success': True, 'email': 'dbadmin@local.test', 'password': 'pw'}):
+                    stream_resp = c_adm.post('/services/install-stream/', {'service': 'pgadmin4'}, **adm_extra)
+                    self.assertEqual(stream_resp.status_code, 200)
+                    body = b''.join(stream_resp.streaming_content).decode()
+                    self.assertIn('"status": "complete"', body)
+
+        # Verify _run_apt_safe runs dpkg --configure -a on interrupted dpkg
+        with patch('services.database.manager.subprocess.run') as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=100, stdout='', stderr='E: dpkg was interrupted, you must manually run dpkg --configure -a'),
+                MagicMock(returncode=0, stdout='', stderr=''),
+                MagicMock(returncode=0, stdout='ok', stderr=''),
+            ]
+            res = _run_apt_safe(['install', '-y', 'pgadmin4-web'])
+            self.assertEqual(res.returncode, 0)
+            self.assertEqual(mock_run.call_count, 3)
+            self.assertIn('dpkg', mock_run.call_args_list[1].args[0])
 
     def test_configure_db_admin_webserver_nginx_config_and_cleanup(self):
         """configure_db_admin_webserver writes gated locations, avoids default_server conflicts, and cleans up."""
@@ -204,6 +253,7 @@ class DbAdminToolsIntegrationTests(TestCase):
                 conf_file = sites_avail / 'w3panel-dbtools.conf'
                 self.assertTrue(conf_file.exists())
                 content = conf_file.read_text()
+                self.assertIn('listen 127.0.0.1:8090;', content)
                 self.assertIn('location ^~ /phpmyadmin', content)
                 self.assertIn('location ^~ /pgadmin4/', content)
                 self.assertIn('X-Script-Name /pgadmin4', content)
@@ -238,3 +288,44 @@ class DbAdminToolsIntegrationTests(TestCase):
         _, _, opts_on = _prepare_wizard_setup(q_on, stack, mark_completed=False)
         self.assertTrue(opts_on['enable_phpmyadmin'])
         self.assertTrue(opts_on['enable_pgadmin4'])
+
+    def test_same_origin_db_tool_proxy_requires_auth_and_preserves_port_and_cookies(self):
+        """Proxy requires panel auth, preserves panel origin/port in Location, and forwards Set-Cookie."""
+        unauth = Client().get('/phpmyadmin/', SERVER_PORT='12087')
+        self.assertEqual(unauth.status_code, 302)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pma_dir = Path(tmpdir) / 'phpmyadmin'
+            pma_dir.mkdir()
+            (pma_dir / 'index.php').write_text('<?php echo 1;')
+
+            c_adm, adm_extra = self._login('dbadmin', '/login/', '12087')
+
+            class _FakeHeaders(list):
+                def get_all(self, name):
+                    return [v for k, v in self if k.lower() == name.lower()]
+
+            fake_hdrs = _FakeHeaders([
+                ('Content-Type', 'text/html; charset=utf-8'),
+                ('Location', 'http://127.0.0.1:8090/phpmyadmin/index.php?route=/'),
+                ('Set-Cookie', 'phpMyAdmin=sess123; path=/phpmyadmin/; HttpOnly'),
+                ('Set-Cookie', 'pma_lang=en; path=/phpmyadmin/'),
+            ])
+            fake_resp = MagicMock()
+            fake_resp.status = 302
+            fake_resp.read.return_value = b''
+            fake_resp.getheaders.return_value = fake_hdrs
+            fake_resp.headers = fake_hdrs
+
+            fake_conn = MagicMock()
+            fake_conn.getresponse.return_value = fake_resp
+
+            with patch.dict(os.environ, {'W3PANEL_PHPMYADMIN_DIR': str(pma_dir)}), \
+                 patch('services.database.manager.is_mariadb_installed', return_value=True), \
+                 patch('services.database.manager.ensure_db_admin_webserver_configured', return_value={'success': True}), \
+                 patch('services.database.manager.http.client.HTTPConnection', return_value=fake_conn):
+                resp = c_adm.get('/phpmyadmin/', **adm_extra)
+                self.assertEqual(resp.status_code, 302)
+                self.assertEqual(resp['Location'], '/phpmyadmin/index.php?route=/')
+                self.assertEqual(resp.cookies['phpMyAdmin'].value, 'sess123')
+                self.assertEqual(resp.cookies['pma_lang'].value, 'en')

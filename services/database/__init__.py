@@ -16,11 +16,13 @@ from .manager import (
     get_db_admin_tools_status,
     get_db_tool_url,
     configure_db_admin_webserver,
+    configure_pgadmin4_runtime,
     ensure_db_admin_webserver_configured,
     install_phpmyadmin,
     uninstall_phpmyadmin,
     install_pgadmin4,
     uninstall_pgadmin4,
+    proxy_db_tool_request,
 )
 
 __all__ = [
@@ -41,10 +43,12 @@ __all__ = [
     'get_db_admin_tools_status',
     'get_db_tool_url',
     'configure_db_admin_webserver',
+    'configure_pgadmin4_runtime',
     'ensure_db_admin_webserver_configured',
     'install_phpmyadmin',
     'uninstall_phpmyadmin',
     'install_pgadmin4',
     'uninstall_pgadmin4',
+    'proxy_db_tool_request',
 ]
 

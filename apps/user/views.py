@@ -7,10 +7,11 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from django.http import JsonResponse, HttpResponse
+from django.http import JsonResponse, HttpResponse, HttpResponseForbidden
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
 
 from packages.core.models import (
     User, Website, Package, SystemSetting, AuditLog, Notification,
@@ -577,7 +578,7 @@ def user_database_delete(request, db_id):
 
 
 def user_db_tool_launch(request, tool):
-    """Auto-wire Nginx/Apache route if needed and redirect to phpMyAdmin or pgAdmin 4."""
+    """Auto-wire Nginx/Apache route if needed and redirect to same-origin phpMyAdmin or pgAdmin 4."""
     from services.database import ensure_db_admin_webserver_configured, get_db_admin_tools_status, get_db_tool_url
     db_tools = get_db_admin_tools_status()
     if tool == 'phpmyadmin' and db_tools['phpmyadmin_available']:
@@ -588,6 +589,15 @@ def user_db_tool_launch(request, tool):
         return redirect(get_db_tool_url(request, 'pgadmin4'))
     messages.error(request, 'Requested database admin tool is not available.')
     return redirect('user_databases')
+
+
+@csrf_exempt
+def db_tool_proxy_view(request, tool, subpath=''):
+    """Authenticated reverse-proxy endpoint for /phpmyadmin/ and /pgadmin4/ on any panel port."""
+    if not getattr(request, 'panel_user', None):
+        return HttpResponseForbidden('Authentication required.')
+    from services.database import proxy_db_tool_request
+    return proxy_db_tool_request(request, tool, subpath)
 
 
 def _format_size(size_bytes):

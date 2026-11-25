@@ -1,7 +1,7 @@
 """
 W3Panel v2 — URL Configuration
 """
-from django.urls import path, include
+from django.urls import include, path, re_path
 from django.shortcuts import redirect
 
 from apps.user import views as user_views
@@ -29,6 +29,10 @@ urlpatterns = [
     
     # Direct SSO endpoint (1-click user autologin)
     path('sso/', user_views.user_sso, name='sso_direct'),
+
+    # Same-origin Database Admin Tool reverse proxies (preserve port/host/HTTPS)
+    re_path(r'^phpmyadmin(?:/(?P<subpath>.*))?$', user_views.db_tool_proxy_view, {'tool': 'phpmyadmin'}, name='proxy_phpmyadmin'),
+    re_path(r'^pgadmin4(?:/(?P<subpath>.*))?$', user_views.db_tool_proxy_view, {'tool': 'pgadmin4'}, name='proxy_pgadmin4'),
 
     # Admin
     path('', include('apps.admin.urls')),
