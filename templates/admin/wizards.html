@@ -5,21 +5,7 @@
 {% block page_title %}Initial Server Setup Wizard{% endblock %}
 
 {% block content %}
-<div x-data="{
-    step: 1,
-    maxStep: 7,
-    webserver: 'nginx',
-    defaultPhp: '{{ default_php|default:"8.3"|escapejs }}',
-    phpVersions: [{% for r in php_runtimes %}{% if r.installed or r.version == default_php %}'{{ r.version }}',{% endif %}{% endfor %}],
-    mariadb: true,
-    postgresql: false,
-    tune_mariadb: true,
-    mail: true,
-    spam: 'rspamd',
-    dkim: true,
-    ftp: true,
-    ufw: true
-}" class="max-w-4xl mx-auto space-y-6">
+<div x-data="wizardSetup()" class="max-w-4xl mx-auto space-y-6">
 
     <!-- Header & Breadcrumbs -->
     <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -47,7 +33,7 @@
     </div>
 
     <!-- Stepper Navigation Bar -->
-    <div class="bg-white rounded-xl border border-gray-200 p-2 shadow-xs">
+    <div x-show="!isProvisioning" class="bg-white rounded-xl border border-gray-200 p-2 shadow-xs">
         <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-1">
             <button type="button" @click="step = 1"
                     :class="step === 1 ? 'bg-blue-600 text-white font-bold shadow-xs' : (step > 1 ? 'text-emerald-700 hover:bg-emerald-50 font-medium' : 'text-slate-600 hover:bg-slate-50 font-normal')"
@@ -101,7 +87,7 @@
     </div>
 
     <!-- Main Wizard Form -->
-    <form method="post" action="{% url 'admin_wizards' %}" class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <form x-show="!isProvisioning" method="post" action="{% url 'admin_wizards' %}" @submit.prevent="startProvision($el)" class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
         {% csrf_token %}
 
         <!-- STEP 1: Host Identity & Networking -->
@@ -522,5 +508,160 @@
             </div>
         </div>
     </form>
+
+    <!-- Live Provisioning Progress View -->
+    <div x-show="isProvisioning" x-cloak class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm space-y-5">
+        <div class="flex items-center justify-between gap-4">
+            <div class="flex items-center gap-3">
+                <div class="size-10 rounded-xl flex items-center justify-center text-xl shrink-0"
+                     :class="provisionStatus === 'error' ? 'bg-rose-50 text-rose-600' : (provisionStatus === 'complete' ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600')">
+                    <i class="ti" :class="provisionStatus === 'error' ? 'ti-alert-triangle' : (provisionStatus === 'complete' ? 'ti-circle-check' : 'ti-loader-2 animate-spin')"></i>
+                </div>
+                <div>
+                    <h3 class="text-sm font-bold text-gray-900" x-text="provisionStep"></h3>
+                    <p class="text-xs text-gray-500 font-mono" x-text="provisionStatus === 'running' ? 'Provisioning in progress...' : (provisionStatus === 'complete' ? 'Completed' : 'Failed')"></p>
+                </div>
+            </div>
+            <div class="font-mono text-xl font-bold"
+                 :class="provisionStatus === 'error' ? 'text-rose-600' : (provisionStatus === 'complete' ? 'text-emerald-600' : 'text-blue-600')"
+                 x-text="provisionProgress + '%'"></div>
+        </div>
+
+        <div class="w-full bg-slate-100 rounded-full h-3 overflow-hidden border border-slate-200 p-0.5">
+            <div class="h-full rounded-full transition-all duration-300"
+                 :class="provisionStatus === 'error' ? 'bg-rose-500' : (provisionStatus === 'complete' ? 'bg-emerald-500' : 'bg-blue-600')"
+                 :style="`width: ${provisionProgress}%`"></div>
+        </div>
+
+        <div class="rounded-xl bg-slate-950 border border-slate-800 shadow-md overflow-hidden">
+            <div class="px-4 py-2 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <span class="size-2.5 rounded-full bg-rose-500 inline-block"></span>
+                    <span class="size-2.5 rounded-full bg-amber-500 inline-block"></span>
+                    <span class="size-2.5 rounded-full bg-emerald-500 inline-block"></span>
+                    <span class="text-xs font-mono text-slate-400 ml-2">Setup Console</span>
+                </div>
+            </div>
+            <div id="wizard-terminal" class="p-4 font-mono text-xs text-slate-200 h-80 overflow-y-auto space-y-1 leading-relaxed">
+                <template x-for="(line, idx) in provisionLogs" :key="idx">
+                    <div :class="line.includes('[ERROR]') ? 'text-rose-400 font-semibold' : (line.includes('[WARNING]') ? 'text-amber-400' : (line.startsWith('>>') ? 'text-emerald-400 font-bold' : 'text-slate-300'))" x-text="line"></div>
+                </template>
+                <div x-show="provisionStatus === 'running'" class="flex items-center gap-2 text-slate-400 pt-2">
+                    <span class="animate-spin"><i class="ti ti-loader-2"></i></span>
+                    <span>Working...</span>
+                </div>
+            </div>
+        </div>
+
+        <div x-show="provisionStatus === 'complete'" class="flex justify-end gap-2">
+            <a href="{% url 'admin_settings' %}" class="px-4 py-2 border border-gray-300 text-gray-700 hover:bg-gray-50 rounded-lg text-xs font-semibold transition">
+                Basic WebHost Setup
+            </a>
+            <a href="{% url 'admin_dashboard' %}" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition shadow-sm">
+                Go to Dashboard
+            </a>
+        </div>
+
+        <div x-show="provisionStatus === 'error'" class="flex justify-end gap-2">
+            <button type="button" @click="isProvisioning = false" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold transition">
+                Back to Wizard
+            </button>
+        </div>
+    </div>
 </div>
+
+<script>
+function wizardSetup() {
+    return {
+        step: 1,
+        maxStep: 7,
+        webserver: 'nginx',
+        defaultPhp: '{{ default_php|default:"8.3"|escapejs }}',
+        phpVersions: [{% for r in php_runtimes %}{% if r.installed or r.version == default_php %}'{{ r.version }}',{% endif %}{% endfor %}],
+        mariadb: true,
+        postgresql: false,
+        tune_mariadb: true,
+        mail: true,
+        spam: 'rspamd',
+        dkim: true,
+        ftp: true,
+        ufw: true,
+        isProvisioning: false,
+        provisionStatus: 'running',
+        provisionProgress: 0,
+        provisionStep: 'Initializing setup...',
+        provisionLogs: [],
+
+        async startProvision(formEl) {
+            if (this.isProvisioning && this.provisionStatus === 'running') return;
+            this.isProvisioning = true;
+            this.provisionStatus = 'running';
+            this.provisionProgress = 5;
+            this.provisionStep = 'Starting initial server setup...';
+            this.provisionLogs = ['>> Submitting server configuration...'];
+
+            try {
+                const formData = new FormData(formEl);
+                const resp = await fetch('{% url "admin_wizard_provision" %}', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!resp.ok || !resp.body) {
+                    const errText = await resp.text();
+                    this.provisionStatus = 'error';
+                    this.provisionStep = 'Server error occurred';
+                    this.provisionLogs.push('>> [ERROR] ' + errText.slice(0, 300));
+                    return;
+                }
+
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const parts = buffer.split('\n\n');
+                    buffer = parts.pop();
+
+                    for (const part of parts) {
+                        const match = part.trim().match(/^data:\s*(.*)$/m);
+                        if (!match) continue;
+                        try {
+                            const evt = JSON.parse(match[1]);
+                            if (evt.line) {
+                                this.provisionLogs.push(evt.line);
+                                this.$nextTick(() => {
+                                    const el = document.getElementById('wizard-terminal');
+                                    if (el) el.scrollTop = el.scrollHeight;
+                                });
+                            }
+                            if (typeof evt.percent === 'number') this.provisionProgress = evt.percent;
+                            if (evt.step) this.provisionStep = evt.step;
+                            if (evt.status === 'error') {
+                                this.provisionStatus = 'error';
+                            } else if (evt.status === 'complete') {
+                                this.provisionStatus = 'complete';
+                                this.provisionProgress = 100;
+                            }
+                        } catch (e) {}
+                    }
+                }
+
+                if (this.provisionStatus === 'running') {
+                    this.provisionStatus = 'complete';
+                    this.provisionProgress = 100;
+                    this.provisionStep = 'Initial server setup completed';
+                }
+            } catch (err) {
+                this.provisionStatus = 'error';
+                this.provisionStep = 'Connection lost during setup';
+                this.provisionLogs.push('>> [ERROR] ' + err.message);
+            }
+        }
+    };
+}
+</script>
 {% endblock %}

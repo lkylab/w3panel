@@ -67,6 +67,7 @@ urlpatterns = [
     path('notifications/', views.admin_notifications, name='admin_notifications'),
     path('wizards/', views.wizard_dashboard, name='admin_wizard_dashboard'),
     path('wizards/', views.wizard_dashboard, name='admin_wizards'),
+    path('wizards/provision/', views.admin_wizard_provision, name='admin_wizard_provision'),
     path('monitoring/', views.monitoring_dashboard, name='admin_monitoring'),
 
     # Web Terminal

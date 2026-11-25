@@ -3001,6 +3001,218 @@ def admin_notifications(request):
     })
 
 
+def _run_privileged(cmd_args: list, timeout: int = 10):
+    """Run a privileged system command when root or passwordless sudo is available."""
+    from services.webserver.manager import _has_sudo
+    if os.geteuid() == 0:
+        return subprocess.run(cmd_args, capture_output=True, text=True, timeout=timeout)
+    if _has_sudo():
+        return subprocess.run(['sudo', '-n'] + cmd_args, capture_output=True, text=True, timeout=timeout)
+    return None
+
+
+def _prepare_wizard_setup(post_data, stack_status):
+    """Persist wizard settings and return (install_pkgs, services_to_start, opts)."""
+    server_hostname = post_data.get('server_hostname', '').strip() or platform.node()
+    server_ip = post_data.get('server_ip', '').strip()
+    primary_ns = post_data.get('primary_ns', '').strip()
+    secondary_ns = post_data.get('secondary_ns', '').strip()
+    admin_email = post_data.get('admin_email', '').strip()
+
+    webserver_choice = post_data.get('webserver_choice', 'nginx')
+    default_php = post_data.get('default_php', '8.3')
+    valid_php_versions = {r['version'] for r in PHP_RUNTIME_DEFS}
+    if default_php not in valid_php_versions:
+        default_php = '8.3'
+    selected_php_versions = [v for v in post_data.getlist('php_versions') if v in valid_php_versions]
+    if webserver_choice in ('nginx', 'apache') and default_php not in selected_php_versions:
+        selected_php_versions.append(default_php)
+    selected_php_versions = list(dict.fromkeys(selected_php_versions))
+
+    enable_mariadb = post_data.get('enable_mariadb') in ('1', 'true', 'on')
+    enable_postgresql = post_data.get('enable_postgresql') in ('1', 'true', 'on')
+    tune_mariadb = post_data.get('tune_mariadb') in ('1', 'true', 'on')
+    enable_mail = post_data.get('enable_mail') in ('1', 'true', 'on')
+    spam_filter = post_data.get('spam_filter', 'rspamd')
+    enable_dkim = post_data.get('enable_dkim') in ('1', 'true', 'on')
+    enable_ftp = post_data.get('enable_ftp') in ('1', 'true', 'on')
+    enable_ufw = post_data.get('enable_ufw') in ('1', 'true', 'on')
+    enable_podman = post_data.get('enable_podman') in ('1', 'true', 'on')
+
+    SystemSetting.set('server_hostname', server_hostname)
+    if server_ip:
+        SystemSetting.set('server_ip', server_ip)
+    if primary_ns:
+        SystemSetting.set('primary_ns', primary_ns)
+    if secondary_ns:
+        SystemSetting.set('secondary_ns', secondary_ns)
+    if admin_email:
+        SystemSetting.set('admin_email', admin_email)
+    SystemSetting.set('webserver_choice', webserver_choice)
+    SystemSetting.set('default_php', default_php)
+    SystemSetting.set('db_mariadb_enabled', 'true' if enable_mariadb else 'false')
+    SystemSetting.set('db_postgresql_enabled', 'true' if enable_postgresql else 'false')
+    SystemSetting.set('mail_stack_enabled', 'true' if enable_mail else 'false')
+    SystemSetting.set('mail_spam_filter', spam_filter)
+    SystemSetting.set('mail_dkim_enabled', 'true' if enable_dkim else 'false')
+    SystemSetting.set('ftp_stack_enabled', 'true' if enable_ftp else 'false')
+    SystemSetting.set('podman_enabled', 'true' if enable_podman else 'false')
+    SystemSetting.set('initial_setup_completed', 'true')
+
+    install_pkgs = []
+    services_to_start = []
+    if webserver_choice == 'nginx' and not stack_status['webserver_nginx']['installed']:
+        install_pkgs.extend(['nginx', 'nginx-common'])
+        services_to_start.append('nginx')
+    elif webserver_choice == 'apache' and not stack_status['webserver_apache']['installed']:
+        install_pkgs.extend(['apache2'])
+        services_to_start.append('apache2')
+
+    for ver in selected_php_versions:
+        if not shutil.which(f'php-fpm{ver}') and not Path(f'/etc/php/{ver}/fpm').exists():
+            install_pkgs.extend(get_php_runtime_packages(ver))
+            services_to_start.append(f'php{ver}-fpm')
+
+    if enable_podman and not stack_status['container_podman']['installed']:
+        install_pkgs.append('podman')
+
+    if enable_mariadb and not stack_status['db_mariadb']['installed']:
+        install_pkgs.extend(['mariadb-server', 'mariadb-client'])
+        services_to_start.append('mariadb')
+    if enable_postgresql and not stack_status['db_postgresql']['installed']:
+        install_pkgs.extend(['postgresql', 'postgresql-contrib'])
+        services_to_start.append('postgresql')
+
+    if enable_mail and not stack_status['mail_postfix']['installed']:
+        install_pkgs.extend(['postfix', 'dovecot-imapd', 'dovecot-pop3d'])
+        services_to_start.extend(['postfix', 'dovecot'])
+
+    if enable_ftp and not stack_status['ftp_pureftpd']['installed']:
+        install_pkgs.extend(['pure-ftpd'])
+        services_to_start.append('pure-ftpd')
+
+    install_pkgs = list(dict.fromkeys(install_pkgs))
+    services_to_start = list(dict.fromkeys(services_to_start))
+    opts = {
+        'tune_mariadb': tune_mariadb,
+        'enable_ufw': enable_ufw,
+        'enable_mail': enable_mail,
+        'enable_ftp': enable_ftp,
+    }
+    return install_pkgs, services_to_start, opts
+
+
+def _apply_wizard_ufw(opts):
+    """Apply baseline UFW rules for selected server services."""
+    _run_privileged(['ufw', 'default', 'deny', 'incoming'], timeout=5)
+    _run_privileged(['ufw', 'default', 'allow', 'outgoing'], timeout=5)
+    for port_proto in ['22/tcp', '80/tcp', '443/tcp', '2087/tcp', '2083/tcp']:
+        _run_privileged(['ufw', 'allow', port_proto], timeout=5)
+    if opts['enable_mail']:
+        for mp in ['25/tcp', '587/tcp', '465/tcp', '993/tcp', '995/tcp']:
+            _run_privileged(['ufw', 'allow', mp], timeout=5)
+    if opts['enable_ftp']:
+        for fp in ['21/tcp', '30000:31000/tcp']:
+            _run_privileged(['ufw', 'allow', fp], timeout=5)
+    _run_privileged(['ufw', '--force', 'enable'], timeout=5)
+
+
+def admin_wizard_provision(request):
+    """Streaming SSE endpoint for Initial Server Setup Wizard provisioning."""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST method required'}, status=405)
+
+    from services.database import apply_database_tuning
+
+    stack_status = get_server_stack_status()
+    install_pkgs, services_to_start, opts = _prepare_wizard_setup(request.POST, stack_status)
+
+    def event_stream():
+        def sse(payload):
+            return f"data: {json.dumps(payload)}\n\n"
+
+        has_error = False
+        yield sse({
+            'status': 'running',
+            'percent': 10,
+            'step': 'Saved server settings & stack preferences',
+            'line': f'>> [1/4] Configuration saved. Packages to install: {", ".join(install_pkgs) or "None"}',
+        })
+
+        if install_pkgs:
+            yield sse({
+                'status': 'running',
+                'percent': 20,
+                'step': 'Updating APT package index...',
+                'line': '>> [2/4] Updating APT package lists...',
+            })
+            for line in _stream_cmd(['apt-get', 'update', '-y']):
+                yield sse({'status': 'running', 'percent': 28, 'step': 'Updating APT package index...', 'line': line})
+
+            yield sse({
+                'status': 'running',
+                'percent': 35,
+                'step': f'Installing {len(install_pkgs)} server packages...',
+                'line': f'>> [3/4] Installing: {" ".join(install_pkgs)}',
+            })
+            for line in _stream_cmd(['apt-get', 'install', '-y'] + install_pkgs):
+                if line.startswith('>> [ERROR]'):
+                    has_error = True
+                yield sse({'status': 'running', 'percent': 65, 'step': 'Installing server packages...', 'line': line})
+
+            yield sse({
+                'status': 'running',
+                'percent': 80,
+                'step': 'Enabling and starting services...',
+                'line': '>> [4/4] Starting installed services...',
+            })
+            for svc in services_to_start:
+                res = _run_privileged(['systemctl', 'enable', '--now', svc], timeout=15)
+                state = 'active' if (res is None or res.returncode == 0) else 'failed'
+                yield sse({'status': 'running', 'percent': 84, 'step': f'Service {svc}: {state}', 'line': f'>> Service {svc}: {state.upper()}'})
+        else:
+            yield sse({
+                'status': 'running',
+                'percent': 75,
+                'step': 'Selected packages already installed',
+                'line': '>> [2/4] All selected packages are already installed.',
+            })
+
+        if opts['tune_mariadb']:
+            try:
+                apply_database_tuning()
+                yield sse({'status': 'running', 'percent': 90, 'step': 'Applied MariaDB Low-RAM tuning', 'line': '>> MariaDB Low-RAM tuning applied.'})
+            except Exception as e:
+                yield sse({'status': 'running', 'percent': 90, 'step': 'MariaDB tuning skipped', 'line': f'>> [WARNING] MariaDB tuning skipped: {e}'})
+
+        if opts['enable_ufw']:
+            try:
+                _apply_wizard_ufw(opts)
+                yield sse({'status': 'running', 'percent': 96, 'step': 'Configured UFW firewall rules', 'line': '>> UFW firewall baseline applied.'})
+            except Exception as e:
+                yield sse({'status': 'running', 'percent': 96, 'step': 'UFW configuration skipped', 'line': f'>> [WARNING] UFW skipped: {e}'})
+
+        if has_error:
+            yield sse({
+                'status': 'error',
+                'percent': 100,
+                'step': 'Setup finished with package errors',
+                'error': 'One or more packages failed to install. Check the log above.',
+            })
+        else:
+            yield sse({
+                'status': 'complete',
+                'percent': 100,
+                'step': 'Initial server setup completed',
+                'line': '>> Initial Server Setup completed successfully!',
+            })
+
+    response = StreamingHttpResponse(event_stream(), content_type='text/event-stream')
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response
+
+
 def wizard_dashboard(request):
     """
     Initial Server Setup Wizard (Basic WebHost Setup).
@@ -3012,120 +3224,26 @@ def wizard_dashboard(request):
     stack_status = get_server_stack_status()
 
     if request.method == 'POST':
-        server_hostname = request.POST.get('server_hostname', '').strip() or platform.node()
-        server_ip = request.POST.get('server_ip', '').strip()
-        primary_ns = request.POST.get('primary_ns', '').strip()
-        secondary_ns = request.POST.get('secondary_ns', '').strip()
-        admin_email = request.POST.get('admin_email', '').strip()
-        
-        webserver_choice = request.POST.get('webserver_choice', 'nginx')
-        default_php = request.POST.get('default_php', '8.3')
-        valid_php_versions = {r['version'] for r in PHP_RUNTIME_DEFS}
-        if default_php not in valid_php_versions:
-            default_php = '8.3'
-        selected_php_versions = [v for v in request.POST.getlist('php_versions') if v in valid_php_versions]
-        if webserver_choice in ('nginx', 'apache') and default_php not in selected_php_versions:
-            selected_php_versions.append(default_php)
-        # Preserve order without duplicates
-        selected_php_versions = list(dict.fromkeys(selected_php_versions))
-        
-        enable_mariadb = request.POST.get('enable_mariadb') in ('1', 'true', 'on')
-        enable_postgresql = request.POST.get('enable_postgresql') in ('1', 'true', 'on')
-        tune_mariadb = request.POST.get('tune_mariadb') in ('1', 'true', 'on')
-        
-        enable_mail = request.POST.get('enable_mail') in ('1', 'true', 'on')
-        spam_filter = request.POST.get('spam_filter', 'rspamd')
-        enable_dkim = request.POST.get('enable_dkim') in ('1', 'true', 'on')
-        
-        enable_ftp = request.POST.get('enable_ftp') in ('1', 'true', 'on')
-        enable_ufw = request.POST.get('enable_ufw') in ('1', 'true', 'on')
-        enable_podman = request.POST.get('enable_podman') in ('1', 'true', 'on')
-
-        # Save system identity & stack preferences
-        SystemSetting.set('server_hostname', server_hostname)
-        if server_ip:
-            SystemSetting.set('server_ip', server_ip)
-        if primary_ns:
-            SystemSetting.set('primary_ns', primary_ns)
-        if secondary_ns:
-            SystemSetting.set('secondary_ns', secondary_ns)
-        if admin_email:
-            SystemSetting.set('admin_email', admin_email)
-        SystemSetting.set('webserver_choice', webserver_choice)
-        SystemSetting.set('default_php', default_php)
-        SystemSetting.set('db_mariadb_enabled', 'true' if enable_mariadb else 'false')
-        SystemSetting.set('db_postgresql_enabled', 'true' if enable_postgresql else 'false')
-        SystemSetting.set('mail_stack_enabled', 'true' if enable_mail else 'false')
-        SystemSetting.set('mail_spam_filter', spam_filter)
-        SystemSetting.set('mail_dkim_enabled', 'true' if enable_dkim else 'false')
-        SystemSetting.set('ftp_stack_enabled', 'true' if enable_ftp else 'false')
-        SystemSetting.set('podman_enabled', 'true' if enable_podman else 'false')
-        SystemSetting.set('initial_setup_completed', 'true')
-
-        # Execute package installations on-demand for selected services that are missing
-        install_pkgs = []
-        services_to_start = []
-        if webserver_choice == 'nginx' and not stack_status['webserver_nginx']['installed']:
-            install_pkgs.extend(['nginx', 'nginx-common'])
-            services_to_start.append('nginx')
-        elif webserver_choice == 'apache' and not stack_status['webserver_apache']['installed']:
-            install_pkgs.extend(['apache2'])
-            services_to_start.append('apache2')
-
-        for ver in selected_php_versions:
-            if not shutil.which(f'php-fpm{ver}') and not Path(f'/etc/php/{ver}/fpm').exists():
-                install_pkgs.extend(get_php_runtime_packages(ver))
-                services_to_start.append(f'php{ver}-fpm')
-
-        if enable_podman and not stack_status['container_podman']['installed']:
-            install_pkgs.append('podman')
-
-        if enable_mariadb and not stack_status['db_mariadb']['installed']:
-            install_pkgs.extend(['mariadb-server', 'mariadb-client'])
-            services_to_start.append('mariadb')
-        if enable_postgresql and not stack_status['db_postgresql']['installed']:
-            install_pkgs.extend(['postgresql', 'postgresql-contrib'])
-            services_to_start.append('postgresql')
-
-        if enable_mail and not stack_status['mail_postfix']['installed']:
-            install_pkgs.extend(['postfix', 'dovecot-imapd', 'dovecot-pop3d'])
-            services_to_start.extend(['postfix', 'dovecot'])
-
-        if enable_ftp and not stack_status['ftp_pureftpd']['installed']:
-            install_pkgs.extend(['pure-ftpd'])
-            services_to_start.append('pure-ftpd')
-
+        install_pkgs, services_to_start, opts = _prepare_wizard_setup(request.POST, stack_status)
         installed_count = len(install_pkgs)
         if install_pkgs:
             try:
                 _run_apt_transaction(['apt-get', 'update', '-y'])
                 _run_apt_transaction(['apt-get', 'install', '-y'] + install_pkgs)
                 for svc in services_to_start:
-                    subprocess.run(['sudo', '-n', 'systemctl', 'enable', '--now', svc], timeout=10)
+                    _run_privileged(['systemctl', 'enable', '--now', svc], timeout=10)
             except Exception as e:
                 logger.warning(f"Wizard package install exception: {e}")
 
-        # Database Low-RAM optimization
-        if tune_mariadb:
+        if opts['tune_mariadb']:
             try:
                 apply_database_tuning()
             except Exception:
                 pass
 
-        # Firewall port setup
-        if enable_ufw:
+        if opts['enable_ufw']:
             try:
-                subprocess.run(['sudo', '-n', 'ufw', 'default', 'deny', 'incoming'], timeout=5)
-                subprocess.run(['sudo', '-n', 'ufw', 'default', 'allow', 'outgoing'], timeout=5)
-                for port_proto in ['22/tcp', '80/tcp', '443/tcp', '2087/tcp', '2083/tcp']:
-                    subprocess.run(['sudo', '-n', 'ufw', 'allow', port_proto], timeout=5)
-                if enable_mail:
-                    for mp in ['25/tcp', '587/tcp', '465/tcp', '993/tcp', '995/tcp']:
-                        subprocess.run(['sudo', '-n', 'ufw', 'allow', mp], timeout=5)
-                if enable_ftp:
-                    for fp in ['21/tcp', '30000:31000/tcp']:
-                        subprocess.run(['sudo', '-n', 'ufw', 'allow', fp], timeout=5)
-                subprocess.run(['sudo', '-n', 'ufw', '--force', 'enable'], timeout=5)
+                _apply_wizard_ufw(opts)
             except Exception:
                 pass
 

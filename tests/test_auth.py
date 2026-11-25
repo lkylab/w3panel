@@ -137,6 +137,20 @@ class AuthAndRoleTests(TestCase):
             self.assertIn('php8.3-fpm', pkgs)
             self.assertIn('php8.2-fpm', pkgs)
 
+            with patch('apps.admin.views._stream_cmd', return_value=iter(['>> Simulated install OK'])):
+                resp_sse = self.client.post('/wizards/provision/', {
+                    'server_hostname': 'test.host.com',
+                    'webserver_choice': 'nginx',
+                    'default_php': '8.3',
+                    'php_versions': ['8.3', '8.2'],
+                })
+                self.assertEqual(resp_sse.status_code, 200)
+                self.assertIn('text/event-stream', resp_sse['Content-Type'])
+                body = b''.join(resp_sse.streaming_content).decode()
+                self.assertIn('"status": "complete"', body)
+                self.assertIn('php8.3-fpm', body)
+                self.assertIn('php8.2-fpm', body)
+
     def test_admin_user_edit_and_password_reset(self):
         # Log in as admin
         self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
