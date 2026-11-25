@@ -42,6 +42,16 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(self.client.session.get('user_id'))
 
+    def test_admin_rejected_on_client_login(self):
+        response = self.client.post('/user/login/', {'username': 'admin_test', 'password': 'Pass123!'})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'W3Host Manager (port 2087)')
+        self.assertIsNone(self.client.session.get('user_id'))
+
+        port_resp = self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'}, SERVER_PORT='2083')
+        self.assertEqual(port_resp.status_code, 200)
+        self.assertContains(port_resp, 'W3Host Manager (port 2087)')
+
     def test_admin_user_edit_and_password_reset(self):
         # Log in as admin
         self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})

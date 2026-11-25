@@ -61,11 +61,6 @@
 
         <!-- Terminal Output Screen -->
         <div id="terminal-screen" @click="if (!window.getSelection().toString()) $refs.cmdInput?.focus()" class="p-4 font-mono text-xs text-gray-200 overflow-y-auto space-y-2 h-[500px] bg-gray-950/95 leading-relaxed selection:bg-blue-600 selection:text-white cursor-text">
-            <div class="text-gray-500 text-[11px] border-b border-gray-800 pb-2">
-                W3Panel Administrator System Terminal [Linux x86_64]<br>
-                Type commands below or click the quick diagnostic shortcuts. Destructive commands are restricted.
-            </div>
-
             <template x-for="(entry, index) in history" :key="index">
                 <div class="space-y-1">
                     <div class="flex items-center gap-1.5 text-gray-400">

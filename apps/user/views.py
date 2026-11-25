@@ -47,6 +47,12 @@ def user_login(request):
         
         try:
             user, is_2fa_required = authenticate_user(username, password, request.META.get('REMOTE_ADDR', ''))
+            if user.role in ('admin', 'reseller'):
+                return render(request, 'login.html', {
+                    'error': 'Client account access only on W3Client Portal (port 2083). Use W3Host Manager (port 2087) for administrator login.',
+                    'username': username,
+                    'panel_type': 'client',
+                })
             create_session(request, user)
             return redirect('user_dashboard')
         except ValueError as e:
