@@ -28,6 +28,7 @@ urlpatterns = [
     
     # Databases
     path('databases/', views.user_databases, name='user_databases'),
+    path('databases/launch/<str:tool>/', views.user_db_tool_launch, name='user_db_tool_launch'),
     path('databases/<int:db_id>/delete/', views.user_database_delete, name='user_database_delete'),
     
     # File Manager

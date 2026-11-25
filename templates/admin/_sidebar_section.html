@@ -6,7 +6,7 @@
     <ul class="sidebar-section-menu relative ml-3 mt-1 space-y-0.5 border-l border-slate-700/60 pl-2">
         {% for item in items %}
         <li class="relative">
-            <a href="{{ item.url }}" class="relative flex items-center gap-2 rounded-md py-1.5 px-2.5 text-xs font-medium transition outline-none text-left
+            <a href="{{ item.url }}" {% if item.external %}target="_blank"{% endif %} class="relative flex items-center gap-2 rounded-md py-1.5 px-2.5 text-xs font-medium transition outline-none text-left
                 {% if active_page == item.active %}
                     text-white bg-blue-600 font-semibold shadow-sm
                 {% else %}

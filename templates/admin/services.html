@@ -65,16 +65,16 @@
                         {% csrf_token %}
                         <input type="hidden" name="service" value="{{ s.name }}">
                         <input type="hidden" name="action" value="restart">
-                        <button type="submit" class="px-2.5 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-medium transition" title="Restart Service">
-                            <i class="ti ti-rotate-clockwise"></i>
+                        <button type="submit" class="px-2.5 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-medium transition inline-flex items-center gap-1" title="Restart Service">
+                            <i class="ti ti-rotate-clockwise"></i> Restart
                         </button>
                     </form>
                     <form method="post" action="{% url 'admin_services_status' %}" class="inline">
                         {% csrf_token %}
                         <input type="hidden" name="service" value="{{ s.name }}">
                         <input type="hidden" name="action" value="stop">
-                        <button type="submit" class="px-2.5 py-1.5 bg-gray-100 hover:bg-red-50 text-gray-600 hover:text-red-600 rounded-lg text-xs font-medium transition" title="Stop Service">
-                            <i class="ti ti-player-stop"></i>
+                        <button type="submit" class="px-2.5 py-1.5 bg-gray-100 hover:bg-red-50 text-gray-600 hover:text-red-600 rounded-lg text-xs font-medium transition inline-flex items-center gap-1" title="Stop Service">
+                            <i class="ti ti-player-stop"></i> Stop
                         </button>
                     </form>
                     {% endif %}
@@ -106,6 +106,14 @@
                         <input type="hidden" name="action" value="start">
                         <button type="submit" class="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition" title="Start Service">
                             <i class="ti ti-player-play"></i> Start
+                        </button>
+                    </form>
+                    <form method="post" action="{% url 'admin_services_status' %}" class="inline">
+                        {% csrf_token %}
+                        <input type="hidden" name="service" value="{{ s.name }}">
+                        <input type="hidden" name="action" value="restart">
+                        <button type="submit" class="inline-flex items-center gap-1 px-2.5 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-medium transition" title="Restart Service">
+                            <i class="ti ti-rotate-clockwise"></i> Restart
                         </button>
                     </form>
                     {% if s.name != 'ssh' %}

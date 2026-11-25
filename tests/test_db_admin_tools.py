@@ -85,12 +85,21 @@ class DbAdminToolsIntegrationTests(TestCase):
                  patch('services.database.manager.is_postgresql_installed', return_value=False):
                 svc_resp = c_adm.get('/services/', **adm_extra)
                 self.assertContains(svc_resp, 'phpMyAdmin')
-                self.assertContains(svc_resp, '/phpmyadmin/')
+                self.assertContains(svc_resp, '/services/db-tool/phpmyadmin/')
                 self.assertNotContains(svc_resp, 'pgAdmin 4')
+                self.assertContains(svc_resp, 'Restart')
+
+                launch_adm = c_adm.get('/services/db-tool/phpmyadmin/', **adm_extra)
+                self.assertEqual(launch_adm.status_code, 302)
+                self.assertTrue(launch_adm.url.endswith('/phpmyadmin/'))
 
                 u_db = c_usr.get('/databases/', **usr_extra)
-                self.assertContains(u_db, '/phpmyadmin/')
-                self.assertNotContains(u_db, '/pgadmin4/')
+                self.assertContains(u_db, '/databases/launch/phpmyadmin/')
+                self.assertNotContains(u_db, '/databases/launch/pgadmin4/')
+
+                launch_usr = c_usr.get('/databases/launch/phpmyadmin/', **usr_extra)
+                self.assertEqual(launch_usr.status_code, 302)
+                self.assertTrue(launch_usr.url.endswith('/phpmyadmin/'))
 
             with patch.dict(os.environ, {'W3PANEL_PHPMYADMIN_DIR': str(pma_dir), 'W3PANEL_PGADMIN4_DIR': str(pg4_dir)}), \
                  patch('services.database.manager.is_mariadb_installed', return_value=False), \
@@ -99,11 +108,29 @@ class DbAdminToolsIntegrationTests(TestCase):
                 svc_resp = c_adm.get('/services/', **adm_extra)
                 self.assertNotContains(svc_resp, 'phpMyAdmin')
                 self.assertContains(svc_resp, 'pgAdmin 4')
-                self.assertContains(svc_resp, '/pgadmin4/')
+                self.assertContains(svc_resp, '/services/db-tool/pgadmin4/')
 
                 u_dash = c_usr.get('/dashboard/', **usr_extra)
-                self.assertContains(u_dash, '/pgadmin4/')
-                self.assertNotContains(u_dash, '/phpmyadmin/')
+                self.assertContains(u_dash, '/databases/launch/pgadmin4/')
+                self.assertNotContains(u_dash, '/databases/launch/phpmyadmin/')
+
+    def test_mariadb_restart_and_minimal_path_detection(self):
+        """MariaDB is detected even when PATH lacks /usr/sbin and Restart invokes systemctl cleanly."""
+        c_adm, adm_extra = self._login('dbadmin', '/login/', '2087')
+        with patch('services.database.manager.is_mariadb_installed', return_value=True), \
+             patch('services.database.manager.is_postgresql_installed', return_value=False), \
+             patch('apps.admin.views._run_privileged', return_value=MagicMock(returncode=0, stdout='', stderr='')) as mock_priv:
+            resp = c_adm.post('/services/', {'service': 'mariadb', 'action': 'restart'}, **adm_extra)
+            self.assertEqual(resp.status_code, 302)
+            mock_priv.assert_called_once_with(['systemctl', 'restart', 'mariadb'], timeout=15)
+
+        with patch('apps.admin.views.shutil.which', side_effect=lambda name, path=None: '/usr/sbin/mariadbd' if (name == 'mariadbd' and path) else None), \
+             patch('services.database.manager.is_mariadb_installed', return_value=True), \
+             patch('services.database.manager.is_postgresql_installed', return_value=False), \
+             patch('apps.admin.views.subprocess.run', return_value=MagicMock(stdout='active\n')):
+            svc_resp = c_adm.get('/services/', **adm_extra)
+            self.assertContains(svc_resp, 'MariaDB Database Server')
+            self.assertContains(svc_resp, 'value="restart"')
 
     def test_install_guards_and_no_cli_secret_for_pgadmin4(self):
         """Installers refuse without their engine and never pass passwords on CLI args."""

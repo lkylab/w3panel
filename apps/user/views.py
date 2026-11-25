@@ -21,21 +21,30 @@ from packages.core.models import (
 def _user_sidebar_context(request, active_page=''):
     user = request.panel_user
     unread_count = Notification.objects.filter(user=user, is_read=False).count() if user else 0
+    from services.database import get_db_admin_tools_status
+    db_tools = get_db_admin_tools_status()
+    items = [
+        {'label': 'Tools', 'url': '/', 'icon': 'ti ti-layout-grid', 'active': 'dashboard'},
+        {'label': 'Domains', 'url': '/websites/', 'icon': 'ti ti-world', 'active': 'websites'},
+        {'label': 'Databases', 'url': '/databases/', 'icon': 'ti ti-database', 'active': 'databases'},
+    ]
+    if db_tools['phpmyadmin_available']:
+        items.append({'label': 'phpMyAdmin', 'url': '/databases/launch/phpmyadmin/', 'icon': 'ti ti-table', 'active': 'phpmyadmin', 'external': True})
+    if db_tools['pgadmin4_available']:
+        items.append({'label': 'pgAdmin 4', 'url': '/databases/launch/pgadmin4/', 'icon': 'ti ti-brand-databricks', 'active': 'pgadmin4', 'external': True})
+    items.extend([
+        {'label': 'File Manager', 'url': '/filemanager/', 'icon': 'ti ti-folder', 'active': 'files'},
+        {'label': 'SSL / TLS', 'url': '/ssl/', 'icon': 'ti ti-lock', 'active': 'ssl'},
+        {'label': 'PHP Version', 'url': '/php/', 'icon': 'ti ti-brand-php', 'active': 'php'},
+        {'label': 'Zone Editor', 'url': '/dns/', 'icon': 'ti ti-dns', 'active': 'dns'},
+        {'label': 'Cron Jobs', 'url': '/cron/', 'icon': 'ti ti-clock', 'active': 'cron'},
+        {'label': 'Terminal', 'url': '/terminal/', 'icon': 'ti ti-terminal-2', 'active': 'terminal'},
+        {'label': 'Account Settings', 'url': '/profile/', 'icon': 'ti ti-user-cog', 'active': 'profile'},
+    ])
     return {
         'active_page': active_page,
         'unread_notifications_count': unread_count,
-        'sidebar_user_items': [
-            {'label': 'Tools', 'url': '/', 'icon': 'ti ti-layout-grid', 'active': 'dashboard'},
-            {'label': 'Domains', 'url': '/websites/', 'icon': 'ti ti-world', 'active': 'websites'},
-            {'label': 'Databases', 'url': '/databases/', 'icon': 'ti ti-database', 'active': 'databases'},
-            {'label': 'File Manager', 'url': '/filemanager/', 'icon': 'ti ti-folder', 'active': 'files'},
-            {'label': 'SSL / TLS', 'url': '/ssl/', 'icon': 'ti ti-lock', 'active': 'ssl'},
-            {'label': 'PHP Version', 'url': '/php/', 'icon': 'ti ti-brand-php', 'active': 'php'},
-            {'label': 'Zone Editor', 'url': '/dns/', 'icon': 'ti ti-dns', 'active': 'dns'},
-            {'label': 'Cron Jobs', 'url': '/cron/', 'icon': 'ti ti-clock', 'active': 'cron'},
-            {'label': 'Terminal', 'url': '/terminal/', 'icon': 'ti ti-terminal-2', 'active': 'terminal'},
-            {'label': 'Account Settings', 'url': '/profile/', 'icon': 'ti ti-user-cog', 'active': 'profile'},
-        ]
+        'sidebar_user_items': items,
     }
 
 
@@ -137,10 +146,10 @@ def user_dashboard(request):
     first_site = websites.first()
     primary_domain = first_site.domain if first_site else 'None'
 
-    from services.database import get_db_admin_tools_status, get_db_tool_url
+    from services.database import get_db_admin_tools_status
     db_tools = get_db_admin_tools_status()
-    db_tools['phpmyadmin_url'] = get_db_tool_url(request, 'phpmyadmin') if db_tools['phpmyadmin_available'] else ''
-    db_tools['pgadmin4_url'] = get_db_tool_url(request, 'pgadmin4') if db_tools['pgadmin4_available'] else ''
+    db_tools['phpmyadmin_url'] = '/databases/launch/phpmyadmin/' if db_tools['phpmyadmin_available'] else ''
+    db_tools['pgadmin4_url'] = '/databases/launch/pgadmin4/' if db_tools['pgadmin4_available'] else ''
 
     return render(request, 'user/dashboard.html', {
         **_user_sidebar_context(request, 'dashboard'),
@@ -538,7 +547,7 @@ def user_databases(request):
     mariadb_list = databases.filter(db_type='mariadb')
     postgres_list = databases.filter(db_type='postgresql')
 
-    from services.database import get_db_admin_tools_status, get_db_tool_url
+    from services.database import get_db_admin_tools_status
     db_tools = get_db_admin_tools_status()
 
     return render(request, 'user/databases.html', {
@@ -550,8 +559,8 @@ def user_databases(request):
         'is_postgresql_installed': postgres_ok,
         'phpmyadmin_available': db_tools['phpmyadmin_available'],
         'pgadmin4_available': db_tools['pgadmin4_available'],
-        'phpmyadmin_url': get_db_tool_url(request, 'phpmyadmin') if db_tools['phpmyadmin_available'] else '',
-        'pgadmin4_url': get_db_tool_url(request, 'pgadmin4') if db_tools['pgadmin4_available'] else '',
+        'phpmyadmin_url': '/databases/launch/phpmyadmin/' if db_tools['phpmyadmin_available'] else '',
+        'pgadmin4_url': '/databases/launch/pgadmin4/' if db_tools['pgadmin4_available'] else '',
     })
 
 
@@ -564,6 +573,20 @@ def user_database_delete(request, db_id):
         delete_database(name, db.db_user, db.db_type)
         db.delete()
         messages.success(request, f'Database "{name}" deleted.')
+    return redirect('user_databases')
+
+
+def user_db_tool_launch(request, tool):
+    """Auto-wire Nginx/Apache route if needed and redirect to phpMyAdmin or pgAdmin 4."""
+    from services.database import ensure_db_admin_webserver_configured, get_db_admin_tools_status, get_db_tool_url
+    db_tools = get_db_admin_tools_status()
+    if tool == 'phpmyadmin' and db_tools['phpmyadmin_available']:
+        ensure_db_admin_webserver_configured()
+        return redirect(get_db_tool_url(request, 'phpmyadmin'))
+    if tool == 'pgadmin4' and db_tools['pgadmin4_available']:
+        ensure_db_admin_webserver_configured()
+        return redirect(get_db_tool_url(request, 'pgadmin4'))
+    messages.error(request, 'Requested database admin tool is not available.')
     return redirect('user_databases')
 
 

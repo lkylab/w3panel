@@ -30,14 +30,31 @@ def _escape_sql_str(val: str) -> str:
     return val.replace('\\', '\\\\').replace("'", "\\'")
 
 
+_SBIN_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+
+
+def _find_bin(*names: str) -> str | None:
+    """Locate binary checking both active PATH and standard sbin/bin locations."""
+    env_path = os.environ.get('PATH', '')
+    full_path = f"{env_path}:{_SBIN_PATH}" if env_path else _SBIN_PATH
+    for name in names:
+        hit = shutil.which(name) or shutil.which(name, path=full_path)
+        if hit:
+            return hit
+    return None
+
+
 def is_mariadb_installed() -> bool:
     """Check if MariaDB / MySQL server is installed on host."""
-    return bool(shutil.which('mariadbd') or shutil.which('mysqld') or shutil.which('mysql'))
+    return bool(_find_bin('mariadbd', 'mysqld', 'mariadb', 'mysql'))
 
 
 def is_postgresql_installed() -> bool:
     """Check if PostgreSQL server is installed on host."""
-    return bool(shutil.which('psql') or shutil.which('postgres'))
+    if _find_bin('psql', 'postgres'):
+        return True
+    pg_lib = Path('/usr/lib/postgresql')
+    return pg_lib.exists() and any(pg_lib.glob('*/bin/postgres'))
 
 
 def _has_sudo() -> bool:
@@ -638,6 +655,19 @@ def configure_db_admin_webserver() -> dict:
                 subprocess.run(['sudo', '-n', 'systemctl', 'reload', 'apache2'], capture_output=True, timeout=5)
 
     return {'success': True, 'phpmyadmin': pma_on, 'pgadmin4': pg4_on}
+
+
+def ensure_db_admin_webserver_configured() -> dict:
+    """Auto-configure Nginx/Apache DB tool routes if an installed DB+tool is not yet wired."""
+    status = get_db_admin_tools_status()
+    if not status['phpmyadmin_available'] and not status['pgadmin4_available']:
+        return {'success': True, 'configured': False}
+    sites_enabled = Path(os.environ.get('W3PANEL_NGINX_ENABLED_DIR', '/etc/nginx/sites-enabled'))
+    if (sites_enabled / 'w3panel-dbtools.conf').exists():
+        return {'success': True, 'configured': True}
+    if not _find_bin('nginx', 'apache2') and not os.environ.get('W3PANEL_NGINX_SITES_DIR'):
+        return {'success': True, 'configured': False}
+    return configure_db_admin_webserver()
 
 
 def install_phpmyadmin() -> dict:

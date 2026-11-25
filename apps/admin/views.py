@@ -25,11 +25,35 @@ from packages.core.models import (
 from packages.plugins.manager import PluginManager
 
 logger = logging.getLogger('w3panel.admin')
+_FULL_BIN_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+
+
+def _find_bin(*names: str) -> str | None:
+    env_path = os.environ.get('PATH', '')
+    search_path = f"{env_path}:{_FULL_BIN_PATH}" if env_path else _FULL_BIN_PATH
+    for name in names:
+        hit = shutil.which(name) or shutil.which(name, path=search_path)
+        if hit:
+            return hit
+    return None
 
 
 def _sidebar_context(active_page=''):
     """Build sidebar navigation data matching OpenPanel reference."""
     unread_count = Notification.objects.filter(is_read=False).count()
+    from services.database import get_db_admin_tools_status
+    db_tools = get_db_admin_tools_status()
+    sidebar_services = [
+        {'label': 'Service Manager', 'url': '/services/', 'active': 'services'},
+        {'label': 'System Monitoring', 'url': '/monitoring/', 'active': 'monitoring'},
+        {'label': 'Terminal Console', 'url': '/terminal/', 'active': 'terminal'},
+        {'label': 'Cron Jobs & Tasks', 'url': '/services/cron/', 'active': 'cron'},
+        {'label': 'System Logs', 'url': '/services/logs/', 'active': 'logs'},
+    ]
+    if db_tools['phpmyadmin_available']:
+        sidebar_services.append({'label': 'phpMyAdmin', 'url': '/services/db-tool/phpmyadmin/', 'active': 'phpmyadmin', 'external': True})
+    if db_tools['pgadmin4_available']:
+        sidebar_services.append({'label': 'pgAdmin 4', 'url': '/services/db-tool/pgadmin4/', 'active': 'pgadmin4', 'external': True})
     return {
         'active_page': active_page,
         'unread_notifications_count': unread_count,
@@ -45,13 +69,7 @@ def _sidebar_context(active_page=''):
         'sidebar_domains': [
             {'label': 'DNS Zone Editor', 'url': '/domains/dns/', 'active': 'dns'},
         ],
-        'sidebar_services': [
-            {'label': 'Service Manager', 'url': '/services/', 'active': 'services'},
-            {'label': 'System Monitoring', 'url': '/monitoring/', 'active': 'monitoring'},
-            {'label': 'Terminal Console', 'url': '/terminal/', 'active': 'terminal'},
-            {'label': 'Cron Jobs & Tasks', 'url': '/services/cron/', 'active': 'cron'},
-            {'label': 'System Logs', 'url': '/services/logs/', 'active': 'logs'},
-        ],
+        'sidebar_services': sidebar_services,
         'sidebar_settings': [
             {'label': 'Basic WebHost Setup', 'url': '/settings/', 'active': 'settings'},
             {'label': 'W3Packager (Software)', 'url': '/software/w3packager/', 'active': 'w3packager'},
@@ -191,10 +209,10 @@ def admin_dashboard(request):
     }
     
     license_tier = SystemSetting.get('license_tier', 'free')
-    from services.database import get_db_admin_tools_status, get_db_tool_url
+    from services.database import get_db_admin_tools_status
     db_tools = get_db_admin_tools_status()
-    db_tools['phpmyadmin_url'] = get_db_tool_url(request, 'phpmyadmin') if db_tools['phpmyadmin_available'] else ''
-    db_tools['pgadmin4_url'] = get_db_tool_url(request, 'pgadmin4') if db_tools['pgadmin4_available'] else ''
+    db_tools['phpmyadmin_url'] = '/services/db-tool/phpmyadmin/' if db_tools['phpmyadmin_available'] else ''
+    db_tools['pgadmin4_url'] = '/services/db-tool/pgadmin4/' if db_tools['pgadmin4_available'] else ''
 
     return render(request, 'admin/dashboard.html', {
         **_sidebar_context('dashboard'),
@@ -919,13 +937,18 @@ def admin_services_status(request):
             return redirect('admin_services_status')
 
         elif action in ('start', 'stop', 'restart') and service_name:
-            allowed_services = {'nginx', 'mariadb', 'postgresql', 'php8.3-fpm', 'ufw', 'ssh', 'pgadmin4'}
+            allowed_services = {'nginx', 'mariadb', 'mysql', 'postgresql', 'php8.3-fpm', 'ufw', 'ssh', 'pgadmin4'}
             if service_name not in allowed_services:
                 messages.error(request, f'Invalid service: {service_name}')
                 return redirect('admin_services_status')
             try:
-                subprocess.run(['sudo', '-n', 'systemctl', action, service_name], timeout=10)
-                messages.success(request, f'Service {service_name} {action}ed successfully.')
+                res = _run_privileged(['systemctl', action, service_name], timeout=15)
+                if res is None:
+                    messages.error(request, f'Insufficient privileges to {action} {service_name}.')
+                elif res.returncode != 0:
+                    messages.error(request, f'Failed to {action} {service_name}: {res.stderr or res.stdout}')
+                else:
+                    messages.success(request, f'Service {service_name} {action}ed successfully.')
             except Exception as e:
                 messages.error(request, f'Error executing {action} on {service_name}: {e}')
             return redirect('admin_services_status')
@@ -934,25 +957,32 @@ def admin_services_status(request):
     db_tools = get_db_admin_tools_status()
 
     services_list = [
-        {'name': 'nginx', 'display': 'Nginx Web Server', 'icon': 'ti ti-world', 'cmd': 'nginx', 'desc': 'High-Performance Web Server for User Websites (Ports 80 & 443)'},
-        {'name': 'mariadb', 'display': 'MariaDB Database Server', 'icon': 'ti ti-database', 'cmd': 'mariadbd', 'desc': 'Relational MySQL Database Engine'},
-        {'name': 'postgresql', 'display': 'PostgreSQL Database Server', 'icon': 'ti ti-database-import', 'cmd': 'psql', 'desc': 'Advanced Object-Relational SQL Database Engine'},
-        {'name': 'php8.3-fpm', 'display': 'PHP-FPM 8.3 Daemon', 'icon': 'ti ti-brand-php', 'cmd': 'php-fpm8.3', 'desc': 'PHP FastCGI Process Manager for VirtualHosts'},
-        {'name': 'ufw', 'display': 'UFW Host Firewall', 'icon': 'ti ti-shield', 'cmd': 'ufw', 'desc': 'Host Inbound Access Firewall'},
-        {'name': 'ssh', 'display': 'SSH Remote Access', 'icon': 'ti ti-terminal-2', 'cmd': 'sshd', 'desc': 'Secure Shell Remote Administration'},
+        {'name': 'nginx', 'display': 'Nginx Web Server', 'icon': 'ti ti-world', 'cmds': ('nginx',), 'units': ('nginx',), 'desc': 'High-Performance Web Server for User Websites (Ports 80 & 443)'},
+        {'name': 'mariadb', 'display': 'MariaDB Database Server', 'icon': 'ti ti-database', 'cmds': ('mariadbd', 'mysqld', 'mariadb', 'mysql'), 'units': ('mariadb', 'mysql'), 'desc': 'Relational MySQL Database Engine'},
+        {'name': 'postgresql', 'display': 'PostgreSQL Database Server', 'icon': 'ti ti-database-import', 'cmds': ('psql', 'postgres'), 'units': ('postgresql',), 'desc': 'Advanced Object-Relational SQL Database Engine'},
+        {'name': 'php8.3-fpm', 'display': 'PHP-FPM 8.3 Daemon', 'icon': 'ti ti-brand-php', 'cmds': ('php-fpm8.3',), 'units': ('php8.3-fpm',), 'desc': 'PHP FastCGI Process Manager for VirtualHosts'},
+        {'name': 'ufw', 'display': 'UFW Host Firewall', 'icon': 'ti ti-shield', 'cmds': ('ufw',), 'units': ('ufw',), 'desc': 'Host Inbound Access Firewall'},
+        {'name': 'ssh', 'display': 'SSH Remote Access', 'icon': 'ti ti-terminal-2', 'cmds': ('sshd',), 'units': ('ssh', 'sshd'), 'desc': 'Secure Shell Remote Administration'},
     ]
 
     for s in services_list:
-        cmd_check = s.get('cmd', s['name'])
-        is_installed = bool(shutil.which(cmd_check) or shutil.which(s['name']))
+        is_installed = bool(_find_bin(*s['cmds']))
+        if not is_installed and s['name'] == 'postgresql':
+            pg_lib = Path('/usr/lib/postgresql')
+            is_installed = pg_lib.exists() and any(pg_lib.glob('*/bin/postgres'))
         if not is_installed:
             s['status'] = 'not_installed'
         else:
-            try:
-                res = subprocess.run(['systemctl', 'is-active', s['name']], capture_output=True, text=True, timeout=2)
-                s['status'] = 'running' if res.stdout.strip() == 'active' else 'stopped'
-            except Exception:
-                s['status'] = 'stopped'
+            s['status'] = 'stopped'
+            for unit in s['units']:
+                try:
+                    res = subprocess.run(['systemctl', 'is-active', unit], capture_output=True, text=True, timeout=2)
+                    if res.stdout.strip() == 'active':
+                        s['status'] = 'running'
+                        s['name'] = unit
+                        break
+                except Exception:
+                    pass
 
     if db_tools['mariadb_installed']:
         services_list.append({
@@ -962,7 +992,7 @@ def admin_services_status(request):
             'desc': 'Web administration tool for MariaDB / MySQL',
             'status': 'running' if db_tools['phpmyadmin_installed'] else 'not_installed',
             'is_web_tool': True,
-            'launch_url': get_db_tool_url(request, 'phpmyadmin') if db_tools['phpmyadmin_installed'] else '',
+            'launch_url': '/services/db-tool/phpmyadmin/' if db_tools['phpmyadmin_installed'] else '',
         })
 
     if db_tools['postgresql_installed']:
@@ -975,7 +1005,7 @@ def admin_services_status(request):
             'icon': 'ti ti-brand-databricks',
             'desc': 'Web administration tool for PostgreSQL',
             'status': pg4_status,
-            'launch_url': get_db_tool_url(request, 'pgadmin4') if db_tools['pgadmin4_installed'] else '',
+            'launch_url': '/services/db-tool/pgadmin4/' if db_tools['pgadmin4_installed'] else '',
         })
 
     return render(request, 'admin/services.html', {
@@ -983,6 +1013,20 @@ def admin_services_status(request):
         'services': services_list,
         'db_tuning': db_tuning,
     })
+
+
+def admin_db_tool_launch(request, tool):
+    """Auto-wire Nginx/Apache route if needed and redirect to phpMyAdmin or pgAdmin 4."""
+    from services.database import ensure_db_admin_webserver_configured, get_db_admin_tools_status, get_db_tool_url
+    db_tools = get_db_admin_tools_status()
+    if tool == 'phpmyadmin' and db_tools['phpmyadmin_available']:
+        ensure_db_admin_webserver_configured()
+        return redirect(get_db_tool_url(request, 'phpmyadmin'))
+    if tool == 'pgadmin4' and db_tools['pgadmin4_available']:
+        ensure_db_admin_webserver_configured()
+        return redirect(get_db_tool_url(request, 'pgadmin4'))
+    messages.error(request, 'Requested database admin tool is not available.')
+    return redirect('admin_services_status')
 
 
 def admin_ftp_service(request):
@@ -1277,14 +1321,19 @@ def get_server_stack_status():
     """Detect presence and active status of all server hosting components."""
     def _check(cmd, service_name=None):
         svc = service_name or cmd
-        installed = bool(shutil.which(cmd))
+        cmds = (cmd,) if isinstance(cmd, str) else tuple(cmd)
+        installed = bool(_find_bin(*cmds))
         active = False
         if installed:
-            try:
-                res = subprocess.run(['systemctl', 'is-active', svc], capture_output=True, text=True, timeout=2)
-                active = (res.stdout.strip() == 'active')
-            except Exception:
-                active = False
+            svcs = (svc,) if isinstance(svc, str) else tuple(svc)
+            for unit in svcs:
+                try:
+                    res = subprocess.run(['systemctl', 'is-active', unit], capture_output=True, text=True, timeout=2)
+                    if res.stdout.strip() == 'active':
+                        active = True
+                        break
+                except Exception:
+                    pass
         return {'installed': installed, 'active': active}
 
     from services.database import get_db_admin_tools_status
@@ -1293,8 +1342,8 @@ def get_server_stack_status():
     return {
         'webserver_nginx': _check('nginx'),
         'webserver_apache': _check('apache2'),
-        'db_mariadb': _check('mariadbd', 'mariadb'),
-        'db_postgresql': _check('psql', 'postgresql'),
+        'db_mariadb': _check(('mariadbd', 'mysqld', 'mariadb', 'mysql'), ('mariadb', 'mysql')),
+        'db_postgresql': _check(('psql', 'postgres'), 'postgresql'),
         'tool_phpmyadmin': {'installed': db_tools['phpmyadmin_available'], 'active': db_tools['phpmyadmin_available']},
         'tool_pgadmin4': {'installed': db_tools['pgadmin4_available'], 'active': db_tools['pgadmin4_running']},
         'mail_postfix': _check('postfix'),

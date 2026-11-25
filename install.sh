@@ -271,6 +271,7 @@ Restart=always
 RestartSec=5
 Environment=DJANGO_SETTINGS_MODULE=panel.settings
 Environment=SERVER_PORT=$ADMIN_PORT
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 [Install]
 WantedBy=multi-user.target
@@ -298,6 +299,7 @@ Restart=always
 RestartSec=5
 Environment=DJANGO_SETTINGS_MODULE=panel.settings
 Environment=SERVER_PORT=$USER_PORT
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 [Install]
 WantedBy=multi-user.target

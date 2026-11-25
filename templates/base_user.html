@@ -37,7 +37,7 @@ tailwind.config = { darkMode: 'class' }
             <!-- Sidebar Navigation Links -->
             <nav class="flex-1 overflow-y-auto p-3 space-y-1 text-xs">
                 {% for item in sidebar_user_items %}
-                <a href="{{ item.url }}"
+                <a href="{{ item.url }}" {% if item.external %}target="_blank"{% endif %}
                    class="relative flex items-center gap-3 rounded-lg px-3 py-2 text-xs font-semibold transition outline-none
                     {% if active_page == item.active %}
                         text-[#ff6c2c] bg-orange-50/70 dark:bg-[#1c2031] shadow-xs ring-1 ring-orange-500/10 dark:ring-[#fc6d26]/20
