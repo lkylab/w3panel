@@ -58,6 +58,10 @@ urlpatterns = [
     path('settings/php/', views.admin_php_settings, name='admin_php_settings'),
     path('php/', views.admin_php_settings, name='admin_php_shortcut'),
     path('settings/notifications/', views.admin_notifications_settings, name='admin_notifications_settings'),
+    path('migration/', views.admin_migration, name='admin_migration'),
+    path('migration/<str:migrator_id>/', views.admin_migration_panel, name='admin_migration_panel'),
+    path('migration/<str:migrator_id>/inspect/', views.admin_migration_inspect, name='admin_migration_inspect'),
+    path('migration/<str:migrator_id>/execute/', views.admin_migration_execute, name='admin_migration_execute'),
     
     # Security
     path('security/firewall/', views.admin_firewall, name='admin_firewall'),

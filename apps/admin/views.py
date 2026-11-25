@@ -56,6 +56,7 @@ def _sidebar_context(active_page=''):
             {'label': 'Basic WebHost Setup', 'url': '/settings/', 'active': 'settings'},
             {'label': 'W3Packager (Software)', 'url': '/software/w3packager/', 'active': 'w3packager'},
             {'label': 'MultiPHP Manager', 'url': '/settings/php/', 'active': 'php'},
+            {'label': 'Panel Migration', 'url': '/migration/', 'active': 'migration'},
             {'label': 'API Access', 'url': '/settings/api/', 'active': 'api'},
         ],
         'sidebar_security': [
@@ -3328,3 +3329,194 @@ def _get_podman_version():
     except Exception:
         pass
     return 'N/A'
+
+
+# ===========================================================================
+# 10. Panel Migration Center (Modular Migrators)
+# ===========================================================================
+
+def _require_admin_user(request):
+    user = getattr(request, 'panel_user', None)
+    return bool(user and user.role == 'admin')
+
+
+def _resolve_migration_source(migrator_id: str, source_token: str = '', local_path: str = ''):
+    """Resolve uploaded staged file token or local server path safely."""
+    from services.migrators import get_staging_dir
+    if source_token:
+        safe_name = Path(source_token).name
+        if safe_name != source_token or not safe_name:
+            raise ValueError('Invalid staged archive token.')
+        candidate = (get_staging_dir(migrator_id) / safe_name).resolve()
+        staging_root = get_staging_dir(migrator_id).resolve()
+        if staging_root not in candidate.parents or not candidate.exists():
+            raise FileNotFoundError('Staged archive not found.')
+        return candidate, True
+    if local_path:
+        p = Path(local_path.strip())
+        if not p.exists():
+            raise FileNotFoundError(f'Path not found: {p}')
+        return p, False
+    raise ValueError('Provide a backup archive upload or server path.')
+
+
+def admin_migration(request):
+    """Modular panel migrators catalog: install, uninstall, or launch."""
+    if not _require_admin_user(request):
+        return redirect('admin_dashboard')
+
+    from services.migrators import list_migrators, install_migrator, uninstall_migrator
+
+    if request.method == 'POST':
+        action = request.POST.get('action', '')
+        migrator_id = request.POST.get('migrator_id', '').strip()
+        if action == 'install':
+            res = install_migrator(migrator_id)
+            if res['success']:
+                messages.success(request, f'Installed "{migrator_id}" migrator.')
+            else:
+                messages.error(request, res.get('error', 'Failed to install migrator.'))
+        elif action == 'uninstall':
+            res = uninstall_migrator(migrator_id)
+            if res['success']:
+                messages.success(request, f'Uninstalled "{migrator_id}" migrator.')
+            else:
+                messages.error(request, res.get('error', 'Failed to uninstall migrator.'))
+        return redirect('admin_migration')
+
+    return render(request, 'admin/migration.html', {
+        **_sidebar_context('migration'),
+        'migrators': list_migrators(),
+    })
+
+
+def admin_migration_panel(request, migrator_id):
+    """Dedicated migration workspace for an installed panel migrator."""
+    if not _require_admin_user(request):
+        return redirect('admin_dashboard')
+
+    from services.migrators import get_migrator_meta, is_migrator_installed
+    meta = get_migrator_meta(migrator_id)
+    if not meta or not is_migrator_installed(migrator_id):
+        messages.error(request, f'Migrator "{migrator_id}" is not installed.')
+        return redirect('admin_migration')
+
+    return render(request, f'admin/migration_{migrator_id}.html', {
+        **_sidebar_context('migration'),
+        'migrator': meta,
+    })
+
+
+def admin_migration_inspect(request, migrator_id):
+    """Inspect a backup archive or directory and return structured preview JSON."""
+    if not _require_admin_user(request):
+        return JsonResponse({'error': 'Administrator access required'}, status=403)
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    from services.migrators import get_migrator, get_staging_dir
+    try:
+        mod = get_migrator(migrator_id)
+    except ValueError as e:
+        return JsonResponse({'error': str(e)}, status=400)
+
+    import secrets
+    uploaded = request.FILES.get('archive_file')
+    local_path = request.POST.get('local_path', '').strip()
+    source_token = ''
+
+    try:
+        if uploaded:
+            safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', Path(uploaded.name).name)
+            source_token = f'{secrets.token_hex(8)}_{safe_name}'
+            dest = get_staging_dir(migrator_id) / source_token
+            with open(dest, 'wb') as out_f:
+                for chunk in uploaded.chunks():
+                    out_f.write(chunk)
+            source_path = dest
+        else:
+            source_path, _ = _resolve_migration_source(migrator_id, local_path=local_path)
+
+        manifest = mod.inspect_cpanel_archive(source_path)
+        return JsonResponse({
+            'success': True,
+            'source_token': source_token,
+            'local_path': '' if source_token else str(source_path),
+            'manifest': manifest,
+        })
+    except Exception as e:
+        if source_token:
+            (get_staging_dir(migrator_id) / source_token).unlink(missing_ok=True)
+        return JsonResponse({'error': str(e)}, status=400)
+
+
+def admin_migration_execute(request, migrator_id):
+    """Stream SSE migration progress and final summary for an installed migrator."""
+    if not _require_admin_user(request):
+        return JsonResponse({'error': 'Administrator access required'}, status=403)
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    from services.migrators import get_migrator
+    try:
+        mod = get_migrator(migrator_id)
+    except ValueError as e:
+        return JsonResponse({'error': str(e)}, status=400)
+
+    source_token = request.POST.get('source_token', '').strip()
+    local_path = request.POST.get('local_path', '').strip()
+    try:
+        source_path, is_staged = _resolve_migration_source(migrator_id, source_token=source_token, local_path=local_path)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=400)
+
+    def _flag(name, default=True):
+        val = request.POST.get(name)
+        if val is None:
+            return default
+        return val in ('1', 'true', 'on', 'yes')
+
+    options = {
+        'target_username': request.POST.get('target_username', '').strip(),
+        'email': request.POST.get('email', '').strip(),
+        'import_websites': _flag('import_websites', True),
+        'import_databases': _flag('import_databases', True),
+        'import_mailboxes': _flag('import_mailboxes', True),
+        'import_dns': _flag('import_dns', True),
+        'update_dns_ip': _flag('update_dns_ip', True),
+        'import_ftp': _flag('import_ftp', True),
+        'import_cron': _flag('import_cron', True),
+        'import_ssl': _flag('import_ssl', True),
+        'skip_existing': _flag('skip_existing', False),
+    }
+
+    def event_stream():
+        try:
+            for evt in mod.iter_migrate_cpanel_archive(source_path, options=options):
+                if evt.get('complete'):
+                    payload = {
+                        'status': 'complete',
+                        'percent': 100,
+                        'step': evt.get('step', 'Migration completed'),
+                        'line': evt.get('line', ''),
+                        'summary': evt.get('summary', {}),
+                    }
+                else:
+                    payload = {
+                        'status': 'running',
+                        'percent': evt.get('percent', 0),
+                        'step': evt.get('step', ''),
+                        'line': evt.get('line', ''),
+                    }
+                yield f'data: {json.dumps(payload)}\n\n'
+        except Exception as exc:
+            logger.exception('Migration failed for %s', migrator_id)
+            yield f'data: {json.dumps({"status": "error", "percent": 100, "step": "Migration failed", "error": str(exc)})}\n\n'
+        finally:
+            if is_staged:
+                source_path.unlink(missing_ok=True)
+
+    response = StreamingHttpResponse(event_stream(), content_type='text/event-stream')
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response

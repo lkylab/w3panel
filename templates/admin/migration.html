@@ -1,0 +1,62 @@
+{% extends "base_admin.html" %}
+
+{% block title %}Panel Migration — W3Panel{% endblock %}
+{% block page_title %}Panel Migration{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto space-y-6">
+    <div>
+        <h2 class="text-lg font-bold text-gray-900">Panel Migration</h2>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {% for m in migrators %}
+        <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-2xs flex flex-col justify-between gap-4">
+            <div class="space-y-2">
+                <div class="flex items-center justify-between gap-2">
+                    <h3 class="text-sm font-bold text-gray-900">{{ m.name }}</h3>
+                    {% if m.installed %}
+                    <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">Installed</span>
+                    {% elif m.available %}
+                    <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">Available</span>
+                    {% else %}
+                    <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-700">Planned</span>
+                    {% endif %}
+                </div>
+                <p class="text-xs text-gray-600">{{ m.description }}</p>
+                <div class="text-[11px] font-mono text-gray-500">{{ m.formats }}</div>
+            </div>
+
+            <div class="flex items-center justify-end gap-2 pt-3 border-t border-gray-100">
+                {% if not m.available %}
+                <button type="button" disabled class="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-gray-100 text-gray-400 cursor-not-allowed">
+                    Coming Soon
+                </button>
+                {% elif m.installed %}
+                <form method="post" class="inline">
+                    {% csrf_token %}
+                    <input type="hidden" name="migrator_id" value="{{ m.id }}">
+                    <input type="hidden" name="action" value="uninstall">
+                    <button type="submit" class="px-3 py-1.5 border border-gray-300 text-gray-700 hover:bg-gray-50 rounded-lg text-xs font-semibold transition">
+                        Uninstall
+                    </button>
+                </form>
+                <a href="{% url 'admin_migration_panel' m.id %}" class="inline-flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition">
+                    <i class="ti ti-transfer"></i> Migrate
+                </a>
+                {% else %}
+                <form method="post" class="inline">
+                    {% csrf_token %}
+                    <input type="hidden" name="migrator_id" value="{{ m.id }}">
+                    <input type="hidden" name="action" value="install">
+                    <button type="submit" class="px-4 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition">
+                        Install Migrator
+                    </button>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

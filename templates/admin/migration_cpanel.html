@@ -1,0 +1,320 @@
+{% extends "base_admin.html" %}
+
+{% block title %}{{ migrator.name }} Migrator — W3Panel{% endblock %}
+{% block page_title %}{{ migrator.name }} Migrator{% endblock %}
+
+{% block content %}
+<div x-data="cpanelMigrator()" class="max-w-4xl mx-auto space-y-6">
+    <div class="flex items-center justify-between gap-3">
+        <div>
+            <div class="flex items-center gap-2 text-xs text-slate-500 mb-1">
+                <a href="{% url 'admin_migration' %}" class="hover:text-blue-600 transition">Panel Migration</a>
+                <i class="ti ti-chevron-right text-[10px]"></i>
+                <span class="text-slate-800 font-semibold">{{ migrator.name }}</span>
+            </div>
+            <h2 class="text-lg font-bold text-gray-900">{{ migrator.name }} Migration</h2>
+        </div>
+    </div>
+
+    <!-- Step 1: Source Selection -->
+    <div x-show="stage === 'source'" class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm space-y-5">
+        <div class="flex gap-2">
+            <button type="button" @click="sourceMode = 'path'"
+                    :class="sourceMode === 'path' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'"
+                    class="px-3.5 py-2 rounded-lg text-xs font-bold transition">Server Path</button>
+            <button type="button" @click="sourceMode = 'upload'"
+                    :class="sourceMode === 'upload' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'"
+                    class="px-3.5 py-2 rounded-lg text-xs font-bold transition">Upload Archive</button>
+        </div>
+
+        <div x-show="sourceMode === 'path'">
+            <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">cPanel Backup Path</label>
+            <input type="text" x-model="localPath" placeholder="/root/cpmove-username.tar.gz"
+                   class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm font-mono text-gray-900 outline-none focus:border-blue-600">
+        </div>
+
+        <div x-show="sourceMode === 'upload'">
+            <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">cPanel Archive (.tar.gz / .tgz / .tar)</label>
+            <input type="file" x-ref="fileInput" accept=".tar,.gz,.tgz,.bz2,.xz"
+                   class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2 text-sm text-gray-900 bg-white">
+        </div>
+
+        <div x-show="errorMsg" x-cloak class="rounded-lg bg-rose-50 border border-rose-200 px-4 py-3 text-xs text-rose-700" x-text="errorMsg"></div>
+
+        <div class="flex justify-end">
+            <button type="button" @click="inspectSource()" :disabled="busy"
+                    class="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold transition">
+                <i class="ti ti-search" x-show="!busy"></i>
+                <i class="ti ti-loader-2 animate-spin" x-show="busy" x-cloak></i>
+                <span x-text="busy ? 'Inspecting...' : 'Inspect Backup'"></span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Step 2: Review & Configure -->
+    <div x-show="stage === 'review'" x-cloak class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm space-y-6">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">Target Username</label>
+                <input type="text" x-model="targetUsername"
+                       class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2 text-sm font-mono text-gray-900 outline-none focus:border-blue-600">
+            </div>
+            <div>
+                <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">Account Email</label>
+                <input type="email" x-model="targetEmail"
+                       class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2 text-sm text-gray-900 outline-none focus:border-blue-600">
+            </div>
+        </div>
+
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                <div class="text-slate-500">Domains</div>
+                <div class="text-base font-bold text-slate-900" x-text="manifest ? manifest.domains.length : 0"></div>
+            </div>
+            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                <div class="text-slate-500">Databases</div>
+                <div class="text-base font-bold text-slate-900" x-text="manifest ? manifest.databases.length : 0"></div>
+            </div>
+            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                <div class="text-slate-500">Mailboxes</div>
+                <div class="text-base font-bold text-slate-900" x-text="manifest ? manifest.mailboxes.length : 0"></div>
+            </div>
+            <div class="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                <div class="text-slate-500">DNS Zones</div>
+                <div class="text-base font-bold text-slate-900" x-text="manifest ? manifest.dns_zones.length : 0"></div>
+            </div>
+        </div>
+
+        <template x-if="manifest && manifest.domains.length">
+            <div class="border border-gray-200 rounded-lg overflow-hidden">
+                <table class="w-full text-xs">
+                    <thead class="bg-gray-50 border-b border-gray-200 text-gray-600">
+                        <tr>
+                            <th class="text-left px-3 py-2">Domain</th>
+                            <th class="text-left px-3 py-2">Type</th>
+                            <th class="text-left px-3 py-2">PHP</th>
+                            <th class="text-left px-3 py-2">App</th>
+                            <th class="text-left px-3 py-2">SSL</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="d in manifest.domains" :key="d.domain">
+                            <tr class="border-b border-gray-100 last:border-0">
+                                <td class="px-3 py-2 font-mono font-semibold text-gray-900" x-text="d.domain"></td>
+                                <td class="px-3 py-2 text-gray-600" x-text="d.kind"></td>
+                                <td class="px-3 py-2 font-mono text-gray-600" x-text="d.php_version"></td>
+                                <td class="px-3 py-2 text-gray-600" x-text="d.framework"></td>
+                                <td class="px-3 py-2 text-gray-600" x-text="d.has_ssl ? 'Yes' : 'No'"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+        </template>
+
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs text-gray-700">
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.import_websites" class="rounded"> Websites & Files</label>
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.import_databases" class="rounded"> Databases</label>
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.import_mailboxes" class="rounded"> Mailboxes</label>
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.import_dns" class="rounded"> DNS Zones</label>
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.update_dns_ip" class="rounded"> Update A Records to Server IP</label>
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.import_ftp" class="rounded"> FTP Accounts</label>
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.import_cron" class="rounded"> Cron Jobs</label>
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.import_ssl" class="rounded"> SSL Certificates</label>
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.skip_existing" class="rounded"> Skip Existing</label>
+        </div>
+
+        <div class="flex items-center justify-between pt-2 border-t border-gray-100">
+            <button type="button" @click="stage = 'source'" class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-xs font-semibold">Back</button>
+            <button type="button" @click="startMigration()" class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition">
+                Start Migration
+            </button>
+        </div>
+    </div>
+
+    <!-- Step 3: Live Progress & Summary -->
+    <div x-show="stage === 'running'" x-cloak class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm space-y-5">
+        <div class="flex items-center justify-between">
+            <div class="text-sm font-bold text-gray-900" x-text="stepText"></div>
+            <div class="font-mono text-lg font-bold" x-text="progress + '%'"></div>
+        </div>
+
+        <div class="w-full bg-slate-100 rounded-full h-3 overflow-hidden border border-slate-200">
+            <div class="h-full rounded-full transition-all duration-300"
+                 :class="runStatus === 'error' ? 'bg-rose-500' : (runStatus === 'complete' ? 'bg-emerald-500' : 'bg-blue-600')"
+                 :style="`width: ${progress}%`"></div>
+        </div>
+
+        <div id="mig-console" class="rounded-xl bg-slate-950 p-4 font-mono text-xs text-slate-200 h-72 overflow-y-auto space-y-1">
+            <template x-for="(line, i) in logs" :key="i">
+                <div :class="line.includes('[ERROR]') ? 'text-rose-400' : (line.startsWith('>>') ? 'text-emerald-400 font-bold' : 'text-slate-300')" x-text="line"></div>
+            </template>
+        </div>
+
+        <template x-if="summary">
+            <div class="space-y-3 text-xs border-t border-gray-100 pt-4">
+                <div class="font-bold text-gray-900">Migration Summary</div>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div class="p-2.5 bg-gray-50 rounded border">Websites: <strong x-text="summary.websites.length"></strong></div>
+                    <div class="p-2.5 bg-gray-50 rounded border">Databases: <strong x-text="summary.databases.length"></strong></div>
+                    <div class="p-2.5 bg-gray-50 rounded border">Mailboxes: <strong x-text="summary.mailboxes.length"></strong></div>
+                    <div class="p-2.5 bg-gray-50 rounded border">DNS Zones: <strong x-text="summary.dns_zones.length"></strong></div>
+                </div>
+                <template x-if="summary.account_password">
+                    <div class="p-3 rounded-lg bg-blue-50 border border-blue-200 font-mono">
+                        User: <strong x-text="summary.username"></strong> | Password: <strong x-text="summary.account_password"></strong>
+                    </div>
+                </template>
+                <template x-if="summary.warnings && summary.warnings.length">
+                    <div class="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 space-y-1">
+                        <template x-for="(w, wi) in summary.warnings" :key="wi">
+                            <div x-text="w"></div>
+                        </template>
+                    </div>
+                </template>
+                <div class="flex justify-end gap-2">
+                    <a href="{% url 'admin_users' %}" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold">View Accounts</a>
+                </div>
+            </div>
+        </template>
+    </div>
+</div>
+
+<script>
+function cpanelMigrator() {
+    return {
+        stage: 'source',
+        sourceMode: 'path',
+        localPath: '',
+        sourceToken: '',
+        busy: false,
+        errorMsg: '',
+        manifest: null,
+        targetUsername: '',
+        targetEmail: '',
+        opts: {
+            import_websites: true,
+            import_databases: true,
+            import_mailboxes: true,
+            import_dns: true,
+            update_dns_ip: true,
+            import_ftp: true,
+            import_cron: true,
+            import_ssl: true,
+            skip_existing: false,
+        },
+        progress: 0,
+        stepText: 'Preparing...',
+        runStatus: 'running',
+        logs: [],
+        summary: null,
+
+        getCsrf() {
+            const m = document.cookie.match(/csrftoken=([^;]+)/);
+            return m ? m[1] : '{{ csrf_token }}';
+        },
+
+        async inspectSource() {
+            this.errorMsg = '';
+            this.busy = true;
+            try {
+                const fd = new FormData();
+                fd.append('csrfmiddlewaretoken', this.getCsrf());
+                if (this.sourceMode === 'upload') {
+                    const file = this.$refs.fileInput.files[0];
+                    if (!file) { this.errorMsg = 'Select an archive file.'; return; }
+                    fd.append('archive_file', file);
+                } else {
+                    if (!this.localPath.trim()) { this.errorMsg = 'Enter a server path.'; return; }
+                    fd.append('local_path', this.localPath.trim());
+                }
+
+                const resp = await fetch('{% url "admin_migration_inspect" migrator.id %}', { method: 'POST', body: fd });
+                const data = await resp.json();
+                if (!resp.ok || !data.success) {
+                    this.errorMsg = data.error || 'Inspection failed.';
+                    return;
+                }
+                this.manifest = data.manifest;
+                this.sourceToken = data.source_token || '';
+                if (data.local_path) this.localPath = data.local_path;
+                this.targetUsername = data.manifest.username || '';
+                this.targetEmail = data.manifest.email || '';
+                this.stage = 'review';
+            } catch (e) {
+                this.errorMsg = e.message;
+            } finally {
+                this.busy = false;
+            }
+        },
+
+        async startMigration() {
+            this.stage = 'running';
+            this.runStatus = 'running';
+            this.progress = 2;
+            this.stepText = 'Starting cPanel migration...';
+            this.logs = [];
+            this.summary = null;
+
+            const fd = new FormData();
+            fd.append('csrfmiddlewaretoken', this.getCsrf());
+            if (this.sourceToken) fd.append('source_token', this.sourceToken);
+            else fd.append('local_path', this.localPath);
+            fd.append('target_username', this.targetUsername);
+            fd.append('email', this.targetEmail);
+            for (const [k, v] of Object.entries(this.opts)) {
+                fd.append(k, v ? '1' : '0');
+            }
+
+            try {
+                const resp = await fetch('{% url "admin_migration_execute" migrator.id %}', { method: 'POST', body: fd });
+                if (!resp.ok || !resp.body) {
+                    this.runStatus = 'error';
+                    this.stepText = 'Failed to start migration';
+                    this.logs.push('>> [ERROR] ' + (await resp.text()).slice(0, 300));
+                    return;
+                }
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buf = '';
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buf += decoder.decode(value, { stream: true });
+                    const parts = buf.split('\n\n');
+                    buf = parts.pop();
+                    for (const part of parts) {
+                        const match = part.trim().match(/^data:\s*(.*)$/m);
+                        if (!match) continue;
+                        try {
+                            const evt = JSON.parse(match[1]);
+                            if (evt.line) {
+                                this.logs.push(evt.line);
+                                this.$nextTick(() => {
+                                    const el = document.getElementById('mig-console');
+                                    if (el) el.scrollTop = el.scrollHeight;
+                                });
+                            }
+                            if (typeof evt.percent === 'number') this.progress = evt.percent;
+                            if (evt.step) this.stepText = evt.step;
+                            if (evt.status === 'error') {
+                                this.runStatus = 'error';
+                                if (evt.error) this.logs.push('>> [ERROR] ' + evt.error);
+                            } else if (evt.status === 'complete') {
+                                this.runStatus = 'complete';
+                                this.progress = 100;
+                                this.summary = evt.summary || null;
+                            }
+                        } catch (e) {}
+                    }
+                }
+            } catch (err) {
+                this.runStatus = 'error';
+                this.stepText = 'Connection error';
+                this.logs.push('>> [ERROR] ' + err.message);
+            }
+        }
+    };
+}
+</script>
+{% endblock %}
