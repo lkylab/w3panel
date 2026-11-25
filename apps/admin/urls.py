@@ -38,7 +38,6 @@ urlpatterns = [
     path('websites/<int:website_id>/toggle-proxy/', views.admin_website_toggle_proxy, name='admin_website_toggle_proxy'),
     path('websites/<int:website_id>/delete/', views.admin_website_delete, name='admin_website_delete'),
     path('domains/dns/', views.admin_dns_editor, name='admin_dns_editor'),
-    path('domains/dns-cluster/', views.admin_dns_cluster, name='admin_dns_cluster'),
     
     # Services & Plugins
     path('services/vhosts/', views.admin_websites, name='admin_vhosts'),

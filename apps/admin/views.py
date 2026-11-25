@@ -44,7 +44,6 @@ def _sidebar_context(active_page=''):
         ],
         'sidebar_domains': [
             {'label': 'DNS Zone Editor', 'url': '/domains/dns/', 'active': 'dns'},
-            {'label': 'DNS Cluster', 'url': '/domains/dns-cluster/', 'active': 'dns-cluster'},
         ],
         'sidebar_services': [
             {'label': 'Service Manager', 'url': '/services/', 'active': 'services'},
@@ -670,13 +669,6 @@ def admin_dns_editor(request):
         'websites': websites,
         'selected_domain': selected_domain,
         'records': records,
-    })
-
-
-def admin_dns_cluster(request):
-    """DNS Cluster Configuration."""
-    return render(request, 'admin/dns_cluster.html', {
-        **_sidebar_context('dns-cluster'),
     })
 
 

@@ -1394,11 +1394,9 @@ def user_sso(request):
 def user_terminal(request):
     """Web Terminal interface for tenant user."""
     user = request.panel_user
-    server_ip = request.META.get('SERVER_NAME', '127.0.0.1')
     return render(request, 'user/terminal.html', {
         **_user_sidebar_context(request, 'terminal'),
         'shell_enabled': getattr(user, 'shell_enabled', False),
-        'server_ip': server_ip,
     })
 
 

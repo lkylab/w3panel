@@ -45,24 +45,6 @@
     </div>
     {% else %}
 
-    <!-- SSH Connection Helper Card -->
-    <div class="bg-white rounded-xl border border-slate-200 p-4 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-        <div class="flex items-center gap-3">
-            <div class="size-9 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center text-lg shrink-0">
-                <i class="ti ti-key"></i>
-            </div>
-            <div>
-                <span class="font-bold text-slate-800">Remote SSH Command</span>
-                <p class="text-slate-400 text-[11px]">Connect via standard SSH client using your panel password or authorized keys</p>
-            </div>
-        </div>
-        <div class="flex items-center gap-2">
-            <code class="bg-slate-100 text-slate-800 px-3 py-1.5 rounded-lg font-mono font-semibold select-all">
-                ssh {{ request.panel_user.username }}@{{ server_ip }}
-            </code>
-        </div>
-    </div>
-
     <!-- Web Terminal Console Component -->
     <div x-data="webTerminal()" class="bg-slate-950 rounded-2xl shadow-xl border border-slate-800 overflow-hidden flex flex-col">
         <!-- Terminal Titlebar -->
@@ -80,8 +62,30 @@
             </div>
         </div>
 
+        <!-- Quick Shortcuts Bar -->
+        <div class="px-4 py-2.5 bg-slate-900/60 border-b border-slate-800/80 flex flex-wrap items-center gap-1.5 text-[11px]">
+            <span class="text-slate-500 uppercase tracking-wider text-[10px] font-bold shrink-0 mr-1">Quick:</span>
+            <button type="button" @click="runQuick('df -h')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition whitespace-nowrap" title="Disk space usage">disk (df -h)</button>
+            <button type="button" @click="runQuick('du -sh * 2>/dev/null | sort -hr | head -n 15')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition whitespace-nowrap" title="Folder sizes in current directory">dir size</button>
+            <button type="button" @click="runQuick('free -h')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition whitespace-nowrap" title="Memory usage">free ram</button>
+            <button type="button" @click="runQuick('uptime')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition whitespace-nowrap" title="System uptime and load">uptime</button>
+            <button type="button" @click="runQuick('ps aux --sort=-%mem | head -n 15')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition whitespace-nowrap" title="Top memory processes">processes</button>
+            <button type="button" @click="runQuick('ss -tulpn 2>/dev/null || netstat -tulpn 2>/dev/null')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition whitespace-nowrap" title="Open listening ports">listening ports</button>
+            <button type="button" @click="runQuick('ss -tln | grep -E &quot;:(80|443|3306|6379)\\b&quot; || echo &quot;No standard web/db ports listening&quot;')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition whitespace-nowrap" title="Check ports 80, 443, 3306, 6379">check web/db ports</button>
+            <button type="button" @click="runQuick('ss -tan state established | head -n 25')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition whitespace-nowrap" title="Active established connections">connections</button>
+            <button type="button" @click="runQuick('ss -s')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition whitespace-nowrap" title="Socket connection summary">conn summary</button>
+            <button type="button" @click="runQuick('curl -I -s --max-time 5 http://127.0.0.1 | head -n 10')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition whitespace-nowrap" title="Test local HTTP response">http check</button>
+            <button type="button" @click="runQuick('curl -s --max-time 5 ifconfig.me || hostname -I')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition whitespace-nowrap" title="Server IP address">server ip</button>
+            <button type="button" @click="runQuick('ls -la')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition whitespace-nowrap">ls -la</button>
+            <button type="button" @click="runQuick('pwd')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition whitespace-nowrap">pwd</button>
+            <button type="button" @click="runQuick('php -v')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition whitespace-nowrap">php -v</button>
+            <button type="button" @click="runQuick('node -v')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition whitespace-nowrap">node -v</button>
+            <button type="button" @click="runQuick('git status')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition whitespace-nowrap">git status</button>
+            <button type="button" @click="runQuick('composer --version')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition whitespace-nowrap">composer</button>
+        </div>
+
         <!-- Terminal Output Screen -->
-        <div id="terminal-screen" class="p-4 font-mono text-xs text-slate-200 overflow-y-auto space-y-2 h-[420px] bg-slate-950/95 leading-relaxed selection:bg-blue-600 selection:text-white">
+        <div id="terminal-screen" @click="if (!window.getSelection().toString()) $refs.cmdInput?.focus()" class="p-4 font-mono text-xs text-slate-200 overflow-y-auto space-y-2 h-[460px] bg-slate-950/95 leading-relaxed selection:bg-blue-600 selection:text-white cursor-text">
             <div class="text-slate-500 text-[11px]">
                 Welcome to W3Panel Web Terminal v2.0<br>
                 Type commands below (e.g. <span class="text-blue-400">ls -la</span>, <span class="text-blue-400">git status</span>, <span class="text-blue-400">composer --version</span>, <span class="text-blue-400">node -v</span>).
@@ -101,28 +105,14 @@
             <div x-show="loading" class="flex items-center gap-2 text-slate-500">
                 <span class="animate-spin text-sm"><i class="ti ti-loader-2"></i></span> Executing command...
             </div>
-        </div>
 
-        <!-- Quick Shortcuts Bar -->
-        <div class="px-4 py-2 bg-slate-900/60 border-t border-slate-800/80 flex items-center gap-2 overflow-x-auto text-[11px]">
-            <span class="text-slate-500 uppercase tracking-wider text-[10px] font-bold">Quick:</span>
-            <button @click="runQuick('ls -la')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition">ls -la</button>
-            <button @click="runQuick('pwd')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition">pwd</button>
-            <button @click="runQuick('php -v')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition">php -v</button>
-            <button @click="runQuick('node -v')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition">node -v</button>
-            <button @click="runQuick('git status')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition">git status</button>
-            <button @click="runQuick('composer --version')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition">composer</button>
+            <!-- Inline Terminal Prompt -->
+            <form x-show="!loading" @submit.prevent="executeCommand()" class="flex items-center gap-1.5 pt-0.5">
+                {% csrf_token %}
+                <span class="text-slate-400 shrink-0"><span class="text-emerald-400 font-bold">{{ request.panel_user.username }}</span>:<span class="text-blue-400 font-semibold" x-text="cwd || '~'"></span>$</span>
+                <input x-ref="cmdInput" type="text" x-model="currentCommand" @keydown.up.prevent="prevHistory()" @keydown.down.prevent="nextHistory()" @keydown.ctrl.l.prevent="clearConsole()" autocomplete="off" spellcheck="false" autofocus class="flex-1 min-w-0 bg-transparent border-0 p-0 text-slate-100 font-mono text-xs outline-none focus:outline-none focus:ring-0 caret-emerald-400">
+            </form>
         </div>
-
-        <!-- Terminal Input Line -->
-        <form @submit.prevent="executeCommand()" class="p-3 bg-slate-900 border-t border-slate-800 flex items-center gap-2">
-            {% csrf_token %}
-            <span class="text-emerald-400 font-bold font-mono text-xs pl-2">{{ request.panel_user.username }}:$</span>
-            <input type="text" x-model="currentCommand" @keydown.up.prevent="prevHistory()" @keydown.down.prevent="nextHistory()" placeholder="Type shell command..." autofocus class="flex-1 bg-transparent border-0 border-none text-slate-100 font-mono text-xs outline-none focus:outline-none focus:ring-0 placeholder:text-slate-600">
-            <button type="submit" :disabled="loading || !currentCommand.trim()" class="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold transition flex items-center gap-1">
-                <span>Run</span> <i class="ti ti-arrow-right"></i>
-            </button>
-        </form>
     </div>
     {% endif %}
 </div>
@@ -176,6 +166,7 @@ function webTerminal() {
                 this.$nextTick(() => {
                     const screen = document.getElementById('terminal-screen');
                     if (screen) screen.scrollTop = screen.scrollHeight;
+                    this.$refs.cmdInput?.focus();
                 });
             }
         },
@@ -203,6 +194,7 @@ function webTerminal() {
 
         clearConsole() {
             this.history = [];
+            this.$nextTick(() => this.$refs.cmdInput?.focus());
         }
     }
 }
