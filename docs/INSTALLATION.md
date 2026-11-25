@@ -12,14 +12,20 @@
 ### From GitHub (recommended)
 
 ```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/lkylab/W3Panel/main/w3panel-v2/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/lkylab/w3panel/main/install.sh)
+```
+
+Or with `sudo`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lkylab/w3panel/main/install.sh | sudo bash
 ```
 
 ### From local clone
 
 ```bash
-git clone -b v2 https://github.com/lkylab/W3Panel.git
-cd W3Panel/w3panel-v2
+git clone https://github.com/lkylab/w3panel.git
+cd w3panel
 sudo bash install.sh
 ```
 

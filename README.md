@@ -13,12 +13,15 @@ Container-native hosting control panel with Podman-based per-user isolation.
 ## Quick Install
 
 ```bash
-# From GitHub
-bash <(curl -fsSL https://raw.githubusercontent.com/lkylab/W3Panel/main/install.sh)
+# Single-line install from GitHub (as root)
+bash <(curl -fsSL https://raw.githubusercontent.com/lkylab/w3panel/main/install.sh)
+
+# Or with sudo
+curl -fsSL https://raw.githubusercontent.com/lkylab/w3panel/main/install.sh | sudo bash
 
 # From local clone
-git clone https://github.com/lkylab/W3Panel.git
-cd W3Panel/w3panel-v2
+git clone https://github.com/lkylab/w3panel.git
+cd w3panel
 sudo bash install.sh
 ```
 

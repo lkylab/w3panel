@@ -28,6 +28,8 @@ PANEL_USER="w3panel"
 ADMIN_PORT=2087
 USER_PORT=2083
 ADMIN_PASS="123"
+REPO_URL="https://github.com/lkylab/w3panel.git"
+BRANCH="main"
 
 # ── Root check ────────────────────────────────────────────────────────────────
 [[ $EUID -eq 0 ]] || die "Run as root: sudo bash install.sh"
@@ -73,11 +75,12 @@ for arg in "$@"; do
         --webserver=*) WEBSERVER="${arg#*=}" ;;
         --nginx)       WEBSERVER="nginx" ;;
         --none)        WEBSERVER="none" ;;
+        --branch=*)    BRANCH="${arg#*=}" ;;
     esac
 done
 
 if [[ -z "$WEBSERVER" ]]; then
-    if [[ -t 0 ]] || [[ -c /dev/tty ]]; then
+    if [[ -t 0 ]] || (true </dev/tty) 2>/dev/null; then
         echo -e "${BOLD}Select Web Server to install:${NC}"
         echo -e "  ${CYAN}1)${NC} Nginx (Recommended)"
         echo -e "  ${CYAN}2)${NC} None (Install later via Admin Panel)"
@@ -218,27 +221,45 @@ chmod 775 "$LOG_DIR"
 
 # ── Copy files ────────────────────────────────────────────────────────────────
 info "Installing W3Panel v2 files..."
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]:-}"
+SCRIPT_DIR=""
+if [[ -n "$SCRIPT_PATH" && -f "$SCRIPT_PATH" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" &>/dev/null && pwd)"
+fi
 
-if [[ -d "$SCRIPT_DIR/apps" ]] && [[ -f "$SCRIPT_DIR/manage.py" ]]; then
-    # Running from cloned repo
-    cp -r "$SCRIPT_DIR"/{apps,packages,panel,services,static,templates,tests,manage.py,requirements.txt} "$INSTALL_DIR/"
-    if [[ -f "$SCRIPT_DIR/update.sh" ]]; then
-        cp "$SCRIPT_DIR/update.sh" "$INSTALL_DIR/"
-        chmod +x "$INSTALL_DIR/update.sh"
-        ln -sf "$INSTALL_DIR/update.sh" /usr/local/bin/w3panel-update
-    fi
+TMP_SRC=""
+if [[ -n "$SCRIPT_DIR" && -d "$SCRIPT_DIR/apps" && -f "$SCRIPT_DIR/manage.py" ]]; then
+    SRC_DIR="$SCRIPT_DIR"
+else
+    TMP_SRC="/tmp/w3panel-install-$$"
+    info "Downloading W3Panel from ${REPO_URL} (${BRANCH})..."
+    rm -rf "$TMP_SRC"
+    git clone --depth 1 -b "$BRANCH" "$REPO_URL" "$TMP_SRC"
+    SRC_DIR="$TMP_SRC"
+fi
 
-    # Install test runner helper
-    cat << 'EOF' > /usr/local/bin/w3panel-test
+cp -r "$SRC_DIR"/{apps,packages,panel,services,static,templates,tests,manage.py,requirements.txt} "$INSTALL_DIR/"
+if [[ -f "$SRC_DIR/update.sh" ]]; then
+    cp "$SRC_DIR/update.sh" "$INSTALL_DIR/"
+    chmod +x "$INSTALL_DIR/update.sh"
+    ln -sf "$INSTALL_DIR/update.sh" /usr/local/bin/w3panel-update
+fi
+
+# Install test runner helper
+cat << 'EOF' > /usr/local/bin/w3panel-test
 #!/usr/bin/env bash
 cd /usr/local/w3panel || exit 1
 export DJANGO_SETTINGS_MODULE=panel.settings
-/usr/local/w3panel/venv/bin/python manage.py test tests "$@"
-EOF
-    chmod +x /usr/local/bin/w3panel-test
+if [[ $# -eq 0 ]]; then
+    /usr/local/w3panel/venv/bin/python manage.py test tests
 else
-    die "Cannot find W3Panel source files. Run from the cloned repository."
+    /usr/local/w3panel/venv/bin/python manage.py test "$@"
+fi
+EOF
+chmod +x /usr/local/bin/w3panel-test
+
+if [[ -n "$TMP_SRC" && -d "$TMP_SRC" ]]; then
+    rm -rf "$TMP_SRC"
 fi
 
 chown -R "$PANEL_USER":"$PANEL_USER" "$INSTALL_DIR"
