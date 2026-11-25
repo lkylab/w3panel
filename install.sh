@@ -85,7 +85,21 @@ if [[ "$PKG_MGR" == "apt-get" ]]; then
         python3 python3-venv python3-pip \
         git curl wget openssl \
         build-essential libssl-dev libffi-dev \
-        unzip jq
+        unzip jq \
+        software-properties-common gnupg ca-certificates lsb-release
+    info "Configuring Ondřej Surý / deb.sury.org Multi-PHP repository..."
+    if [[ "$OS_ID" == "ubuntu" ]]; then
+        add-apt-repository -y ppa:ondrej/php || {
+            warn "add-apt-repository failed, configuring deb.sury.org apt repository directly..."
+            curl -sSLo /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg || true
+            echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list
+        }
+    else
+        curl -sSLo /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg || true
+        echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list
+    fi
+    apt-get update -qq || true
+    success "Ondřej Surý / deb.sury.org Multi-PHP repository configured"
 else
     yum install -y -q \
         python3 python3-pip \
@@ -211,12 +225,14 @@ sudo -u "$PANEL_USER" "$VENV_DIR/bin/python" - <<PYEOF
 import os, django
 os.environ['DJANGO_SETTINGS_MODULE'] = 'panel.settings'
 django.setup()
-from packages.core.models import User
+from packages.core.models import User, SystemSetting
 if not User.objects.filter(username='admin').exists():
     User.objects.create_user('admin', 'admin@localhost', '${ADMIN_PASS}', role='admin')
     print('Admin user created: admin / ${ADMIN_PASS}')
 else:
     print('Admin user already exists')
+if '${PKG_MGR}' == 'apt-get':
+    SystemSetting.set('sury_repo_enabled', 'true')
 PYEOF
 
 # ── Self-signed SSL ───────────────────────────────────────────────────────────

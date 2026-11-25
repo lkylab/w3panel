@@ -3052,14 +3052,6 @@ def wizard_dashboard(request):
         enable_ftp = request.POST.get('enable_ftp') in ('1', 'true', 'on')
         enable_ufw = request.POST.get('enable_ufw') in ('1', 'true', 'on')
         enable_podman = request.POST.get('enable_podman') in ('1', 'true', 'on')
-        enable_sury_repo = request.POST.get('enable_sury_repo') in ('1', 'true', 'on')
-
-        # Handle Ondřej Surý / deb.sury.org Multi-PHP repository switch
-        currently_sury = is_ondrej_ppa_enabled()
-        if enable_sury_repo and not currently_sury:
-            enable_ondrej_ppa()
-        elif not enable_sury_repo and currently_sury:
-            disable_ondrej_ppa()
 
         # Save system identity & stack preferences
         SystemSetting.set('server_hostname', server_hostname)
@@ -3182,8 +3174,6 @@ def wizard_dashboard(request):
         'default_php': default_php,
         'db_tuning': db_tuning,
         'initial_completed': SystemSetting.get('initial_setup_completed', 'false') == 'true',
-        'sury_repo_enabled': is_ondrej_ppa_enabled(),
-        'ppa_enabled': is_ondrej_ppa_enabled(),
     })
 
 

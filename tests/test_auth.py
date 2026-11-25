@@ -62,6 +62,55 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(port_resp.status_code, 200)
         self.assertContains(port_resp, 'W3Host Manager (port 2087)')
 
+    def test_sury_repo_only_in_settings(self):
+        from unittest.mock import patch
+        from packages.core.models import SystemSetting
+
+        SystemSetting.set('sury_repo_enabled', 'true')
+        self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
+
+        with patch('apps.admin.views.subprocess.run') as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = ''
+
+            resp_wiz = self.client.get('/wizards/')
+            self.assertEqual(resp_wiz.status_code, 200)
+            self.assertNotContains(resp_wiz, 'enable_sury_repo')
+
+            resp_wiz_post = self.client.post('/wizards/', {
+                'server_hostname': 'test.host.com',
+                'webserver_choice': 'none',
+                'default_php': '8.3',
+            })
+            self.assertEqual(resp_wiz_post.status_code, 302)
+            self.assertEqual(SystemSetting.get('sury_repo_enabled'), 'true')
+
+            resp_set_get = self.client.get('/settings/')
+            self.assertEqual(resp_set_get.status_code, 200)
+            self.assertContains(resp_set_get, 'enable_sury_repo')
+
+            with patch('apps.admin.views.disable_ondrej_ppa', return_value=(True, '')) as mock_dis:
+                resp_off = self.client.post('/settings/', {
+                    'panel_name': 'W3Panel',
+                    'server_hostname': 'test.host.com',
+                    'default_php': '8.3',
+                    'api_rate_limit': '50',
+                })
+                self.assertEqual(resp_off.status_code, 302)
+                mock_dis.assert_called_once()
+
+            SystemSetting.set('sury_repo_enabled', 'false')
+            with patch('apps.admin.views.enable_ondrej_ppa', return_value=(True, '')) as mock_en:
+                resp_on = self.client.post('/settings/', {
+                    'panel_name': 'W3Panel',
+                    'server_hostname': 'test.host.com',
+                    'default_php': '8.3',
+                    'api_rate_limit': '50',
+                    'enable_sury_repo': '1',
+                })
+                self.assertEqual(resp_on.status_code, 302)
+                mock_en.assert_called_once()
+
     def test_admin_user_edit_and_password_reset(self):
         # Log in as admin
         self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
@@ -595,14 +644,16 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(resp_set_sury.status_code, 302)
         self.assertEqual(SystemSetting.get('sury_repo_enabled'), 'true')
 
-        # 9. Test toggle sury repo switch in wizard_dashboard
-        resp_wiz_sury = self.client.post('/wizards/', {
+        # 9. Verify wizard_dashboard does not expose or alter sury_repo_enabled
+        resp_wiz_get = self.client.get('/wizards/')
+        self.assertEqual(resp_wiz_get.status_code, 200)
+        self.assertNotContains(resp_wiz_get, 'enable_sury_repo')
+        resp_wiz = self.client.post('/wizards/', {
             'server_hostname': 'test.host.com',
             'webserver_choice': 'nginx',
             'default_php': '8.3',
-            'enable_sury_repo': '1',
         })
-        self.assertEqual(resp_wiz_sury.status_code, 302)
+        self.assertEqual(resp_wiz.status_code, 302)
         self.assertEqual(SystemSetting.get('sury_repo_enabled'), 'true')
 
         # 10. Test stack batch provision action & custom profile saving
