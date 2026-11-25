@@ -1163,22 +1163,6 @@ def admin_settings(request):
             SystemSetting.set('admin_email', admin_email)
         SystemSetting.set('default_php', default_php)
         SystemSetting.set('api_rate_limit', api_rate_limit)
-
-        # Handle Ondřej Surý / deb.sury.org Multi-PHP repository switch
-        enable_sury = request.POST.get('enable_sury_repo') in ('1', 'true', 'on')
-        currently_enabled = is_ondrej_ppa_enabled()
-        if enable_sury and not currently_enabled:
-            ok, out = enable_ondrej_ppa()
-            if ok:
-                messages.info(request, "Ondřej Surý / deb.sury.org Multi-PHP repository enabled.")
-            else:
-                messages.warning(request, f"Could not enable Ondřej repository: {out[:200]}")
-        elif not enable_sury and currently_enabled:
-            ok, out = disable_ondrej_ppa()
-            if ok:
-                messages.info(request, "Ondřej Surý / deb.sury.org Multi-PHP repository disabled.")
-            else:
-                messages.warning(request, f"Could not disable Ondřej repository: {out[:200]}")
         
         messages.success(request, 'Basic WebHost settings saved successfully.')
         return redirect('admin_settings')
@@ -1198,7 +1182,6 @@ def admin_settings(request):
         'api_rate_limit': SystemSetting.get('api_rate_limit', '50'),
         'panel_version': getattr(settings, 'W3PANEL_VERSION', '2.0.0'),
         'initial_completed': SystemSetting.get('initial_setup_completed', 'false') == 'true',
-        'sury_repo_enabled': is_ondrej_ppa_enabled(),
     })
 
 
@@ -1836,48 +1819,34 @@ def _stream_cmd(cmd_args: list):
 
 
 def enable_ondrej_ppa() -> tuple[bool, str]:
-    """Configures ppa:ondrej/php or deb.sury.org repository on Debian/Ubuntu."""
+    """Configures official packages.sury.org/php repository on Debian/Ubuntu."""
     os_info = get_os_info()
-    _run_apt_transaction(['apt-get', 'install', '-y', 'software-properties-common', 'gnupg', 'ca-certificates', 'curl'])
-    out_all = ""
-    if os_info.get('id') == 'ubuntu':
-        ok, out = _run_apt_transaction(['add-apt-repository', '-y', 'ppa:ondrej/php'])
-        out_all += out + "\n"
-        if not ok:
-            # Fallback to direct deb.sury.org source
-            codename = os_info.get('codename') or 'noble'
-            cmd = f"curl -sSLo /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg && echo 'deb https://packages.sury.org/php/ {codename} main' > /etc/apt/sources.list.d/php.list"
-            proc = subprocess.run(['sudo', '-n', 'sh', '-c', cmd], capture_output=True, text=True)
-            out_all += proc.stdout + "\n" + proc.stderr
-    else:
-        # Debian
-        codename = os_info.get('codename') or 'bookworm'
-        cmd = f"curl -sSLo /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg && echo 'deb https://packages.sury.org/php/ {codename} main' > /etc/apt/sources.list.d/php.list"
-        proc = subprocess.run(['sudo', '-n', 'sh', '-c', cmd], capture_output=True, text=True)
-        out_all += proc.stdout + "\n" + proc.stderr
-
+    codename = os_info.get('codename') or ('noble' if os_info.get('id') == 'ubuntu' else 'bookworm')
+    _run_apt_transaction(['apt-get', 'install', '-y', 'lsb-release', 'ca-certificates', 'curl'])
+    cmd = (
+        "curl -sSLo /tmp/debsuryorg-archive-keyring.deb https://packages.sury.org/debsuryorg-archive-keyring.deb && "
+        "dpkg -i /tmp/debsuryorg-archive-keyring.deb && "
+        "rm -f /tmp/debsuryorg-archive-keyring.deb && "
+        f"echo 'deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ {codename} main' > /etc/apt/sources.list.d/php.list && "
+        "rm -f /etc/apt/sources.list.d/*ondrej*"
+    )
+    ok_repo, out_all = _run_apt_transaction(['sh', '-c', cmd])
     ok_upd, out_upd = _run_apt_transaction(['apt-get', 'update'])
-    out_all += out_upd
+    out_all = (out_all + "\n" + out_upd).strip()
     SystemSetting.set('sury_repo_enabled', 'true')
-    return ok_upd, out_all
+    return (ok_repo and ok_upd), out_all
 
 
 def disable_ondrej_ppa() -> tuple[bool, str]:
-    """Disables / removes ppa:ondrej/php or deb.sury.org repository."""
-    os_info = get_os_info()
+    """Disables / removes packages.sury.org/php (and legacy ondrej) repositories."""
     out_all = ""
-    if os_info.get('id') == 'ubuntu':
-        ok, out = _run_apt_transaction(['add-apt-repository', '-y', '--remove', 'ppa:ondrej/php'])
-        out_all += out + "\n"
-
-    # Remove any manual sury / ondrej list files in /etc/apt/sources.list.d/
     sources_dir = Path('/etc/apt/sources.list.d')
     if sources_dir.exists():
         for f in sources_dir.glob('*'):
             try:
                 name_lower = f.name.lower()
                 if 'ondrej' in name_lower or 'sury' in name_lower or name_lower == 'php.list':
-                    subprocess.run(['sudo', '-n', 'rm', '-f', str(f)], capture_output=True)
+                    _run_apt_transaction(['rm', '-f', str(f)])
             except Exception:
                 pass
 

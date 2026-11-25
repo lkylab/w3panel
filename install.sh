@@ -86,20 +86,14 @@ if [[ "$PKG_MGR" == "apt-get" ]]; then
         git curl wget openssl \
         build-essential libssl-dev libffi-dev \
         unzip jq \
-        software-properties-common gnupg ca-certificates lsb-release
-    info "Configuring Ondřej Surý / deb.sury.org Multi-PHP repository..."
-    if [[ "$OS_ID" == "ubuntu" ]]; then
-        add-apt-repository -y ppa:ondrej/php || {
-            warn "add-apt-repository failed, configuring deb.sury.org apt repository directly..."
-            curl -sSLo /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg || true
-            echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list
-        }
-    else
-        curl -sSLo /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg || true
-        echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list
-    fi
+        ca-certificates lsb-release
+    info "Configuring Ondřej Surý (packages.sury.org/php) Multi-PHP repository..."
+    curl -sSLo /tmp/debsuryorg-archive-keyring.deb https://packages.sury.org/debsuryorg-archive-keyring.deb
+    dpkg -i /tmp/debsuryorg-archive-keyring.deb >/dev/null
+    rm -f /tmp/debsuryorg-archive-keyring.deb
+    echo "deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list
     apt-get update -qq || true
-    success "Ondřej Surý / deb.sury.org Multi-PHP repository configured"
+    success "Ondřej Surý (packages.sury.org/php) Multi-PHP repository configured"
 else
     yum install -y -q \
         python3 python3-pip \
