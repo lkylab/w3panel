@@ -7,8 +7,10 @@
 {% block content %}
 <div x-data="{
     step: 1,
-    maxStep: 6,
+    maxStep: 7,
     webserver: 'nginx',
+    defaultPhp: '{{ default_php|default:"8.3"|escapejs }}',
+    phpVersions: [{% for r in php_runtimes %}{% if r.installed or r.version == default_php %}'{{ r.version }}',{% endif %}{% endfor %}],
     mariadb: true,
     postgresql: false,
     tune_mariadb: true,
@@ -46,7 +48,7 @@
 
     <!-- Stepper Navigation Bar -->
     <div class="bg-white rounded-xl border border-gray-200 p-2 shadow-xs">
-        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-1">
+        <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-1">
             <button type="button" @click="step = 1"
                     :class="step === 1 ? 'bg-blue-600 text-white font-bold shadow-xs' : (step > 1 ? 'text-emerald-700 hover:bg-emerald-50 font-medium' : 'text-slate-600 hover:bg-slate-50 font-normal')"
                     class="flex items-center justify-center sm:justify-start gap-2 px-3 py-2.5 rounded-lg text-xs transition">
@@ -65,28 +67,35 @@
                     :class="step === 3 ? 'bg-blue-600 text-white font-bold shadow-xs' : (step > 3 ? 'text-emerald-700 hover:bg-emerald-50 font-medium' : 'text-slate-600 hover:bg-slate-50 font-normal')"
                     class="flex items-center justify-center sm:justify-start gap-2 px-3 py-2.5 rounded-lg text-xs transition">
                 <span :class="step === 3 ? 'bg-blue-700 text-white' : (step > 3 ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600')" class="size-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0">3</span>
-                <span class="truncate">3. Database</span>
+                <span class="truncate">3. PHP</span>
             </button>
 
             <button type="button" @click="step = 4"
                     :class="step === 4 ? 'bg-blue-600 text-white font-bold shadow-xs' : (step > 4 ? 'text-emerald-700 hover:bg-emerald-50 font-medium' : 'text-slate-600 hover:bg-slate-50 font-normal')"
                     class="flex items-center justify-center sm:justify-start gap-2 px-3 py-2.5 rounded-lg text-xs transition">
                 <span :class="step === 4 ? 'bg-blue-700 text-white' : (step > 4 ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600')" class="size-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0">4</span>
-                <span class="truncate">4. Mail</span>
+                <span class="truncate">4. Database</span>
             </button>
 
             <button type="button" @click="step = 5"
                     :class="step === 5 ? 'bg-blue-600 text-white font-bold shadow-xs' : (step > 5 ? 'text-emerald-700 hover:bg-emerald-50 font-medium' : 'text-slate-600 hover:bg-slate-50 font-normal')"
                     class="flex items-center justify-center sm:justify-start gap-2 px-3 py-2.5 rounded-lg text-xs transition">
                 <span :class="step === 5 ? 'bg-blue-700 text-white' : (step > 5 ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600')" class="size-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0">5</span>
-                <span class="truncate">5. FTP</span>
+                <span class="truncate">5. Mail</span>
             </button>
 
             <button type="button" @click="step = 6"
-                    :class="step === 6 ? 'bg-blue-600 text-white font-bold shadow-xs' : 'text-slate-600 hover:bg-slate-50 font-normal'"
+                    :class="step === 6 ? 'bg-blue-600 text-white font-bold shadow-xs' : (step > 6 ? 'text-emerald-700 hover:bg-emerald-50 font-medium' : 'text-slate-600 hover:bg-slate-50 font-normal')"
                     class="flex items-center justify-center sm:justify-start gap-2 px-3 py-2.5 rounded-lg text-xs transition">
-                <span :class="step === 6 ? 'bg-blue-700 text-white' : 'bg-slate-100 text-slate-600'" class="size-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0">6</span>
-                <span class="truncate">6. Finish</span>
+                <span :class="step === 6 ? 'bg-blue-700 text-white' : (step > 6 ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600')" class="size-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0">6</span>
+                <span class="truncate">6. FTP</span>
+            </button>
+
+            <button type="button" @click="step = 7"
+                    :class="step === 7 ? 'bg-blue-600 text-white font-bold shadow-xs' : 'text-slate-600 hover:bg-slate-50 font-normal'"
+                    class="flex items-center justify-center sm:justify-start gap-2 px-3 py-2.5 rounded-lg text-xs transition">
+                <span :class="step === 7 ? 'bg-blue-700 text-white' : 'bg-slate-100 text-slate-600'" class="size-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0">7</span>
+                <span class="truncate">7. Finish</span>
             </button>
         </div>
     </div>
@@ -209,28 +218,6 @@
                 </label>
             </div>
 
-            <!-- Default PHP Version -->
-            <div class="p-4 rounded-xl border border-gray-200 bg-gray-50/50 space-y-2">
-                <div class="flex items-center justify-between">
-                    <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">Default PHP Runtime Version for New Sites</label>
-                    {% if stack_status.php_fpm.installed %}
-                    <span class="text-xs text-emerald-700 font-semibold flex items-center gap-1">
-                        <i class="ti ti-circle-check"></i> PHP-FPM Installed
-                    </span>
-                    {% else %}
-                    <span class="text-xs text-amber-700 font-semibold flex items-center gap-1">
-                        <i class="ti ti-download"></i> Will Install
-                    </span>
-                    {% endif %}
-                </div>
-                <select name="default_php" class="w-full sm:w-64 rounded-lg border border-gray-300 px-3.5 py-2 text-sm text-gray-900 bg-white outline-none focus:border-blue-600">
-                    <option value="8.4" {% if default_php == '8.4' %}selected{% endif %}>PHP 8.4 (Latest)</option>
-                    <option value="8.3" {% if default_php == '8.3' %}selected{% endif %}>PHP 8.3 (Recommended / Stable)</option>
-                    <option value="8.2" {% if default_php == '8.2' %}selected{% endif %}>PHP 8.2</option>
-                </select>
-                <p class="text-[11px] text-gray-500">Tenants can customize their individual PHP runtime per-website inside the Client Portal.</p>
-            </div>
-
             <!-- Podman Container Runtime -->
             <div class="p-4 rounded-xl border border-gray-200 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <label class="flex items-center gap-3 cursor-pointer">
@@ -252,15 +239,68 @@
             </div>
         </div>
 
-        <!-- STEP 3: Database Engine -->
+        <!-- STEP 3: PHP Runtimes -->
         <div x-show="step === 3" class="p-6 sm:p-8 space-y-6">
+            <div class="border-b border-gray-100 pb-4">
+                <div class="flex items-center gap-3">
+                    <div class="size-10 rounded-xl bg-violet-50 text-violet-600 flex items-center justify-center text-xl">
+                        <i class="ti ti-brand-php"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-gray-900">Step 3: PHP Runtimes Selection</h3>
+                        <p class="text-xs text-gray-500">Choose which PHP-FPM versions to install and set the default runtime</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Default PHP Version -->
+            <div class="p-4 rounded-xl border border-gray-200 bg-gray-50/50 space-y-2">
+                <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">Default PHP Version for New Sites</label>
+                <select name="default_php" x-model="defaultPhp" @change="if (!phpVersions.includes(defaultPhp)) phpVersions.push(defaultPhp)" class="w-full sm:w-64 rounded-lg border border-gray-300 px-3.5 py-2 text-sm text-gray-900 bg-white outline-none focus:border-blue-600">
+                    {% for r in php_runtimes %}
+                    <option value="{{ r.version }}" {% if default_php == r.version %}selected{% endif %}>PHP {{ r.version }} ({{ r.release_status }})</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <!-- Multi-PHP Checkboxes -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {% for r in php_runtimes %}
+                <label class="p-4 rounded-xl border bg-white hover:border-gray-300 transition flex items-center justify-between gap-3 cursor-pointer"
+                       :class="phpVersions.includes('{{ r.version }}') ? 'border-blue-600 bg-blue-50/20' : 'border-gray-200'">
+                    <div class="flex items-center gap-3">
+                        <input type="checkbox" name="php_versions" value="{{ r.version }}" x-model="phpVersions" class="size-4 rounded text-blue-600 focus:ring-blue-500 border-gray-300">
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <span class="font-bold text-gray-900 text-sm">PHP {{ r.version }}</span>
+                                <span x-show="defaultPhp === '{{ r.version }}'" class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-700">Default</span>
+                            </div>
+                            <p class="text-xs text-gray-500">{{ r.release_status }}</p>
+                        </div>
+                    </div>
+                    {% if r.installed %}
+                    <span class="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full shrink-0">
+                        <i class="ti ti-circle-check"></i> Installed
+                    </span>
+                    {% else %}
+                    <span x-show="phpVersions.includes('{{ r.version }}')" class="inline-flex items-center gap-1 text-[11px] font-bold text-amber-700 bg-amber-100 px-2.5 py-1 rounded-full shrink-0">
+                        <i class="ti ti-download"></i> Will Install
+                    </span>
+                    {% endif %}
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- STEP 4: Database Engine -->
+        <div x-show="step === 4" class="p-6 sm:p-8 space-y-6">
             <div class="border-b border-gray-100 pb-4">
                 <div class="flex items-center gap-3">
                     <div class="size-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-xl">
                         <i class="ti ti-database"></i>
                     </div>
                     <div>
-                        <h3 class="text-base font-bold text-gray-900">Step 3: Relational Database Engines</h3>
+                        <h3 class="text-base font-bold text-gray-900">Step 4: Relational Database Engines</h3>
                         <p class="text-xs text-gray-500">Configure MariaDB (MySQL-compatible) and PostgreSQL SQL servers</p>
                     </div>
                 </div>
@@ -324,15 +364,15 @@
             </div>
         </div>
 
-        <!-- STEP 4: Mail Server Stack -->
-        <div x-show="step === 4" class="p-6 sm:p-8 space-y-6">
+        <!-- STEP 5: Mail Server Stack -->
+        <div x-show="step === 5" class="p-6 sm:p-8 space-y-6">
             <div class="border-b border-gray-100 pb-4">
                 <div class="flex items-center gap-3">
                     <div class="size-10 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center text-xl">
                         <i class="ti ti-mail"></i>
                     </div>
                     <div>
-                        <h3 class="text-base font-bold text-gray-900">Step 4: Mail Server Stack & Deliverability</h3>
+                        <h3 class="text-base font-bold text-gray-900">Step 5: Mail Server Stack & Deliverability</h3>
                         <p class="text-xs text-gray-500">Configure outbound SMTP mail transfer (Postfix) and incoming IMAP/POP3 (Dovecot)</p>
                     </div>
                 </div>
@@ -380,15 +420,15 @@
             </div>
         </div>
 
-        <!-- STEP 5: FTP Server Stack -->
-        <div x-show="step === 5" class="p-6 sm:p-8 space-y-6">
+        <!-- STEP 6: FTP Server Stack -->
+        <div x-show="step === 6" class="p-6 sm:p-8 space-y-6">
             <div class="border-b border-gray-100 pb-4">
                 <div class="flex items-center gap-3">
                     <div class="size-10 rounded-xl bg-orange-50 text-orange-600 flex items-center justify-center text-xl">
                         <i class="ti ti-folder"></i>
                     </div>
                     <div>
-                        <h3 class="text-base font-bold text-gray-900">Step 5: File Transfer Protocol (FTP) Stack</h3>
+                        <h3 class="text-base font-bold text-gray-900">Step 6: File Transfer Protocol (FTP) Stack</h3>
                         <p class="text-xs text-gray-500">Provide secure virtual user FTP/FTPS connections for remote file management</p>
                     </div>
                 </div>
@@ -414,15 +454,15 @@
             </div>
         </div>
 
-        <!-- STEP 6: Security Baseline & Finish -->
-        <div x-show="step === 6" class="p-6 sm:p-8 space-y-6">
+        <!-- STEP 7: Security Baseline & Finish -->
+        <div x-show="step === 7" class="p-6 sm:p-8 space-y-6">
             <div class="border-b border-gray-100 pb-4">
                 <div class="flex items-center gap-3">
                     <div class="size-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center text-xl">
                         <i class="ti ti-shield-check"></i>
                     </div>
                     <div>
-                        <h3 class="text-base font-bold text-gray-900">Step 6: Security Baseline & Confirmation</h3>
+                        <h3 class="text-base font-bold text-gray-900">Step 7: Security Baseline & Confirmation</h3>
                         <p class="text-xs text-gray-500">Review selected server parameters and apply initial server provisioning</p>
                     </div>
                 </div>
@@ -470,12 +510,12 @@
             </button>
 
             <div class="flex items-center gap-2">
-                <button type="button" x-show="step < 6" @click="step = Math.min(6, step + 1)"
+                <button type="button" x-show="step < 7" @click="step = Math.min(7, step + 1)"
                         class="inline-flex items-center gap-1 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition shadow-sm">
                     Next Step <i class="ti ti-arrow-right"></i>
                 </button>
 
-                <button type="submit" x-show="step === 6"
+                <button type="submit" x-show="step === 7"
                         class="inline-flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-black tracking-wide shadow-md transition">
                     <i class="ti ti-check text-sm"></i> Complete Server Setup
                 </button>

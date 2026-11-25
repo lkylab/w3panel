@@ -98,6 +98,45 @@ class AuthAndRoleTests(TestCase):
             self.assertEqual(resp_set_post.status_code, 302)
             self.assertEqual(SystemSetting.get('sury_repo_enabled'), 'true')
 
+    def test_wizard_multi_php_selection(self):
+        from unittest.mock import patch
+        from packages.core.models import SystemSetting
+
+        SystemSetting.set('sury_repo_enabled', 'true')
+        self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
+
+        with patch('apps.admin.views.subprocess.run') as mock_run, \
+             patch('apps.admin.views.shutil.which', return_value=None), \
+             patch('apps.admin.views.Path.exists', return_value=False), \
+             patch('services.webserver.manager._has_sudo', return_value=True):
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = ''
+
+            resp_get = self.client.get('/wizards/')
+            self.assertEqual(resp_get.status_code, 200)
+            self.assertContains(resp_get, '3. PHP')
+            self.assertContains(resp_get, 'name="php_versions"')
+            self.assertContains(resp_get, 'PHP 8.4')
+            self.assertContains(resp_get, 'PHP 8.2')
+
+            resp_post = self.client.post('/wizards/', {
+                'server_hostname': 'test.host.com',
+                'webserver_choice': 'nginx',
+                'default_php': '8.3',
+                'php_versions': ['8.3', '8.2'],
+            })
+            self.assertEqual(resp_post.status_code, 302)
+            self.assertEqual(SystemSetting.get('default_php'), '8.3')
+
+            apt_install_calls = [
+                c.args[0] for c in mock_run.call_args_list
+                if c.args and isinstance(c.args[0], list) and 'install' in c.args[0]
+            ]
+            self.assertTrue(apt_install_calls)
+            pkgs = apt_install_calls[0]
+            self.assertIn('php8.3-fpm', pkgs)
+            self.assertIn('php8.2-fpm', pkgs)
+
     def test_admin_user_edit_and_password_reset(self):
         # Log in as admin
         self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})

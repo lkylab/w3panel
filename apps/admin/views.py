@@ -1856,18 +1856,57 @@ def disable_ondrej_ppa() -> tuple[bool, str]:
     return ok_upd, out_all
 
 
+def get_php_runtime_packages(ver: str) -> list[str]:
+    """Return canonical APT package list for a PHP runtime version."""
+    return [
+        f'php{ver}-fpm', f'php{ver}-cli', f'php{ver}-common',
+        f'php{ver}-mysql', f'php{ver}-pgsql', f'php{ver}-curl',
+        f'php{ver}-mbstring', f'php{ver}-xml', f'php{ver}-zip',
+        f'php{ver}-intl', f'php{ver}-bcmath', f'php{ver}-opcache',
+        f'php{ver}-readline',
+    ]
+
+
+def get_supported_php_runtimes(default_php: str = '8.3', installed_pkgs=None,
+                               available_apt_pkgs=None, include_domains: bool = False) -> list[dict]:
+    """Build OS-supported PHP runtime metadata shared by W3Packager and Initial Setup Wizard."""
+    if installed_pkgs is None:
+        installed_pkgs = get_installed_dpkg_packages()
+    if available_apt_pkgs is None:
+        available_apt_pkgs = get_available_apt_packages([f"php{r['version']}-fpm" for r in PHP_RUNTIME_DEFS])
+
+    runtimes = []
+    for r in PHP_RUNTIME_DEFS:
+        v = r['version']
+        fpm_pkg = f'php{v}-fpm'
+        is_inst = (fpm_pkg in installed_pkgs) or Path(f'/etc/php/{v}/fpm').exists() or bool(shutil.which(f'php-fpm{v}'))
+        is_supported = is_inst or (fpm_pkg in available_apt_pkgs) or not available_apt_pkgs
+        if not is_supported:
+            continue
+
+        entry = {
+            'version': v,
+            'release_status': r['release_status'],
+            'description': r['description'],
+            'installed': is_inst,
+            'is_default': (v == default_php),
+            'supported': True,
+        }
+        if include_domains:
+            domains_qs = Website.objects.filter(php_version=v)
+            entry['domain_count'] = domains_qs.count()
+            entry['domain_samples'] = list(domains_qs.values_list('domain', flat=True)[:3])
+        runtimes.append(entry)
+    return runtimes
+
+
 def install_php_runtime(ver: str) -> tuple[bool, str]:
     """Provisions a full PHP runtime stack (FPM, CLI, core extensions)."""
     if ver not in ('7.4', '8.0', '8.1', '8.2', '8.3', '8.4'):
         return False, f"Unsupported PHP version: {ver}"
     if not is_ondrej_ppa_enabled():
         enable_ondrej_ppa()
-    pkgs = [
-        f'php{ver}-fpm', f'php{ver}-cli', f'php{ver}-mysql',
-        f'php{ver}-curl', f'php{ver}-mbstring', f'php{ver}-xml',
-        f'php{ver}-zip', f'php{ver}-intl', f'php{ver}-bcmath',
-        f'php{ver}-opcache', f'php{ver}-readline'
-    ]
+    pkgs = get_php_runtime_packages(ver)
     ok, out = _run_apt_transaction(['apt-get', 'install', '-y'] + pkgs)
     if ok:
         subprocess.run(['sudo', '-n', 'systemctl', 'enable', f'php{ver}-fpm'], capture_output=True)
@@ -1913,6 +1952,35 @@ def uninstall_php_extension(ver: str, ext: str) -> tuple[bool, str]:
     return ok, out
 
 
+PHP_RUNTIME_DEFS = [
+    {
+        'version': '8.4',
+        'release_status': 'Latest Stable',
+        'description': 'JIT tracing compilation, Property Hooks, Asymmetric Visibility, new array functions.',
+    },
+    {
+        'version': '8.3',
+        'release_status': 'Standard Active Runtime',
+        'description': 'Typed class constants, json_validate function, deep-cloning readonly properties.',
+    },
+    {
+        'version': '8.2',
+        'release_status': 'LTS Stable',
+        'description': 'Readonly classes, DNF types, standalone null/false/true types, OpenSSL 3 support.',
+    },
+    {
+        'version': '8.1',
+        'release_status': 'Extended Support',
+        'description': 'Enums, Fibers, readonly properties, intersection types, array unpacking.',
+    },
+    {
+        'version': '7.4',
+        'release_status': 'Legacy (Security / Migration)',
+        'description': 'Typed properties, arrow functions, null coalescing assignment operator.',
+    },
+]
+
+
 def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
     """Builds the software component catalog filtered strictly to OS-supported components."""
     os_info = get_os_info()
@@ -1920,34 +1988,7 @@ def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
     ppa_enabled = is_ondrej_ppa_enabled()
     default_php = SystemSetting.get('default_php', '8.3')
 
-    # All candidate PHP runtimes to check
-    all_runtime_defs = [
-        {
-            'version': '8.4',
-            'release_status': 'Latest Stable (Nov 2024)',
-            'description': 'JIT tracing compilation, Property Hooks, Asymmetric Visibility, new array functions.',
-        },
-        {
-            'version': '8.3',
-            'release_status': 'Standard Active Runtime',
-            'description': 'Typed class constants, json_validate function, deep-cloning readonly properties.',
-        },
-        {
-            'version': '8.2',
-            'release_status': 'LTS Stable',
-            'description': 'Readonly classes, DNF types, standalone null/false/true types, OpenSSL 3 support.',
-        },
-        {
-            'version': '8.1',
-            'release_status': 'Extended Support',
-            'description': 'Enums, Fibers, readonly properties, intersection types, array unpacking.',
-        },
-        {
-            'version': '7.4',
-            'release_status': 'Legacy (Security / Migration)',
-            'description': 'Typed properties, arrow functions, null coalescing assignment operator.',
-        },
-    ]
+    all_runtime_defs = PHP_RUNTIME_DEFS
 
     candidate_runtimes = [f"php{r['version']}-fpm" for r in all_runtime_defs]
 
@@ -1998,35 +2039,13 @@ def get_w3packager_catalog(selected_php='8.3', search_query='') -> dict:
     available_apt_pkgs = get_available_apt_packages(all_check_pkgs)
 
     # 1. Filter PHP Runtimes strictly to OS-supported versions
-    runtimes = []
-    installed_versions = []
-    for r in all_runtime_defs:
-        v = r['version']
-        fpm_pkg = f'php{v}-fpm'
-        fpm_dir = Path(f'/etc/php/{v}/fpm')
-        is_inst = (fpm_pkg in installed_pkgs) or fpm_dir.exists()
-        is_supported_by_os = is_inst or (fpm_pkg in available_apt_pkgs)
-
-        # Domain count using this version
-        domains_qs = Website.objects.filter(php_version=v)
-        domain_count = domains_qs.count()
-        domain_samples = list(domains_qs.values_list('domain', flat=True)[:3])
-
-        if is_inst:
-            installed_versions.append(v)
-
-        # STRICT FILTER: Only show runtimes supported by the OS version (or already installed)
-        if is_supported_by_os:
-            runtimes.append({
-                'version': v,
-                'release_status': r['release_status'],
-                'description': r['description'],
-                'installed': is_inst,
-                'is_default': (v == default_php),
-                'domain_count': domain_count,
-                'domain_samples': domain_samples,
-                'supported': True,
-            })
+    runtimes = get_supported_php_runtimes(
+        default_php=default_php,
+        installed_pkgs=installed_pkgs,
+        available_apt_pkgs=available_apt_pkgs,
+        include_domains=True,
+    )
+    installed_versions = [r['version'] for r in runtimes if r['installed']]
 
     supported_versions = [r['version'] for r in runtimes]
 
@@ -2383,11 +2402,7 @@ def admin_w3packager_provision(request):
         # Runtimes to install
         runtimes_to_install = [v for v in selected_runtimes if v not in installed_runtimes]
         for v in runtimes_to_install:
-            apt_install_pkgs.extend([
-                f'php{v}-fpm', f'php{v}-cli', f'php{v}-common',
-                f'php{v}-opcache', f'php{v}-curl', f'php{v}-mbstring',
-                f'php{v}-xml', f'php{v}-zip', f'php{v}-mysql'
-            ])
+            apt_install_pkgs.extend(get_php_runtime_packages(v))
 
         # Extensions to install & remove
         for ext_pkg in selected_extensions:
@@ -2692,11 +2707,7 @@ def admin_w3packager(request):
             # 1. Runtimes to install
             runtimes_to_install = [v for v in selected_runtimes if v not in installed_runtimes]
             for v in runtimes_to_install:
-                apt_install_pkgs.extend([
-                    f'php{v}-fpm', f'php{v}-cli', f'php{v}-common',
-                    f'php{v}-opcache', f'php{v}-curl', f'php{v}-mbstring',
-                    f'php{v}-xml', f'php{v}-zip', f'php{v}-mysql'
-                ])
+                apt_install_pkgs.extend(get_php_runtime_packages(v))
 
             # 2. Extensions to install & remove
             for ext_pkg in selected_extensions:
@@ -3009,6 +3020,14 @@ def wizard_dashboard(request):
         
         webserver_choice = request.POST.get('webserver_choice', 'nginx')
         default_php = request.POST.get('default_php', '8.3')
+        valid_php_versions = {r['version'] for r in PHP_RUNTIME_DEFS}
+        if default_php not in valid_php_versions:
+            default_php = '8.3'
+        selected_php_versions = [v for v in request.POST.getlist('php_versions') if v in valid_php_versions]
+        if webserver_choice in ('nginx', 'apache') and default_php not in selected_php_versions:
+            selected_php_versions.append(default_php)
+        # Preserve order without duplicates
+        selected_php_versions = list(dict.fromkeys(selected_php_versions))
         
         enable_mariadb = request.POST.get('enable_mariadb') in ('1', 'true', 'on')
         enable_postgresql = request.POST.get('enable_postgresql') in ('1', 'true', 'on')
@@ -3053,14 +3072,10 @@ def wizard_dashboard(request):
             install_pkgs.extend(['apache2'])
             services_to_start.append('apache2')
 
-        if webserver_choice in ('nginx', 'apache') and default_php and not shutil.which(f'php-fpm{default_php}'):
-            install_pkgs.extend([
-                f'php{default_php}-fpm', f'php{default_php}-cli',
-                f'php{default_php}-mysql', f'php{default_php}-pgsql',
-                f'php{default_php}-curl', f'php{default_php}-zip',
-                f'php{default_php}-mbstring', f'php{default_php}-xml',
-            ])
-            services_to_start.append(f'php{default_php}-fpm')
+        for ver in selected_php_versions:
+            if not shutil.which(f'php-fpm{ver}') and not Path(f'/etc/php/{ver}/fpm').exists():
+                install_pkgs.extend(get_php_runtime_packages(ver))
+                services_to_start.append(f'php{ver}-fpm')
 
         if enable_podman and not stack_status['container_podman']['installed']:
             install_pkgs.append('podman')
@@ -3083,11 +3098,8 @@ def wizard_dashboard(request):
         installed_count = len(install_pkgs)
         if install_pkgs:
             try:
-                subprocess.run(['sudo', '-n', 'apt-get', 'update', '-y'], timeout=60)
-                cmd = ['sudo', '-n', 'apt-get', 'install', '-y'] + install_pkgs
-                env = os.environ.copy()
-                env['DEBIAN_FRONTEND'] = 'noninteractive'
-                subprocess.run(cmd, env=env, timeout=300)
+                _run_apt_transaction(['apt-get', 'update', '-y'])
+                _run_apt_transaction(['apt-get', 'install', '-y'] + install_pkgs)
                 for svc in services_to_start:
                     subprocess.run(['sudo', '-n', 'systemctl', 'enable', '--now', svc], timeout=10)
             except Exception as e:
@@ -3131,6 +3143,7 @@ def wizard_dashboard(request):
     server_ip = SystemSetting.get('server_ip', detected_ip)
     default_php = SystemSetting.get('default_php', '8.3')
     db_tuning = get_database_tuning_status()
+    php_runtimes = get_supported_php_runtimes(default_php=default_php)
 
     return render(request, 'admin/wizards.html', {
         **_sidebar_context('wizards'),
@@ -3141,6 +3154,7 @@ def wizard_dashboard(request):
         'secondary_ns': secondary_ns,
         'admin_email': admin_email,
         'default_php': default_php,
+        'php_runtimes': php_runtimes,
         'db_tuning': db_tuning,
         'initial_completed': SystemSetting.get('initial_setup_completed', 'false') == 'true',
     })
