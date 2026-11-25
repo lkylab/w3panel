@@ -3,6 +3,7 @@ W3Panel v2 — User Views
 End-user management interface and services.
 """
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -40,11 +41,31 @@ def _user_sidebar_context(request, active_page=''):
 
 def user_login(request):
     """User login page (W3Client Portal style)."""
+    import time
+    from packages.core.auth import authenticate_user, create_session, verify_2fa
+
     if request.method == 'POST':
-        from packages.core.auth import authenticate_user, create_session
+        otp_code = request.POST.get('otp_code', '').strip()
+        pending_uid = request.session.get('pending_user_2fa_uid')
+        pending_exp = request.session.get('pending_user_2fa_exp', 0)
+
+        if pending_uid and otp_code and time.time() <= pending_exp:
+            user = User.objects.filter(pk=pending_uid, is_active=True).exclude(role__in=('admin', 'reseller')).first()
+            if user and verify_2fa(user, otp_code):
+                request.session.pop('pending_user_2fa_uid', None)
+                request.session.pop('pending_user_2fa_exp', None)
+                create_session(request, user)
+                return redirect('user_dashboard')
+            return render(request, 'login.html', {
+                'error': 'Invalid two-factor authentication code.',
+                'username': user.username if user else '',
+                'panel_type': 'client',
+                'require_2fa': True,
+            })
+
         username = request.POST.get('username', '').strip()
         password = request.POST.get('password', '').strip()
-        
+
         try:
             user, is_2fa_required = authenticate_user(username, password, request.META.get('REMOTE_ADDR', ''))
             if user.role in ('admin', 'reseller'):
@@ -53,11 +74,26 @@ def user_login(request):
                     'username': username,
                     'panel_type': 'client',
                 })
+
+            if is_2fa_required:
+                if not otp_code or not verify_2fa(user, otp_code):
+                    request.session['pending_user_2fa_uid'] = user.pk
+                    request.session['pending_user_2fa_exp'] = time.time() + 300
+                    err = 'Invalid two-factor authentication code.' if otp_code else ''
+                    return render(request, 'login.html', {
+                        'error': err,
+                        'username': username,
+                        'panel_type': 'client',
+                        'require_2fa': True,
+                    })
+
+            request.session.pop('pending_user_2fa_uid', None)
+            request.session.pop('pending_user_2fa_exp', None)
             create_session(request, user)
             return redirect('user_dashboard')
         except ValueError as e:
             return render(request, 'login.html', {'error': str(e), 'username': username, 'panel_type': 'client'})
-    
+
     return render(request, 'login.html', {'panel_type': 'client'})
 
 
@@ -101,6 +137,11 @@ def user_dashboard(request):
     first_site = websites.first()
     primary_domain = first_site.domain if first_site else 'None'
 
+    from services.database import get_db_admin_tools_status, get_db_tool_url
+    db_tools = get_db_admin_tools_status()
+    db_tools['phpmyadmin_url'] = get_db_tool_url(request, 'phpmyadmin') if db_tools['phpmyadmin_available'] else ''
+    db_tools['pgadmin4_url'] = get_db_tool_url(request, 'pgadmin4') if db_tools['pgadmin4_available'] else ''
+
     return render(request, 'user/dashboard.html', {
         **_user_sidebar_context(request, 'dashboard'),
         'websites': websites,
@@ -117,6 +158,7 @@ def user_dashboard(request):
         'disk_used_mb': round(disk_used_mb, 1),
         'disk_percent': round(disk_percent, 1),
         'primary_domain': primary_domain,
+        'db_tools': db_tools,
     })
 
 
@@ -131,39 +173,51 @@ def user_websites(request):
     })
 
 
+_DOMAIN_RE = re.compile(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$')
+_SUPPORTED_PHP_VERSIONS = {'7.4', '8.0', '8.1', '8.2', '8.3', '8.4'}
+
+
 def user_website_create(request):
     """User website create."""
     is_nginx_installed = bool(shutil.which('nginx'))
+    default_php = SystemSetting.get('default_php', '8.3')
     if request.method == 'POST':
         domain = request.POST.get('domain', '').strip().lower()
         framework = request.POST.get('framework', 'none')
-        php_version = request.POST.get('php_version', '8.3')
+        php_version = request.POST.get('php_version', default_php).strip()
+        if php_version not in _SUPPORTED_PHP_VERSIONS:
+            php_version = default_php
+        if framework not in ('none', 'wordpress', 'laravel', 'django', 'nodejs', 'static'):
+            framework = 'none'
         proxy_real_ip = request.POST.get('proxy_real_ip') in ('1', 'true', 'on')
-        
-        if domain:
-            if Website.objects.filter(domain=domain).exists():
-                messages.error(request, f'Domain "{domain}" is already in use.')
-            else:
-                user = request.panel_user
-                username = user.username if user else 'guest'
-                doc_root = f"/home/{username}/{domain}/public_html"
-                site = Website.objects.create(
-                    owner=user,
-                    domain=domain,
-                    doc_root=doc_root,
-                    framework=framework,
-                    php_version=php_version,
-                    proxy_real_ip=proxy_real_ip,
-                )
-                DNSRecord.objects.create(domain=site, record_type='A', name='@', value='127.0.0.1')
-                DNSRecord.objects.create(domain=site, record_type='CNAME', name='www', value=domain)
 
-                # Provision vhost configuration and docroot
-                from services.webserver import create_vhost
-                create_vhost(site)
+        user = request.panel_user
+        pkg = getattr(user, 'package', None)
+        if pkg and pkg.websites_limit >= 0 and Website.objects.filter(owner=user).count() >= pkg.websites_limit:
+            messages.error(request, f'Website limit reached ({pkg.websites_limit}).')
+        elif not domain or not _DOMAIN_RE.match(domain):
+            messages.error(request, 'Enter a valid domain name (e.g. example.com).')
+        elif Website.objects.filter(domain=domain).exists():
+            messages.error(request, f'Domain "{domain}" is already in use.')
+        else:
+            from services.webserver import create_vhost, get_doc_root
+            username = user.username if user else 'guest'
+            doc_root = str(get_doc_root(username, domain, framework))
+            site = Website.objects.create(
+                owner=user,
+                domain=domain,
+                doc_root=doc_root,
+                framework=framework,
+                php_version=php_version,
+                proxy_real_ip=proxy_real_ip,
+            )
+            DNSRecord.objects.create(domain=site, record_type='A', name='@', value=SystemSetting.get('server_ip', '127.0.0.1') or '127.0.0.1')
+            DNSRecord.objects.create(domain=site, record_type='CNAME', name='www', value=domain)
 
-                messages.success(request, f'Website "{domain}" created and VirtualHost provisioned successfully!')
-                return redirect('user_websites')
+            create_vhost(site)
+
+            messages.success(request, f'Website "{domain}" created and VirtualHost provisioned successfully!')
+            return redirect('user_websites')
 
     return render(request, 'user/website_create.html', {
         **_user_sidebar_context(request, 'websites'),
@@ -207,10 +261,25 @@ def user_website_manage(request, website_id):
     if request.method == 'POST':
         action = request.POST.get('action')
         if action == 'update_settings':
-            site.port = int(request.POST.get('port', 3000) or 3000)
-            site.app_entrypoint = request.POST.get('app_entrypoint', 'app.js').strip()
+            try:
+                port_val = int(request.POST.get('port', 3000) or 3000)
+            except ValueError:
+                port_val = 3000
+            if not (1024 <= port_val <= 65535):
+                messages.error(request, 'Port must be between 1024 and 65535.')
+                return redirect('user_website_manage', website_id=site.id)
+            entrypoint = request.POST.get('app_entrypoint', 'app.js').strip()
+            if not re.match(r'^[A-Za-z0-9._/-]{1,128}$', entrypoint) or '..' in entrypoint:
+                messages.error(request, 'Invalid application entrypoint.')
+                return redirect('user_website_manage', website_id=site.id)
+            php_ver = request.POST.get('php_version', site.php_version or '8.3').strip()
+            if php_ver not in _SUPPORTED_PHP_VERSIONS:
+                php_ver = site.php_version or '8.3'
+
+            site.port = port_val
+            site.app_entrypoint = entrypoint
             site.app_env_vars = request.POST.get('app_env_vars', '').strip()
-            site.php_version = request.POST.get('php_version', '8.3').strip()
+            site.php_version = php_ver
             site.save()
 
             # Re-generate vhost with updated port/config
@@ -291,6 +360,47 @@ def user_website_rollback_release(request, website_id):
     return redirect('user_website_manage', website_id=website_id)
 
 
+def _validate_tenant_vhost(user, site, content: str) -> str | None:
+    """Ensure tenant-edited Nginx vhost stays scoped to their own domain, paths, and PHP socket."""
+    username = user.username
+    allowed_roots = {f'/home/{username}', str(Path(site.doc_root).resolve())}
+    from services.webserver.manager import _get_users_base_dir
+    allowed_roots.add(str((_get_users_base_dir() / username).resolve()))
+
+    if re.search(r'\b(lua_[a-z0-9_]*|content_by_lua[a-z0-9_]*|access_by_lua[a-z0-9_]*|perl_[a-z0-9_]*|passenger_[a-z0-9_]*|load_module)\b', content, re.IGNORECASE):
+        return 'Restricted Nginx module directive is not allowed.'
+
+    for m in re.finditer(r'(?:^|[\s;{])(?:root|alias)\s+([^;\s]+)\s*;', content):
+        target = os.path.normpath(m.group(1).strip('\'"'))
+        if not any(target == r or target.startswith(r + '/') for r in allowed_roots):
+            return f'Path "{target}" must remain inside your account home directory.'
+
+    for m in re.finditer(r'(?:^|[\s;{])include\s+([^;\s]+)\s*;', content):
+        inc = m.group(1).strip('\'"')
+        norm_inc = os.path.normpath(inc)
+        safe_nginx_inc = (
+            norm_inc in ('fastcgi_params', 'proxy_params', 'mime.types', '/etc/nginx/fastcgi_params', '/etc/nginx/proxy_params', '/etc/nginx/mime.types')
+            or norm_inc.startswith('/etc/nginx/snippets/')
+            or norm_inc.startswith('snippets/')
+        )
+        in_home = any(norm_inc == r or norm_inc.startswith(r + '/') for r in allowed_roots)
+        if not safe_nginx_inc and not in_home:
+            return f'Include path "{inc}" is not permitted.'
+
+    for m in re.finditer(r'(?:^|[\s;{])fastcgi_pass\s+([^;\s]+)\s*;', content):
+        sock = m.group(1).strip('\'"')
+        if sock.startswith('unix:') and f'-{username}.sock' not in sock and sock != f'unix:/run/php/php{site.php_version}-fpm.sock':
+            return 'Cannot reference another account PHP-FPM socket.'
+
+    for m in re.finditer(r'(?:^|[\s;{])server_name\s+([^;]+);', content):
+        names = m.group(1).split()
+        for sn in names:
+            if sn in ('*', '_') or (sn != site.domain and not sn.endswith(f'.{site.domain}')):
+                return f'Invalid server_name "{sn}" for domain {site.domain}.'
+
+    return None
+
+
 def user_website_vhost(request, website_id):
     """VirtualHost (Nginx configuration) editor with safety check and rollback."""
     site = get_object_or_404(Website, id=website_id, owner=request.panel_user)
@@ -300,6 +410,10 @@ def user_website_vhost(request, website_id):
         action = request.POST.get('action')
         if action == 'save_vhost':
             content = request.POST.get('vhost_content', '')
+            err_msg = _validate_tenant_vhost(request.panel_user, site, content)
+            if err_msg:
+                messages.error(request, f'Configuration Error: {err_msg}')
+                return redirect('user_website_vhost', website_id=site.id)
             res = save_custom_vhost(site, content)
             if res.get('success'):
                 messages.success(request, f'VirtualHost configuration for {site.domain} updated and validated successfully.')
@@ -355,18 +469,26 @@ def user_databases(request):
 
     if request.method == 'POST':
         action = request.POST.get('action', 'create_database')
+        pkg = getattr(user, 'package', None)
 
         if action == 'create_database':
             raw_name = request.POST.get('name', '').strip().lower()
             db_type = request.POST.get('db_type', 'mariadb')
-            if raw_name:
+            if db_type not in ('mariadb', 'postgresql'):
+                db_type = 'mariadb'
+            if pkg and pkg.databases_limit >= 0 and Database.objects.filter(owner=user).count() >= pkg.databases_limit:
+                messages.error(request, f'Database limit reached ({pkg.databases_limit}).')
+            elif raw_name:
+                if not re.match(r'^[a-z0-9_]{1,48}$', raw_name):
+                    messages.error(request, 'Invalid database name. Use lowercase letters, digits, and underscores.')
+                    return redirect('user_databases')
                 full_name = f"{username}_{raw_name}" if not raw_name.startswith(f"{username}_") else raw_name
                 if Database.objects.filter(owner=user, name=full_name).exists():
                     messages.error(request, f'Database "{full_name}" already exists.')
                 else:
-                    default_user = f"{username}_user"
+                    default_user = f"{username}_user"[:64]
                     default_pass = generate_secure_password()
-                    res = create_database(full_name, default_user, default_pass, db_type=db_type)
+                    create_database(full_name, default_user, default_pass, db_type=db_type)
                     Database.objects.create(owner=user, name=full_name, db_type=db_type, db_user=default_user)
                     messages.success(request, f'{db_type.capitalize()} database "{full_name}" created successfully!')
                     return redirect('user_databases')
@@ -375,11 +497,16 @@ def user_databases(request):
             raw_user = request.POST.get('db_user', '').strip().lower()
             password = request.POST.get('db_password', '').strip()
             db_type = request.POST.get('db_type', 'mariadb')
+            if db_type not in ('mariadb', 'postgresql'):
+                db_type = 'mariadb'
             if raw_user:
+                if not re.match(r'^[a-z0-9_]{1,48}$', raw_user):
+                    messages.error(request, 'Invalid database username. Use lowercase letters, digits, and underscores.')
+                    return redirect('user_databases')
                 full_user = f"{username}_{raw_user}" if not raw_user.startswith(f"{username}_") else raw_user
                 if not password:
                     password = generate_secure_password()
-                res = create_database_user(full_user, password, db_type=db_type)
+                create_database_user(full_user, password, db_type=db_type)
                 messages.success(request, f'{db_type.capitalize()} user "{full_user}" created! (Password: {password})')
                 return redirect('user_databases')
 
@@ -387,25 +514,32 @@ def user_databases(request):
             db_id = request.POST.get('database_id')
             db_user = request.POST.get('db_user', '').strip()
             db_obj = get_object_or_404(Database, id=db_id, owner=user)
-            if db_user:
+            owns_db_user = db_user.startswith(f"{username}_") or Database.objects.filter(owner=user, db_user=db_user).exists()
+            if db_user and owns_db_user and re.match(r'^[a-zA-Z0-9_]{1,64}$', db_user):
                 grant_user_privileges(db_obj.name, db_user, db_type=db_obj.db_type)
                 db_obj.db_user = db_user
                 db_obj.save(update_fields=['db_user'])
                 messages.success(request, f'Granted privileges on "{db_obj.name}" to user "{db_user}".')
                 return redirect('user_databases')
+            messages.error(request, 'Invalid or unauthorized database user.')
 
         elif action == 'change_password':
             db_user = request.POST.get('db_user', '').strip()
             new_pass = request.POST.get('new_password', '').strip()
             db_type = request.POST.get('db_type', 'mariadb')
-            if db_user and new_pass:
+            owns_db_user = db_user.startswith(f"{username}_") or Database.objects.filter(owner=user, db_user=db_user).exists()
+            if db_user and new_pass and owns_db_user and re.match(r'^[a-zA-Z0-9_]{1,64}$', db_user):
                 change_user_password(db_user, new_pass, db_type=db_type)
                 messages.success(request, f'Password for user "{db_user}" updated.')
                 return redirect('user_databases')
+            messages.error(request, 'Invalid or unauthorized database user.')
 
     databases = Database.objects.filter(owner=request.panel_user)
     mariadb_list = databases.filter(db_type='mariadb')
     postgres_list = databases.filter(db_type='postgresql')
+
+    from services.database import get_db_admin_tools_status, get_db_tool_url
+    db_tools = get_db_admin_tools_status()
 
     return render(request, 'user/databases.html', {
         **_user_sidebar_context(request, 'databases'),
@@ -414,6 +548,10 @@ def user_databases(request):
         'postgres_databases': postgres_list,
         'is_mariadb_installed': mariadb_ok,
         'is_postgresql_installed': postgres_ok,
+        'phpmyadmin_available': db_tools['phpmyadmin_available'],
+        'pgadmin4_available': db_tools['pgadmin4_available'],
+        'phpmyadmin_url': get_db_tool_url(request, 'phpmyadmin') if db_tools['phpmyadmin_available'] else '',
+        'pgadmin4_url': get_db_tool_url(request, 'pgadmin4') if db_tools['pgadmin4_available'] else '',
     })
 
 
@@ -546,8 +684,9 @@ def user_files(request):
     user = request.panel_user
     username = user.username if user else 'nobody'
 
-    # 1. Base directory resolution (/home/{username})
-    base_path = Path(f"/home/{username}")
+    # 1. Base directory resolution (<users_base>/{username})
+    from services.webserver.manager import _get_users_base_dir
+    base_path = _get_users_base_dir() / username
     if not base_path.exists():
         try:
             base_path.mkdir(parents=True, exist_ok=True)
@@ -1049,20 +1188,35 @@ def user_ftp(request):
     """User FTP accounts."""
     user = request.panel_user
     if request.method == 'POST':
+        from services.webserver.manager import _get_users_base_dir
         username = request.POST.get('username', '').strip()
-        directory = request.POST.get('directory', '/').strip()
-        
-        if username:
-            full_user = f"{user.username}_{username}"
+        raw_dir = request.POST.get('directory', '/').strip()
+        pkg = getattr(user, 'package', None)
+
+        if pkg and pkg.ftp_limit >= 0 and FTPAccount.objects.filter(owner=user).count() >= pkg.ftp_limit:
+            messages.error(request, f'FTP account limit reached ({pkg.ftp_limit}).')
+        elif username:
+            if not re.match(r'^[a-zA-Z0-9._-]{1,32}$', username):
+                messages.error(request, 'Invalid FTP username.')
+                return redirect('user_ftp')
+            user_home = (_get_users_base_dir() / user.username).resolve()
+            rel = raw_dir.lstrip('/')
+            if raw_dir.startswith(f'/home/{user.username}'):
+                rel = raw_dir[len(f'/home/{user.username}'):].lstrip('/')
+            target_dir = (user_home / rel).resolve()
+            if target_dir != user_home and user_home not in target_dir.parents:
+                messages.error(request, 'FTP directory must stay within your account home directory.')
+                return redirect('user_ftp')
+            full_user = f"{user.username}_{username}"[:64]
             if FTPAccount.objects.filter(username=full_user).exists():
                 messages.error(request, f'FTP User "{full_user}" already exists.')
             else:
                 from services.database import generate_secure_password
                 pwd = generate_secure_password(12)
                 from services.ftp import create_ftp_user
-                create_ftp_user(full_user, pwd, directory)
+                create_ftp_user(full_user, pwd, str(target_dir))
 
-                FTPAccount.objects.create(owner=user, username=full_user, directory=directory)
+                FTPAccount.objects.create(owner=user, username=full_user, directory=str(target_dir))
                 messages.success(request, f'FTP User "{full_user}" created successfully (Password: {pwd})')
                 return redirect('user_ftp')
 
@@ -1184,7 +1338,20 @@ def user_php(request):
         post = request.POST.get('post_max_size', '64M').strip()
         exec_time = request.POST.get('max_execution_time', '120').strip()
         errors = request.POST.get('display_errors', 'Off').strip()
-        php_ver = request.POST.get('php_version', selected_domain.php_version)
+        php_ver = request.POST.get('php_version', selected_domain.php_version).strip()
+
+        if not re.match(r'^\d+[KMG]?$', mem, re.IGNORECASE):
+            mem = '256M'
+        if not re.match(r'^\d+[KMG]?$', upload, re.IGNORECASE):
+            upload = '64M'
+        if not re.match(r'^\d+[KMG]?$', post, re.IGNORECASE):
+            post = '64M'
+        if not exec_time.isdigit():
+            exec_time = '120'
+        if errors not in ('On', 'Off', '0', '1'):
+            errors = 'Off'
+        if php_ver not in _SUPPORTED_PHP_VERSIONS:
+            php_ver = selected_domain.php_version
 
         # Update PHP version on website
         if php_ver and php_ver != selected_domain.php_version:
@@ -1238,10 +1405,14 @@ def user_cron(request):
 
         command = request.POST.get('command', '').strip()
         description = request.POST.get('description', '').strip()
-        
-        if command:
+
+        from services.cron.manager import is_valid_cron_schedule, is_valid_cron_command, sync_cron_jobs
+        if not is_valid_cron_schedule(schedule):
+            messages.error(request, 'Invalid cron schedule format.')
+        elif not is_valid_cron_command(command):
+            messages.error(request, 'Invalid cron command.')
+        else:
             CronJob.objects.create(owner=user, schedule=schedule, command=command, description=description)
-            from services.cron import sync_cron_jobs
             sync_cron_jobs(user.username if user else 'user', CronJob.objects.filter(owner=user))
             messages.success(request, 'Cron job created and system crontab updated successfully.')
             return redirect('user_cron')
@@ -1295,14 +1466,16 @@ def user_dns(request):
     if request.method == 'POST':
         action = request.POST.get('action')
         if action == 'add_record' and selected_domain:
-            rec_type = request.POST.get('record_type', 'A')
+            rec_type = request.POST.get('record_type', 'A').strip().upper()
             name = request.POST.get('name', '@').strip()
             value = request.POST.get('value', '').strip()
-            ttl = int(request.POST.get('ttl', 3600) or 3600)
+            ttl_raw = request.POST.get('ttl', '3600').strip()
+            ttl = int(ttl_raw) if ttl_raw.isdigit() else 3600
             priority = request.POST.get('priority')
             priority = int(priority) if priority and priority.isdigit() else None
-            
-            if name and value:
+            valid_types = {'A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SRV'}
+
+            if rec_type in valid_types and name and value and '\n' not in name and '\r' not in name and '\n' not in value and '\r' not in value:
                 DNSRecord.objects.create(
                     domain=selected_domain,
                     record_type=rec_type,
@@ -1335,22 +1508,54 @@ def user_dns_delete(request, record_id):
 
 def user_profile(request):
     """User profile and account settings."""
+    import pyotp
+    from packages.core.auth import verify_2fa
+
     user = request.panel_user
     if request.method == 'POST':
+        action = request.POST.get('action', 'update_profile')
+        if action == 'init_2fa':
+            user.otp_secret = pyotp.random_base32()
+            user.is_2fa_enabled = False
+            user.save(update_fields=['otp_secret', 'is_2fa_enabled'])
+            return redirect('user_profile')
+        elif action == 'confirm_2fa':
+            code = request.POST.get('otp_code', '').strip()
+            if verify_2fa(user, code):
+                user.is_2fa_enabled = True
+                user.save(update_fields=['is_2fa_enabled'])
+                messages.success(request, 'Two-factor authentication enabled.')
+            else:
+                messages.error(request, 'Invalid verification code.')
+            return redirect('user_profile')
+        elif action == 'disable_2fa':
+            user.is_2fa_enabled = False
+            user.otp_secret = ''
+            user.save(update_fields=['is_2fa_enabled', 'otp_secret'])
+            messages.success(request, 'Two-factor authentication disabled.')
+            return redirect('user_profile')
+
         email = request.POST.get('email', '').strip()
         password = request.POST.get('password', '').strip()
-        
+
         if email:
             user.email = email
         if password:
             user.set_password(password)
+            from services.webserver import sync_system_user_password
+            sync_system_user_password(user.username, password)
         user.save()
         messages.success(request, 'Profile updated successfully.')
         return redirect('user_profile')
 
+    otp_uri = ''
+    if user.otp_secret and not user.is_2fa_enabled:
+        otp_uri = pyotp.TOTP(user.otp_secret).provisioning_uri(name=user.username, issuer_name='W3Panel')
+
     return render(request, 'user/profile.html', {
         **_user_sidebar_context(request, 'profile'),
         'user_obj': user,
+        'otp_uri': otp_uri,
     })
 
 

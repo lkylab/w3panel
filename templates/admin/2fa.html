@@ -1,5 +1,4 @@
 {% extends "base_admin.html" %}
-{% load static %}
 
 {% block title %}Two-Factor Auth — W3Panel{% endblock %}
 {% block page_title %}Two-Factor Authentication{% endblock %}
@@ -8,25 +7,56 @@
 <div class="max-w-2xl mx-auto space-y-6">
     <div>
         <h2 class="text-lg font-bold text-gray-900">Two-Factor Authentication (2FA)</h2>
-        <p class="text-xs text-gray-500">Enforce time-based OTP (TOTP) two-factor authentication for administrators and clients</p>
     </div>
 
-    <div class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
-        <div class="flex items-center gap-4 mb-6">
-            <div class="size-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center text-2xl">
-                <i class="ti ti-shield-lock"></i>
-            </div>
-            <div>
-                <h3 class="font-bold text-gray-900 text-base">TOTP Security Standard</h3>
-                <p class="text-xs text-gray-500">Supports Google Authenticator, Authy, 1Password, and Apple Passwords</p>
-            </div>
+    <div class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm space-y-5">
+        <div class="flex items-center justify-between">
+            <div class="text-sm font-bold text-gray-900">Account: <span class="font-mono">{{ user_obj.username }}</span></div>
+            {% if user_obj.is_2fa_enabled %}
+            <span class="px-2.5 py-1 rounded text-xs font-bold bg-emerald-100 text-emerald-800">Enabled</span>
+            {% else %}
+            <span class="px-2.5 py-1 rounded text-xs font-bold bg-slate-100 text-slate-600">Disabled</span>
+            {% endif %}
         </div>
 
-        <div class="rounded-xl bg-slate-50 p-4 border border-slate-200 text-xs text-slate-600 space-y-2">
-            <div class="font-semibold text-slate-800">Security Policies:</div>
-            <div>• Brute-force lockout active (5 failed attempts locks user for 15 minutes)</div>
-            <div>• Users can activate 2FA directly inside their individual User Account Profile</div>
+        {% if user_obj.is_2fa_enabled %}
+        <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="disable">
+            <button type="submit" class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold transition">
+                Disable 2FA
+            </button>
+        </form>
+        {% elif user_obj.otp_secret %}
+        <div class="space-y-4">
+            <div class="p-3.5 rounded-lg bg-slate-50 border border-slate-200 text-xs space-y-2">
+                <div>Secret Key: <code class="font-mono font-bold text-slate-900">{{ user_obj.otp_secret }}</code></div>
+                {% if otp_uri %}
+                <div class="break-all text-slate-600 font-mono text-[11px]">{{ otp_uri }}</div>
+                {% endif %}
+            </div>
+            <form method="post" class="flex items-end gap-3">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="confirm_enable">
+                <div class="flex-1">
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">Verification Code</label>
+                    <input type="text" name="otp_code" required placeholder="123456"
+                           class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2 text-sm font-mono outline-none focus:border-blue-600">
+                </div>
+                <button type="submit" class="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition">
+                    Verify &amp; Enable
+                </button>
+            </form>
         </div>
+        {% else %}
+        <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="init_setup">
+            <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition">
+                Enable 2FA
+            </button>
+        </form>
+        {% endif %}
     </div>
 </div>
 {% endblock %}

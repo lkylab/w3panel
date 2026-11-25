@@ -31,9 +31,16 @@
                     </p>
                 </div>
             </div>
-            <span class="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full {% if is_mariadb_installed %}bg-emerald-200/70 text-emerald-800{% else %}bg-amber-200 text-amber-800{% endif %}">
-                {% if is_mariadb_installed %}<span class="size-1.5 rounded-full bg-emerald-600"></span> Online{% else %}Offline{% endif %}
-            </span>
+            <div class="flex items-center gap-2 shrink-0">
+                {% if phpmyadmin_available %}
+                <a href="{{ phpmyadmin_url }}" target="_blank" class="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[11px] font-bold transition">
+                    <i class="ti ti-external-link"></i> phpMyAdmin
+                </a>
+                {% endif %}
+                <span class="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full {% if is_mariadb_installed %}bg-emerald-200/70 text-emerald-800{% else %}bg-amber-200 text-amber-800{% endif %}">
+                    {% if is_mariadb_installed %}<span class="size-1.5 rounded-full bg-emerald-600"></span> Online{% else %}Offline{% endif %}
+                </span>
+            </div>
         </div>
 
         <!-- PostgreSQL Status -->
@@ -49,9 +56,16 @@
                     </p>
                 </div>
             </div>
-            <span class="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full {% if is_postgresql_installed %}bg-blue-200/70 text-blue-800{% else %}bg-amber-200 text-amber-800{% endif %}">
-                {% if is_postgresql_installed %}<span class="size-1.5 rounded-full bg-blue-600"></span> Online{% else %}Offline{% endif %}
-            </span>
+            <div class="flex items-center gap-2 shrink-0">
+                {% if pgadmin4_available %}
+                <a href="{{ pgadmin4_url }}" target="_blank" class="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-[11px] font-bold transition">
+                    <i class="ti ti-external-link"></i> pgAdmin 4
+                </a>
+                {% endif %}
+                <span class="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full {% if is_postgresql_installed %}bg-blue-200/70 text-blue-800{% else %}bg-amber-200 text-amber-800{% endif %}">
+                    {% if is_postgresql_installed %}<span class="size-1.5 rounded-full bg-blue-600"></span> Online{% else %}Offline{% endif %}
+                </span>
+            </div>
         </div>
     </div>
 

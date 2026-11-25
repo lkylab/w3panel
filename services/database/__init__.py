@@ -10,6 +10,16 @@ from .manager import (
     generate_secure_password,
     apply_database_tuning,
     get_database_tuning_status,
+    is_phpmyadmin_installed,
+    is_pgadmin4_installed,
+    is_pgadmin4_running,
+    get_db_admin_tools_status,
+    get_db_tool_url,
+    configure_db_admin_webserver,
+    install_phpmyadmin,
+    uninstall_phpmyadmin,
+    install_pgadmin4,
+    uninstall_pgadmin4,
 )
 
 __all__ = [
@@ -24,5 +34,15 @@ __all__ = [
     'generate_secure_password',
     'apply_database_tuning',
     'get_database_tuning_status',
+    'is_phpmyadmin_installed',
+    'is_pgadmin4_installed',
+    'is_pgadmin4_running',
+    'get_db_admin_tools_status',
+    'get_db_tool_url',
+    'configure_db_admin_webserver',
+    'install_phpmyadmin',
+    'uninstall_phpmyadmin',
+    'install_pgadmin4',
+    'uninstall_pgadmin4',
 ]
 

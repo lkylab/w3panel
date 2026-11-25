@@ -264,17 +264,25 @@ class RoleEnforcementMiddleware:
 
         if not uid:
             from django.shortcuts import redirect
-            if (port in (ADMIN_PORT, 12087)) and not path.startswith(API_PREFIX):
-                return redirect('admin_login')
-            elif (port in (USER_PORT, 12083)) and not path.startswith(API_PREFIX):
+            if path.startswith(API_PREFIX):
+                return self.get_response(request)
+            if (port in (USER_PORT, 12083)) or path.startswith(USER_PREFIX):
                 return redirect('user_login')
-            return self.get_response(request)
+            return redirect('admin_login')
 
         from .models import User
         try:
             user = User.objects.get(pk=uid, is_active=True)
         except User.DoesNotExist:
             user = None
+
+        if not user:
+            from django.shortcuts import redirect
+            if path.startswith(API_PREFIX):
+                return self.get_response(request)
+            if (port in (USER_PORT, 12083)) or path.startswith(USER_PREFIX):
+                return redirect('user_login')
+            return redirect('admin_login')
 
         if user:
             request.panel_user = user
@@ -293,6 +301,23 @@ class RoleEnforcementMiddleware:
                     _log_unauthorized(user, request)
                     from django.shortcuts import redirect
                     return redirect('user_login')
+            else:
+                # Enforce role isolation even behind reverse proxy / non-standard port
+                if role not in ('admin', 'reseller') and not path.startswith(USER_PREFIX) and not path.startswith(API_PREFIX):
+                    _log_unauthorized(user, request)
+                    from django.shortcuts import redirect
+                    return redirect('user_dashboard')
+
+            if role == 'reseller' and port not in (USER_PORT, 12083) and not path.startswith(USER_PREFIX) and not path.startswith(API_PREFIX):
+                reseller_allowed = (
+                    path in ('/', '/dashboard/', '/dashboard', '/plans/', '/plans', '/notifications/', '/notifications', '/api/metrics/', '/api/metrics')
+                    or path.startswith('/users/')
+                )
+                if not reseller_allowed:
+                    if path.startswith('/terminal/exec/') or '/inspect/' in path or '/execute/' in path:
+                        return JsonResponse({'error': 'Administrator access required.'}, status=403)
+                    from django.shortcuts import redirect
+                    return redirect('admin_dashboard')
 
             if role == 'admin' and port not in (USER_PORT, 12083):
                 from .models import SystemSetting

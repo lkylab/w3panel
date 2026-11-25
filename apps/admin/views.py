@@ -12,7 +12,7 @@ import subprocess
 import logging
 from pathlib import Path
 from django.db.models import Q
-from django.http import JsonResponse, HttpResponse, StreamingHttpResponse
+from django.http import JsonResponse, HttpResponse, HttpResponseForbidden, StreamingHttpResponse
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from django.utils import timezone
@@ -72,16 +72,52 @@ def _sidebar_context(active_page=''):
 
 def admin_login(request):
     """Admin login page (W3Host Manager style)."""
+    import time
+    from packages.core.auth import authenticate_user, create_session, verify_2fa
+
     if request.method == 'POST':
-        from packages.core.auth import authenticate_user, create_session
+        otp_code = request.POST.get('otp_code', '').strip()
+        pending_uid = request.session.get('pending_2fa_uid')
+        pending_exp = request.session.get('pending_2fa_exp', 0)
+
+        if pending_uid and otp_code and time.time() <= pending_exp:
+            user = User.objects.filter(pk=pending_uid, is_active=True, role__in=('admin', 'reseller')).first()
+            if user and verify_2fa(user, otp_code):
+                request.session.pop('pending_2fa_uid', None)
+                request.session.pop('pending_2fa_exp', None)
+                create_session(request, user)
+                if user.role == 'admin' and SystemSetting.get('initial_setup_completed', 'false') != 'true':
+                    return redirect('admin_wizards')
+                return redirect('admin_dashboard')
+            return render(request, 'login.html', {
+                'error': 'Invalid two-factor authentication code.',
+                'username': user.username if user else '',
+                'panel_type': 'host',
+                'require_2fa': True,
+            })
+
         username = request.POST.get('username', '').strip()
         password = request.POST.get('password', '').strip()
-        
+
         try:
             user, is_2fa_required = authenticate_user(username, password, request.META.get('REMOTE_ADDR', ''))
             if user.role not in ('admin', 'reseller'):
                 return render(request, 'login.html', {'error': 'Administrator / Reseller access only on W3Host Manager (port 2087).', 'username': username, 'panel_type': 'host'})
-            
+
+            if is_2fa_required:
+                if not otp_code or not verify_2fa(user, otp_code):
+                    request.session['pending_2fa_uid'] = user.pk
+                    request.session['pending_2fa_exp'] = time.time() + 300
+                    err = 'Invalid two-factor authentication code.' if otp_code else ''
+                    return render(request, 'login.html', {
+                        'error': err,
+                        'username': username,
+                        'panel_type': 'host',
+                        'require_2fa': True,
+                    })
+
+            request.session.pop('pending_2fa_uid', None)
+            request.session.pop('pending_2fa_exp', None)
             create_session(request, user)
             if user.role == 'admin' and SystemSetting.get('initial_setup_completed', 'false') != 'true':
                 return redirect('admin_wizards')
@@ -155,7 +191,11 @@ def admin_dashboard(request):
     }
     
     license_tier = SystemSetting.get('license_tier', 'free')
-    
+    from services.database import get_db_admin_tools_status, get_db_tool_url
+    db_tools = get_db_admin_tools_status()
+    db_tools['phpmyadmin_url'] = get_db_tool_url(request, 'phpmyadmin') if db_tools['phpmyadmin_available'] else ''
+    db_tools['pgadmin4_url'] = get_db_tool_url(request, 'pgadmin4') if db_tools['pgadmin4_available'] else ''
+
     return render(request, 'admin/dashboard.html', {
         **_sidebar_context('dashboard'),
         'stats': stats,
@@ -163,6 +203,7 @@ def admin_dashboard(request):
         'activity_logs': activity_logs,
         'system': system,
         'license_tier': license_tier,
+        'db_tools': db_tools,
         'panel_version': getattr(settings, 'W3PANEL_VERSION', '2.0.0'),
     })
 
@@ -172,8 +213,11 @@ def admin_dashboard(request):
 # ===========================================================================
 
 def admin_users(request):
-    """List standard users."""
+    """List standard users (scoped for resellers)."""
+    actor = getattr(request, 'panel_user', None)
     users = User.objects.filter(role='user').select_related('package')
+    if actor and actor.role == 'reseller':
+        users = users.filter(parent_reseller=actor)
     return render(request, 'admin/users.html', {
         **_sidebar_context('users'),
         'users': users,
@@ -203,9 +247,13 @@ def admin_user_create(request):
             role = 'user'
 
         parent_reseller = current_admin if current_admin and current_admin.role == 'reseller' else None
-        
+
         if username and password:
-            if User.objects.filter(username=username).exists():
+            if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$', username):
+                messages.error(request, 'Invalid username. Use letters, digits, underscores, or hyphens.')
+            elif domain and not re.match(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$', domain):
+                messages.error(request, f'Invalid domain name "{domain}".')
+            elif User.objects.filter(username=username).exists():
                 messages.error(request, f'Username "{username}" already exists.')
             elif domain and Website.objects.filter(domain=domain).exists():
                 messages.error(request, f'Domain "{domain}" is already registered.')
@@ -268,15 +316,32 @@ def admin_user_create(request):
     })
 
 
+def _get_scoped_target_user(request, user_id):
+    """Fetch target user enforcing reseller ownership boundaries."""
+    target_user = get_object_or_404(User, id=user_id)
+    actor = getattr(request, 'panel_user', None)
+    if actor and actor.role == 'reseller':
+        if target_user.role != 'user' or target_user.parent_reseller_id != actor.id:
+            return None
+    return target_user
+
+
 def admin_user_edit(request, user_id):
     """Edit user account: email, package, role, password reset, active status, shell access."""
-    target_user = get_object_or_404(User, id=user_id)
+    target_user = _get_scoped_target_user(request, user_id)
+    if not target_user:
+        return HttpResponseForbidden('Permission denied.')
+    actor = getattr(request, 'panel_user', None)
     packages = Package.objects.all()
 
     if request.method == 'POST':
         email = request.POST.get('email', '').strip()
         package_id = request.POST.get('package')
         role = request.POST.get('role', 'user')
+        if actor and actor.role == 'reseller':
+            role = 'user'
+        elif role not in ('user', 'reseller', 'admin'):
+            role = target_user.role
         new_password = request.POST.get('password', '').strip()
         is_active = request.POST.get('is_active') in ('1', 'true', 'on')
         shell_enabled = request.POST.get('shell_enabled') in ('1', 'true', 'on')
@@ -327,7 +392,9 @@ def admin_user_edit(request, user_id):
 def admin_user_toggle_status(request, user_id):
     """Toggle user active / suspended status."""
     if request.method == 'POST':
-        target_user = get_object_or_404(User, id=user_id)
+        target_user = _get_scoped_target_user(request, user_id)
+        if not target_user:
+            return HttpResponseForbidden('Permission denied.')
         if target_user.username == 'admin' or target_user.id == request.session.get('user_id'):
             messages.error(request, 'Cannot suspend primary administrator account.')
         else:
@@ -343,7 +410,9 @@ def admin_user_toggle_status(request, user_id):
 def admin_user_toggle_shell(request, user_id):
     """Toggle user SSH / Terminal shell permission."""
     if request.method == 'POST':
-        target_user = get_object_or_404(User, id=user_id)
+        target_user = _get_scoped_target_user(request, user_id)
+        if not target_user:
+            return HttpResponseForbidden('Permission denied.')
         target_user.shell_enabled = not target_user.shell_enabled
         target_user.save(update_fields=['shell_enabled'])
         from services.webserver import sync_system_user_shell
@@ -448,7 +517,9 @@ def admin_terminal_exec(request):
 def admin_user_delete(request, user_id):
     """Delete a user and clean up their tenant resources."""
     if request.method == 'POST':
-        user = get_object_or_404(User, id=user_id)
+        user = _get_scoped_target_user(request, user_id)
+        if not user:
+            return HttpResponseForbidden('Permission denied.')
         if user.username == 'admin' or user.id == request.session.get('user_id'):
             messages.error(request, 'You cannot delete the primary admin account.')
         else:
@@ -645,13 +716,15 @@ def admin_dns_editor(request):
     if request.method == 'POST':
         action = request.POST.get('action')
         if action == 'add_record' and selected_domain:
-            rtype = request.POST.get('record_type', 'A')
+            rtype = request.POST.get('record_type', 'A').strip().upper()
             name = request.POST.get('name', '@').strip()
             value = request.POST.get('value', '').strip()
-            ttl = int(request.POST.get('ttl', 3600))
+            ttl_raw = request.POST.get('ttl', '3600').strip()
+            ttl = int(ttl_raw) if ttl_raw.isdigit() else 3600
             priority = request.POST.get('priority')
             priority_val = int(priority) if priority and priority.isdigit() else None
-            if value:
+            valid_types = {'A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'SRV'}
+            if rtype in valid_types and value and '\n' not in name and '\r' not in name and '\n' not in value and '\r' not in value:
                 DNSRecord.objects.create(
                     domain=selected_domain,
                     record_type=rtype,
@@ -730,11 +803,42 @@ def admin_plugins(request):
 
 def admin_services_status(request):
     """Services status and individual 1-click management/installation."""
+    from services.database import (
+        configure_db_admin_webserver,
+        get_database_tuning_status,
+        get_db_admin_tools_status,
+        get_db_tool_url,
+        install_pgadmin4,
+        install_phpmyadmin,
+        uninstall_pgadmin4,
+        uninstall_phpmyadmin,
+    )
+
     if request.method == 'POST':
         service_name = request.POST.get('service')
         action = request.POST.get('action')
 
         if action == 'install_service' and service_name:
+            if service_name == 'phpmyadmin':
+                res = install_phpmyadmin()
+                if res.get('success'):
+                    messages.success(request, 'phpMyAdmin installed and configured successfully!')
+                else:
+                    messages.error(request, res.get('error', 'phpMyAdmin installation failed.'))
+                return redirect('admin_services_status')
+
+            if service_name == 'pgadmin4':
+                actor_email = getattr(getattr(request, 'panel_user', None), 'email', '') or ''
+                res = install_pgadmin4(admin_email=actor_email)
+                if res.get('success'):
+                    messages.success(
+                        request,
+                        f"pgAdmin 4 installed and started! Login Email: {res.get('email')} | Password: {res.get('password')}",
+                    )
+                else:
+                    messages.error(request, res.get('error', 'pgAdmin 4 installation failed.'))
+                return redirect('admin_services_status')
+
             # Package mapping for individual services
             pkg_map = {
                 'nginx': ['nginx'],
@@ -745,7 +849,10 @@ def admin_services_status(request):
                 'php': ['php-fpm', 'php-mysql', 'php-pgsql', 'php-curl', 'php-zip', 'php-gd', 'php-mbstring', 'php-xml'],
                 'certbot': ['certbot', 'python3-certbot-nginx'],
             }
-            pkgs = pkg_map.get(service_name, [service_name])
+            if service_name not in pkg_map:
+                messages.error(request, f'Unknown service: {service_name}')
+                return redirect('admin_services_status')
+            pkgs = pkg_map[service_name]
             try:
                 subprocess.run(['sudo', 'apt-get', 'update', '-y'], timeout=60)
                 cmd = ['sudo', 'apt-get', 'install', '-y'] + pkgs
@@ -753,6 +860,7 @@ def admin_services_status(request):
                 if res.returncode == 0:
                     daemon_name = 'mariadb' if service_name == 'mariadb' else service_name
                     subprocess.run(['sudo', 'systemctl', 'enable', '--now', daemon_name], timeout=10)
+                    configure_db_admin_webserver()
                     messages.success(request, f'{service_name.capitalize()} installed and started successfully!')
                 else:
                     messages.error(request, f'Installation failed: {res.stderr}')
@@ -761,6 +869,22 @@ def admin_services_status(request):
             return redirect('admin_services_status')
 
         elif action == 'uninstall_service' and service_name:
+            if service_name == 'phpmyadmin':
+                res = uninstall_phpmyadmin()
+                if res.get('success'):
+                    messages.success(request, 'phpMyAdmin uninstalled successfully.')
+                else:
+                    messages.error(request, res.get('error', 'Uninstall failed.'))
+                return redirect('admin_services_status')
+
+            if service_name == 'pgadmin4':
+                res = uninstall_pgadmin4()
+                if res.get('success'):
+                    messages.success(request, 'pgAdmin 4 uninstalled successfully.')
+                else:
+                    messages.error(request, res.get('error', 'Uninstall failed.'))
+                return redirect('admin_services_status')
+
             pkg_map = {
                 'nginx': ['nginx', 'nginx-common'],
                 'mariadb': ['mariadb-server', 'mariadb-client'],
@@ -768,12 +892,16 @@ def admin_services_status(request):
                 'redis': ['redis-server'],
                 'ufw': ['ufw'],
             }
-            pkgs = pkg_map.get(service_name, [service_name])
+            if service_name not in pkg_map:
+                messages.error(request, f'Cannot uninstall service: {service_name}')
+                return redirect('admin_services_status')
+            pkgs = pkg_map[service_name]
             try:
                 subprocess.run(['sudo', 'systemctl', 'stop', service_name], timeout=10)
                 cmd = ['sudo', 'apt-get', 'remove', '-y'] + pkgs
                 res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
                 if res.returncode == 0:
+                    configure_db_admin_webserver()
                     messages.success(request, f'{service_name.capitalize()} uninstalled successfully.')
                 else:
                     messages.error(request, f'Uninstall failed: {res.stderr}')
@@ -791,6 +919,10 @@ def admin_services_status(request):
             return redirect('admin_services_status')
 
         elif action in ('start', 'stop', 'restart') and service_name:
+            allowed_services = {'nginx', 'mariadb', 'postgresql', 'php8.3-fpm', 'ufw', 'ssh', 'pgadmin4'}
+            if service_name not in allowed_services:
+                messages.error(request, f'Invalid service: {service_name}')
+                return redirect('admin_services_status')
             try:
                 subprocess.run(['sudo', '-n', 'systemctl', action, service_name], timeout=10)
                 messages.success(request, f'Service {service_name} {action}ed successfully.')
@@ -798,8 +930,8 @@ def admin_services_status(request):
                 messages.error(request, f'Error executing {action} on {service_name}: {e}')
             return redirect('admin_services_status')
 
-    from services.database import get_database_tuning_status
     db_tuning = get_database_tuning_status()
+    db_tools = get_db_admin_tools_status()
 
     services_list = [
         {'name': 'nginx', 'display': 'Nginx Web Server', 'icon': 'ti ti-world', 'cmd': 'nginx', 'desc': 'High-Performance Web Server for User Websites (Ports 80 & 443)'},
@@ -821,6 +953,30 @@ def admin_services_status(request):
                 s['status'] = 'running' if res.stdout.strip() == 'active' else 'stopped'
             except Exception:
                 s['status'] = 'stopped'
+
+    if db_tools['mariadb_installed']:
+        services_list.append({
+            'name': 'phpmyadmin',
+            'display': 'phpMyAdmin',
+            'icon': 'ti ti-table',
+            'desc': 'Web administration tool for MariaDB / MySQL',
+            'status': 'running' if db_tools['phpmyadmin_installed'] else 'not_installed',
+            'is_web_tool': True,
+            'launch_url': get_db_tool_url(request, 'phpmyadmin') if db_tools['phpmyadmin_installed'] else '',
+        })
+
+    if db_tools['postgresql_installed']:
+        pg4_status = 'not_installed'
+        if db_tools['pgadmin4_installed']:
+            pg4_status = 'running' if db_tools['pgadmin4_running'] else 'stopped'
+        services_list.append({
+            'name': 'pgadmin4',
+            'display': 'pgAdmin 4',
+            'icon': 'ti ti-brand-databricks',
+            'desc': 'Web administration tool for PostgreSQL',
+            'status': pg4_status,
+            'launch_url': get_db_tool_url(request, 'pgadmin4') if db_tools['pgadmin4_installed'] else '',
+        })
 
     return render(request, 'admin/services.html', {
         **_sidebar_context('services'),
@@ -1131,11 +1287,16 @@ def get_server_stack_status():
                 active = False
         return {'installed': installed, 'active': active}
 
+    from services.database import get_db_admin_tools_status
+    db_tools = get_db_admin_tools_status()
+
     return {
         'webserver_nginx': _check('nginx'),
         'webserver_apache': _check('apache2'),
         'db_mariadb': _check('mariadbd', 'mariadb'),
         'db_postgresql': _check('psql', 'postgresql'),
+        'tool_phpmyadmin': {'installed': db_tools['phpmyadmin_available'], 'active': db_tools['phpmyadmin_available']},
+        'tool_pgadmin4': {'installed': db_tools['pgadmin4_available'], 'active': db_tools['pgadmin4_running']},
         'mail_postfix': _check('postfix'),
         'mail_dovecot': _check('dovecot'),
         'ftp_pureftpd': _check('pure-ftpd', 'pure-ftpd'),
@@ -2506,12 +2667,11 @@ def admin_w3packager_provision(request):
         # WP-CLI handling
         if 'wp-cli' in selected_cli and not shutil.which('wp'):
             yield sse({'status': 'running', 'percent': 78, 'step': 'Installing WP-CLI...', 'line': '>> Installing WP-CLI binary...'})
-            cmd = "curl -s -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar && chmod +x wp-cli.phar && sudo -n mv wp-cli.phar /usr/local/bin/wp"
-            subprocess.run(cmd, shell=True, capture_output=True)
+            _install_wp_cli()
             yield sse({'status': 'running', 'percent': 80, 'step': 'WP-CLI installed', 'line': '>> WP-CLI installed to /usr/local/bin/wp'})
         elif 'wp-cli' not in selected_cli and shutil.which('wp'):
             yield sse({'status': 'running', 'percent': 78, 'step': 'Removing WP-CLI...', 'line': '>> Removing WP-CLI binary...'})
-            subprocess.run("sudo -n rm -f /usr/local/bin/wp", shell=True, capture_output=True)
+            _remove_wp_cli()
             yield sse({'status': 'running', 'percent': 80, 'step': 'WP-CLI removed', 'line': '>> WP-CLI binary removed.'})
 
         # 5. Services configuration & health checks
@@ -2772,11 +2932,10 @@ def admin_w3packager(request):
 
             # Handle WP-CLI (PHAR)
             if 'wp-cli' in selected_cli and not shutil.which('wp'):
-                cmd = "curl -s -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar && chmod +x wp-cli.phar && sudo -n mv wp-cli.phar /usr/local/bin/wp"
-                subprocess.run(cmd, shell=True, capture_output=True)
+                _install_wp_cli()
                 installed_count += 1
             elif 'wp-cli' not in selected_cli and shutil.which('wp'):
-                subprocess.run("sudo -n rm -f /usr/local/bin/wp", shell=True, capture_output=True)
+                _remove_wp_cli()
                 removed_count += 1
 
             # Ensure runtimes have active daemons started
@@ -2890,12 +3049,11 @@ def admin_w3packager(request):
                 else:
                     messages.error(request, f"Failed to install {comp}: {out[:250]}")
             elif comp == 'wp-cli':
-                cmd = "curl -s -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar && chmod +x wp-cli.phar && sudo -n mv wp-cli.phar /usr/local/bin/wp"
-                proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-                if proc.returncode == 0:
+                ok, err = _install_wp_cli()
+                if ok:
                     messages.success(request, "WP-CLI installed successfully at /usr/local/bin/wp.")
                 else:
-                    messages.error(request, f"Failed to install WP-CLI: {proc.stderr[:200]}")
+                    messages.error(request, f"Failed to install WP-CLI: {err[:200]}")
             tab = request.POST.get('return_tab', 'cli')
             return redirect(f'/software/w3packager/?tab={tab}')
 
@@ -2980,10 +3138,86 @@ def admin_firewall(request):
     })
 
 
+def _install_wp_cli() -> tuple[bool, str]:
+    """Download and install WP-CLI phar without shell=True."""
+    import tempfile
+    from services.webserver.manager import _has_sudo
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.phar', delete=False) as tf:
+            tmp_path = Path(tf.name)
+        dl = subprocess.run(
+            ['curl', '-fsSL', '-o', str(tmp_path), 'https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar'],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if dl.returncode != 0:
+            return False, dl.stderr or 'Download failed'
+        os.chmod(tmp_path, 0o755)
+        prefix = [] if os.geteuid() == 0 else (['sudo', '-n'] if _has_sudo() else None)
+        if prefix is None:
+            return False, 'Insufficient privileges to install /usr/local/bin/wp'
+        mv = subprocess.run(prefix + ['mv', str(tmp_path), '/usr/local/bin/wp'], capture_output=True, text=True, timeout=10)
+        return mv.returncode == 0, mv.stderr or ''
+    except Exception as e:
+        return False, str(e)
+    finally:
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
+def _remove_wp_cli() -> tuple[bool, str]:
+    """Remove WP-CLI binary without shell=True."""
+    from services.webserver.manager import _has_sudo
+    prefix = [] if os.geteuid() == 0 else (['sudo', '-n'] if _has_sudo() else None)
+    if prefix is None:
+        return False, 'Insufficient privileges'
+    res = subprocess.run(prefix + ['rm', '-f', '/usr/local/bin/wp'], capture_output=True, text=True, timeout=10)
+    return res.returncode == 0, res.stderr or ''
+
+
 def admin_2fa_settings(request):
-    """Two-factor authentication management."""
+    """Two-factor authentication management for administrator."""
+    import pyotp
+    from packages.core.auth import verify_2fa
+
+    user = getattr(request, 'panel_user', None)
+    if not user:
+        return redirect('admin_login')
+
+    if request.method == 'POST':
+        action = request.POST.get('action', '')
+        if action == 'init_setup':
+            secret = pyotp.random_base32()
+            user.otp_secret = secret
+            user.is_2fa_enabled = False
+            user.save(update_fields=['otp_secret', 'is_2fa_enabled'])
+            return redirect('admin_2fa_settings')
+        elif action == 'confirm_enable':
+            code = request.POST.get('otp_code', '').strip()
+            if verify_2fa(user, code):
+                user.is_2fa_enabled = True
+                user.save(update_fields=['is_2fa_enabled'])
+                messages.success(request, 'Two-factor authentication enabled.')
+            else:
+                messages.error(request, 'Invalid verification code.')
+            return redirect('admin_2fa_settings')
+        elif action == 'disable':
+            user.is_2fa_enabled = False
+            user.otp_secret = ''
+            user.save(update_fields=['is_2fa_enabled', 'otp_secret'])
+            messages.success(request, 'Two-factor authentication disabled.')
+            return redirect('admin_2fa_settings')
+
+    otp_uri = ''
+    if user.otp_secret and not user.is_2fa_enabled:
+        otp_uri = pyotp.TOTP(user.otp_secret).provisioning_uri(name=user.username, issuer_name='W3Panel')
+
     return render(request, 'admin/2fa.html', {
         **_sidebar_context('2fa'),
+        'user_obj': user,
+        'otp_uri': otp_uri,
     })
 
 
@@ -3038,6 +3272,8 @@ def _prepare_wizard_setup(post_data, stack_status, mark_completed=True):
     enable_mariadb = post_data.get('enable_mariadb') in ('1', 'true', 'on')
     enable_postgresql = post_data.get('enable_postgresql') in ('1', 'true', 'on')
     tune_mariadb = post_data.get('tune_mariadb') in ('1', 'true', 'on')
+    enable_phpmyadmin = enable_mariadb and (post_data.get('enable_phpmyadmin') in ('1', 'true', 'on'))
+    enable_pgadmin4 = enable_postgresql and (post_data.get('enable_pgadmin4') in ('1', 'true', 'on'))
     enable_mail = post_data.get('enable_mail') in ('1', 'true', 'on')
     spam_filter = post_data.get('spam_filter', 'rspamd')
     enable_dkim = post_data.get('enable_dkim') in ('1', 'true', 'on')
@@ -3102,6 +3338,8 @@ def _prepare_wizard_setup(post_data, stack_status, mark_completed=True):
     services_to_start = list(dict.fromkeys(services_to_start))
     opts = {
         'tune_mariadb': tune_mariadb,
+        'enable_phpmyadmin': enable_phpmyadmin,
+        'enable_pgadmin4': enable_pgadmin4,
         'enable_ufw': enable_ufw,
         'enable_mail': enable_mail,
         'enable_ftp': enable_ftp,
@@ -3192,6 +3430,22 @@ def admin_wizard_provision(request):
             except Exception as e:
                 yield sse({'status': 'running', 'percent': 90, 'step': 'MariaDB tuning skipped', 'line': f'>> [WARNING] MariaDB tuning skipped: {e}'})
 
+        if opts.get('enable_phpmyadmin'):
+            from services.database import install_phpmyadmin
+            pma_res = install_phpmyadmin()
+            if pma_res.get('success'):
+                yield sse({'status': 'running', 'percent': 92, 'step': 'phpMyAdmin installed', 'line': '>> phpMyAdmin configured at /phpmyadmin/'})
+            else:
+                yield sse({'status': 'running', 'percent': 92, 'step': 'phpMyAdmin skipped', 'line': f">> [WARNING] phpMyAdmin skipped: {pma_res.get('error', '')}"})
+
+        if opts.get('enable_pgadmin4'):
+            from services.database import install_pgadmin4
+            pg4_res = install_pgadmin4(admin_email=SystemSetting.get('admin_email', ''))
+            if pg4_res.get('success'):
+                yield sse({'status': 'running', 'percent': 94, 'step': 'pgAdmin 4 installed', 'line': f">> pgAdmin 4 configured at /pgadmin4/ (login: {pg4_res.get('email')})"})
+            else:
+                yield sse({'status': 'running', 'percent': 94, 'step': 'pgAdmin 4 skipped', 'line': f">> [WARNING] pgAdmin 4 skipped: {pg4_res.get('error', '')}"})
+
         if opts['enable_ufw']:
             try:
                 _apply_wizard_ufw(opts)
@@ -3248,6 +3502,14 @@ def wizard_dashboard(request):
                 apply_database_tuning()
             except Exception:
                 pass
+
+        if opts.get('enable_phpmyadmin'):
+            from services.database import install_phpmyadmin
+            install_phpmyadmin()
+
+        if opts.get('enable_pgadmin4'):
+            from services.database import install_pgadmin4
+            install_pgadmin4(admin_email=SystemSetting.get('admin_email', ''))
 
         if opts['enable_ufw']:
             try:

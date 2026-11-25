@@ -131,6 +131,26 @@
                 <span class="text-xs font-bold text-slate-800">Terminal Console</span>
                 <span class="text-[11px] text-slate-400">Root diagnostic shell</span>
             </a>
+
+            {% if db_tools.phpmyadmin_available %}
+            <a href="{{ db_tools.phpmyadmin_url }}" target="_blank" class="bg-white hover:bg-emerald-50/60 p-4 rounded-xl border border-slate-200/60 hover:border-emerald-300 flex flex-col items-center justify-center text-center gap-2 group transition shadow-xs">
+                <div class="size-11 rounded-xl bg-emerald-100/70 text-emerald-600 group-hover:bg-emerald-600 group-hover:text-white flex items-center justify-center text-xl transition">
+                    <i class="ti ti-table"></i>
+                </div>
+                <span class="text-xs font-bold text-slate-800">phpMyAdmin</span>
+                <span class="text-[11px] text-slate-400">MariaDB / MySQL UI</span>
+            </a>
+            {% endif %}
+
+            {% if db_tools.pgadmin4_available %}
+            <a href="{{ db_tools.pgadmin4_url }}" target="_blank" class="bg-white hover:bg-blue-50/60 p-4 rounded-xl border border-slate-200/60 hover:border-blue-300 flex flex-col items-center justify-center text-center gap-2 group transition shadow-xs">
+                <div class="size-11 rounded-xl bg-blue-100/70 text-blue-600 group-hover:bg-blue-600 group-hover:text-white flex items-center justify-center text-xl transition">
+                    <i class="ti ti-brand-databricks"></i>
+                </div>
+                <span class="text-xs font-bold text-slate-800">pgAdmin 4</span>
+                <span class="text-[11px] text-slate-400">PostgreSQL Web UI</span>
+            </a>
+            {% endif %}
         </div>
     </div>
 
