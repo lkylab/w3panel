@@ -83,6 +83,8 @@ def admin_login(request):
                 return render(request, 'login.html', {'error': 'Administrator / Reseller access only on W3Host Manager (port 2087).', 'username': username, 'panel_type': 'host'})
             
             create_session(request, user)
+            if user.role == 'admin' and SystemSetting.get('initial_setup_completed', 'false') != 'true':
+                return redirect('admin_wizards')
             return redirect('admin_dashboard')
         except ValueError as e:
             return render(request, 'login.html', {'error': str(e), 'username': username, 'panel_type': 'host'})
@@ -1133,6 +1135,7 @@ def get_server_stack_status():
         'ftp_pureftpd': _check('pure-ftpd', 'pure-ftpd'),
         'security_ufw': _check('ufw'),
         'php_fpm': _check('php-fpm8.3', 'php8.3-fpm'),
+        'container_podman': _check('podman'),
     }
 
 
@@ -3048,6 +3051,7 @@ def wizard_dashboard(request):
         
         enable_ftp = request.POST.get('enable_ftp') in ('1', 'true', 'on')
         enable_ufw = request.POST.get('enable_ufw') in ('1', 'true', 'on')
+        enable_podman = request.POST.get('enable_podman') in ('1', 'true', 'on')
         enable_sury_repo = request.POST.get('enable_sury_repo') in ('1', 'true', 'on')
 
         # Handle Ondřej Surý / deb.sury.org Multi-PHP repository switch
@@ -3075,6 +3079,7 @@ def wizard_dashboard(request):
         SystemSetting.set('mail_spam_filter', spam_filter)
         SystemSetting.set('mail_dkim_enabled', 'true' if enable_dkim else 'false')
         SystemSetting.set('ftp_stack_enabled', 'true' if enable_ftp else 'false')
+        SystemSetting.set('podman_enabled', 'true' if enable_podman else 'false')
         SystemSetting.set('initial_setup_completed', 'true')
 
         # Execute package installations on-demand for selected services that are missing
@@ -3086,6 +3091,18 @@ def wizard_dashboard(request):
         elif webserver_choice == 'apache' and not stack_status['webserver_apache']['installed']:
             install_pkgs.extend(['apache2'])
             services_to_start.append('apache2')
+
+        if webserver_choice in ('nginx', 'apache') and default_php and not shutil.which(f'php-fpm{default_php}'):
+            install_pkgs.extend([
+                f'php{default_php}-fpm', f'php{default_php}-cli',
+                f'php{default_php}-mysql', f'php{default_php}-pgsql',
+                f'php{default_php}-curl', f'php{default_php}-zip',
+                f'php{default_php}-mbstring', f'php{default_php}-xml',
+            ])
+            services_to_start.append(f'php{default_php}-fpm')
+
+        if enable_podman and not stack_status['container_podman']['installed']:
+            install_pkgs.append('podman')
 
         if enable_mariadb and not stack_status['db_mariadb']['installed']:
             install_pkgs.extend(['mariadb-server', 'mariadb-client'])

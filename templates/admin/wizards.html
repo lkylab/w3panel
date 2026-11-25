@@ -213,9 +213,15 @@
             <div class="p-4 rounded-xl border border-gray-200 bg-gray-50/50 space-y-2">
                 <div class="flex items-center justify-between">
                     <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">Default PHP Runtime Version for New Sites</label>
+                    {% if stack_status.php_fpm.installed %}
                     <span class="text-xs text-emerald-700 font-semibold flex items-center gap-1">
-                        <i class="ti ti-circle-check"></i> PHP 8.3-FPM Active
+                        <i class="ti ti-circle-check"></i> PHP-FPM Installed
                     </span>
+                    {% else %}
+                    <span class="text-xs text-amber-700 font-semibold flex items-center gap-1">
+                        <i class="ti ti-download"></i> Will Install
+                    </span>
+                    {% endif %}
                 </div>
                 <select name="default_php" class="w-full sm:w-64 rounded-lg border border-gray-300 px-3.5 py-2 text-sm text-gray-900 bg-white outline-none focus:border-blue-600">
                     <option value="8.4" {% if default_php == '8.4' %}selected{% endif %}>PHP 8.4 (Latest)</option>
@@ -223,6 +229,26 @@
                     <option value="8.2" {% if default_php == '8.2' %}selected{% endif %}>PHP 8.2</option>
                 </select>
                 <p class="text-[11px] text-gray-500">Tenants can customize their individual PHP runtime per-website inside the Client Portal.</p>
+            </div>
+
+            <!-- Podman Container Runtime -->
+            <div class="p-4 rounded-xl border border-gray-200 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <label class="flex items-center gap-3 cursor-pointer">
+                    <input type="checkbox" name="enable_podman" value="1" {% if stack_status.container_podman.installed %}checked{% endif %} class="size-4 rounded text-blue-600 focus:ring-blue-500 border-gray-300">
+                    <div>
+                        <span class="font-bold text-gray-900 text-sm">Podman Container Runtime</span>
+                        <p class="text-xs text-gray-500">Rootless container engine for isolated per-tenant application environments.</p>
+                    </div>
+                </label>
+                {% if stack_status.container_podman.installed %}
+                <span class="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full shrink-0">
+                    <i class="ti ti-circle-check"></i> Installed
+                </span>
+                {% else %}
+                <span class="inline-flex items-center gap-1 text-[11px] font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full shrink-0">
+                    Not Installed (Optional)
+                </span>
+                {% endif %}
             </div>
 
             <!-- Ondřej Surý / deb.sury.org Multi-PHP Repository Switch -->

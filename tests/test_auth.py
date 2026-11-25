@@ -37,6 +37,16 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(self.client.session.get('user_id'), self.admin.id)
 
+    def test_first_login_redirects_to_wizard_until_completed(self):
+        from packages.core.models import SystemSetting
+        SystemSetting.set('initial_setup_completed', 'false')
+        first_resp = self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
+        self.assertRedirects(first_resp, '/wizards/', fetch_redirect_response=False)
+
+        SystemSetting.set('initial_setup_completed', 'true')
+        next_resp = self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
+        self.assertRedirects(next_resp, '/dashboard/', fetch_redirect_response=False)
+
     def test_invalid_login_fails(self):
         response = self.client.post('/login/', {'username': 'admin_test', 'password': 'WrongPassword!'})
         self.assertEqual(response.status_code, 200)

@@ -68,36 +68,15 @@ echo -e "  ${CYAN}W3Panel v2 — Container-Native Hosting Panel${NC}"
 echo -e "  Arch: ${ARCH_LABEL}   OS: ${OS_ID} ${OS_VER}"
 echo ""
 
-# ── Web Server Selection ──────────────────────────────────────────────────────
-WEBSERVER="${WEBSERVER:-}"
+# ── CLI Arguments ─────────────────────────────────────────────────────────────
 for arg in "$@"; do
     case "$arg" in
-        --webserver=*) WEBSERVER="${arg#*=}" ;;
-        --nginx)       WEBSERVER="nginx" ;;
-        --none)        WEBSERVER="none" ;;
-        --branch=*)    BRANCH="${arg#*=}" ;;
+        --branch=*) BRANCH="${arg#*=}" ;;
     esac
 done
 
-if [[ -z "$WEBSERVER" ]]; then
-    if [[ -t 0 ]] || (true </dev/tty) 2>/dev/null; then
-        echo -e "${BOLD}Select Web Server to install:${NC}"
-        echo -e "  ${CYAN}1)${NC} Nginx (Recommended)"
-        echo -e "  ${CYAN}2)${NC} None (Install later via Admin Panel)"
-        read -rp "Enter choice [1-2] (default: 1): " WS_INPUT </dev/tty || WS_INPUT="1"
-        case "${WS_INPUT:-1}" in
-            2|none|None) WEBSERVER="none" ;;
-            *) WEBSERVER="nginx" ;;
-        esac
-    else
-        WEBSERVER="nginx"
-    fi
-fi
-
-info "Selected Web Server: ${WEBSERVER}"
-
 # ── System packages ───────────────────────────────────────────────────────────
-info "Installing system packages..."
+info "Installing core system packages..."
 
 if [[ "$PKG_MGR" == "apt-get" ]]; then
     export DEBIAN_FRONTEND=noninteractive
@@ -114,66 +93,7 @@ else
         gcc openssl-devel libffi-devel \
         unzip jq
 fi
-success "System packages installed"
-
-# ── Install Podman ────────────────────────────────────────────────────────────
-info "Installing Podman container runtime..."
-if command -v podman &>/dev/null; then
-    success "Podman already installed ($(podman --version 2>/dev/null | awk '{print $NF}'))"
-else
-    if [[ "$PKG_MGR" == "apt-get" ]]; then
-        apt-get install -y -qq podman
-    else
-        yum install -y -q podman
-    fi
-    success "Podman installed"
-fi
-
-# ── Install Web Server (Nginx & PHP-FPM) ──────────────────────────────────────
-if [[ "$WEBSERVER" == "nginx" ]]; then
-    if [[ "$PKG_MGR" == "apt-get" ]]; then
-        info "Configuring Ondřej Surý / deb.sury.org Multi-PHP repository..."
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get install -y -qq software-properties-common gnupg ca-certificates curl lsb-release || true
-        if [[ "$OS_ID" == "ubuntu" ]]; then
-            add-apt-repository -y ppa:ondrej/php || {
-                warn "add-apt-repository failed, configuring deb.sury.org apt repository directly..."
-                curl -sSLo /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg || true
-                echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list
-            }
-        else
-            curl -sSLo /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg || true
-            echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list
-        fi
-        apt-get update -qq || true
-        success "Ondřej Surý / deb.sury.org Multi-PHP repository configured"
-    fi
-
-    info "Installing Nginx & PHP 8.3 FPM..."
-    if [[ "$PKG_MGR" == "apt-get" ]]; then
-        apt-get install -y -qq nginx php8.3-fpm php8.3-cli php8.3-mysql php8.3-pgsql php8.3-curl php8.3-zip php8.3-mbstring php8.3-xml
-    else
-        yum install -y -q nginx php-fpm php-mysqlnd php-pgsql
-    fi
-    systemctl enable nginx php8.3-fpm 2>/dev/null || true
-    systemctl start nginx php8.3-fpm 2>/dev/null || true
-    success "Nginx and PHP 8.3 installed and active"
-fi
-
-# ── Install Database Engines (MariaDB & PostgreSQL) ───────────────────────────
-info "Installing database servers (MariaDB & PostgreSQL)..."
-if [[ "$PKG_MGR" == "apt-get" ]]; then
-    apt-get install -y -qq mariadb-server mariadb-client postgresql postgresql-contrib
-else
-    yum install -y -q mariadb-server mariadb postgresql-server postgresql-contrib
-    if command -v postgresql-setup &>/dev/null; then
-        postgresql-setup --initdb 2>/dev/null || true
-    fi
-fi
-
-systemctl enable mariadb postgresql 2>/dev/null || true
-systemctl start mariadb postgresql 2>/dev/null || true
-success "MariaDB and PostgreSQL installed and active"
+success "Core system packages installed"
 
 # ── Apply High-Performance Kernel Tuning & Limits ─────────────────────────────
 info "Applying production kernel tuning and resource limits..."
@@ -291,13 +211,12 @@ sudo -u "$PANEL_USER" "$VENV_DIR/bin/python" - <<PYEOF
 import os, django
 os.environ['DJANGO_SETTINGS_MODULE'] = 'panel.settings'
 django.setup()
-from packages.core.models import User, SystemSetting
+from packages.core.models import User
 if not User.objects.filter(username='admin').exists():
     User.objects.create_user('admin', 'admin@localhost', '${ADMIN_PASS}', role='admin')
     print('Admin user created: admin / ${ADMIN_PASS}')
 else:
     print('Admin user already exists')
-SystemSetting.set('sury_repo_enabled', 'true')
 PYEOF
 
 # ── Self-signed SSL ───────────────────────────────────────────────────────────
@@ -419,10 +338,9 @@ echo -e "  W3Client Portal (User):    ${CYAN}https://${SERVER_IP}:$USER_PORT${NC
 echo ""
 echo -e "  Admin Login:        ${BOLD}admin${NC} / ${BOLD}$ADMIN_PASS${NC}"
 echo ""
-echo -e "  Core Stack:"
-echo -e "    • Web Server:     ${BOLD}Nginx (Ports 80, 443)${NC}"
-echo -e "    • Databases:      ${BOLD}MariaDB / MySQL & PostgreSQL${NC}"
-echo -e "    • PHP Engine:     ${BOLD}PHP 8.3 FPM${NC}"
+echo -e "  Setup:"
+echo -e "    • Sign in to W3Host Manager to complete the Initial Setup Wizard"
+echo -e "      (Nginx/Apache, PHP, MariaDB, PostgreSQL, Podman, Mail, FTP)."
 echo -e "    • Architecture:   ${BOLD}Independent Gunicorn Daemons (Ports 2087 & 2083)${NC}"
 echo ""
 echo -e "  ${YELLOW}Note: Change the admin password immediately after first login!${NC}"
