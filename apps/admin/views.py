@@ -3437,7 +3437,7 @@ def admin_migration_inspect(request, migrator_id):
         else:
             source_path, _ = _resolve_migration_source(migrator_id, local_path=local_path)
 
-        manifest = mod.inspect_cpanel_archive(source_path)
+        manifest = mod.inspect(source_path)
         return JsonResponse({
             'success': True,
             'source_token': source_token,
@@ -3448,6 +3448,61 @@ def admin_migration_inspect(request, migrator_id):
         if source_token:
             (get_staging_dir(migrator_id) / source_token).unlink(missing_ok=True)
         return JsonResponse({'error': str(e)}, status=400)
+
+
+def _extract_migration_options(post_data):
+    def _flag(name, default=True):
+        val = post_data.get(name)
+        if val is None:
+            return default
+        return val in ('1', 'true', 'on', 'yes')
+
+    return {
+        'target_username': post_data.get('target_username', '').strip(),
+        'email': post_data.get('email', '').strip(),
+        'import_websites': _flag('import_websites', True),
+        'import_databases': _flag('import_databases', True),
+        'import_mailboxes': _flag('import_mailboxes', True),
+        'import_dns': _flag('import_dns', True),
+        'update_dns_ip': _flag('update_dns_ip', True),
+        'import_ftp': _flag('import_ftp', True),
+        'import_cron': _flag('import_cron', True),
+        'import_ssl': _flag('import_ssl', True),
+        'skip_existing': _flag('skip_existing', False),
+    }
+
+
+def _sse_migration_response(events_iter, cleanup_cb=None, migrator_id=''):
+    def event_stream():
+        try:
+            for evt in events_iter:
+                if evt.get('complete'):
+                    payload = {
+                        'status': 'complete',
+                        'percent': 100,
+                        'step': evt.get('step', 'Migration completed'),
+                        'line': evt.get('line', ''),
+                        'summary': evt.get('summary', {}),
+                    }
+                else:
+                    payload = {
+                        'status': 'running',
+                        'percent': evt.get('percent', 0),
+                        'step': evt.get('step', ''),
+                        'line': evt.get('line', ''),
+                    }
+                yield f'data: {json.dumps(payload)}\n\n'
+        except Exception as exc:
+            logger.exception('Migration failed for %s', migrator_id)
+            yield f'data: {json.dumps({"status": "error", "percent": 100, "step": "Migration failed", "error": str(exc)})}\n\n'
+        finally:
+            if cleanup_cb:
+                cleanup_cb()
+
+    response = StreamingHttpResponse(event_stream(), content_type='text/event-stream')
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response
 
 
 def admin_migration_execute(request, migrator_id):
@@ -3470,53 +3525,74 @@ def admin_migration_execute(request, migrator_id):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=400)
 
-    def _flag(name, default=True):
-        val = request.POST.get(name)
-        if val is None:
-            return default
-        return val in ('1', 'true', 'on', 'yes')
+    options = _extract_migration_options(request.POST)
+    cleanup = (lambda: source_path.unlink(missing_ok=True)) if is_staged else None
+    return _sse_migration_response(
+        mod.iter_migrate(source_path, options=options),
+        cleanup_cb=cleanup,
+        migrator_id=migrator_id,
+    )
 
-    options = {
-        'target_username': request.POST.get('target_username', '').strip(),
-        'email': request.POST.get('email', '').strip(),
-        'import_websites': _flag('import_websites', True),
-        'import_databases': _flag('import_databases', True),
-        'import_mailboxes': _flag('import_mailboxes', True),
-        'import_dns': _flag('import_dns', True),
-        'update_dns_ip': _flag('update_dns_ip', True),
-        'import_ftp': _flag('import_ftp', True),
-        'import_cron': _flag('import_cron', True),
-        'import_ssl': _flag('import_ssl', True),
-        'skip_existing': _flag('skip_existing', False),
+
+def admin_migration_remote_accounts(request, migrator_id):
+    """Fetch live account list from a remote source server (WHM API or SSH)."""
+    if not _require_admin_user(request):
+        return JsonResponse({'error': 'Administrator access required'}, status=403)
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    from services.migrators import get_migrator
+    try:
+        mod = get_migrator(migrator_id)
+        if not hasattr(mod, 'list_remote_accounts'):
+            return JsonResponse({'error': 'Remote migration is not supported by this migrator.'}, status=400)
+        conn = {
+            'host': request.POST.get('host', '').strip(),
+            'whm_port': request.POST.get('whm_port', '2087').strip(),
+            'whm_user': request.POST.get('whm_user', 'root').strip(),
+            'whm_token': request.POST.get('whm_token', '').strip(),
+            'ssh_port': request.POST.get('ssh_port', '22').strip(),
+            'ssh_user': request.POST.get('ssh_user', 'root').strip(),
+            'ssh_auth_mode': request.POST.get('ssh_auth_mode', 'password').strip(),
+            'ssh_password': request.POST.get('ssh_password', ''),
+            'ssh_key': request.POST.get('ssh_key', ''),
+            'verify_ssl': request.POST.get('verify_ssl') in ('1', 'true', 'on'),
+        }
+        accounts = mod.list_remote_accounts(conn)
+        return JsonResponse({'success': True, 'accounts': accounts})
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=400)
+
+
+def admin_migration_remote_execute(request, migrator_id):
+    """Stream SSE migration of selected remote accounts via SSH pkgacct + SCP."""
+    if not _require_admin_user(request):
+        return JsonResponse({'error': 'Administrator access required'}, status=403)
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    from services.migrators import get_migrator
+    try:
+        mod = get_migrator(migrator_id)
+        if not hasattr(mod, 'iter_migrate_remote'):
+            return JsonResponse({'error': 'Remote migration is not supported by this migrator.'}, status=400)
+    except ValueError as e:
+        return JsonResponse({'error': str(e)}, status=400)
+
+    conn = {
+        'host': request.POST.get('host', '').strip(),
+        'ssh_port': request.POST.get('ssh_port', '22').strip(),
+        'ssh_user': request.POST.get('ssh_user', 'root').strip(),
+        'ssh_auth_mode': request.POST.get('ssh_auth_mode', 'password').strip(),
+        'ssh_password': request.POST.get('ssh_password', ''),
+        'ssh_key': request.POST.get('ssh_key', ''),
     }
+    usernames = [u.strip() for u in request.POST.getlist('usernames') if u.strip()]
+    if not usernames and request.POST.get('usernames_csv'):
+        usernames = [u.strip() for u in request.POST.get('usernames_csv', '').split(',') if u.strip()]
+    options = _extract_migration_options(request.POST)
 
-    def event_stream():
-        try:
-            for evt in mod.iter_migrate_cpanel_archive(source_path, options=options):
-                if evt.get('complete'):
-                    payload = {
-                        'status': 'complete',
-                        'percent': 100,
-                        'step': evt.get('step', 'Migration completed'),
-                        'line': evt.get('line', ''),
-                        'summary': evt.get('summary', {}),
-                    }
-                else:
-                    payload = {
-                        'status': 'running',
-                        'percent': evt.get('percent', 0),
-                        'step': evt.get('step', ''),
-                        'line': evt.get('line', ''),
-                    }
-                yield f'data: {json.dumps(payload)}\n\n'
-        except Exception as exc:
-            logger.exception('Migration failed for %s', migrator_id)
-            yield f'data: {json.dumps({"status": "error", "percent": 100, "step": "Migration failed", "error": str(exc)})}\n\n'
-        finally:
-            if is_staged:
-                source_path.unlink(missing_ok=True)
-
-    response = StreamingHttpResponse(event_stream(), content_type='text/event-stream')
-    response['Cache-Control'] = 'no-cache'
-    response['X-Accel-Buffering'] = 'no'
-    return response
+    return _sse_migration_response(
+        mod.iter_migrate_remote(conn, usernames, options=options),
+        migrator_id=migrator_id,
+    )

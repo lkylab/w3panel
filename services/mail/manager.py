@@ -11,6 +11,7 @@ logger = logging.getLogger('w3panel.mail')
 
 VMAIL_BASE = Path('/var/vmail')
 POSTFIX_DIR = Path('/etc/postfix')
+DOVECOT_DIR = Path('/etc/dovecot')
 
 def _get_opendkim_dir() -> Path:
     target = Path(os.environ.get('W3PANEL_OPENDKIM_DIR', '/etc/opendkim/keys'))
@@ -163,5 +164,97 @@ exit;
         return {'success': True, 'path': str(webmail_dir)}
     except Exception as e:
         logger.error(f"Failed to install SnappyMail: {e}")
+        return {'success': False, 'error': str(e)}
+
+
+def _read_text_privileged(path: Path) -> str:
+    try:
+        if path.exists():
+            return path.read_text(errors='replace')
+    except (PermissionError, OSError):
+        from services.webserver.manager import _has_sudo
+        if _has_sudo():
+            res = subprocess.run(['sudo', '-n', 'cat', str(path)], capture_output=True, text=True, timeout=5)
+            if res.returncode == 0:
+                return res.stdout
+    return ''
+
+
+def set_mailbox_password_hash(email: str, pw_hash: str, maildir: str = '') -> dict:
+    """Persist an existing crypt/Dovecot password hash for a migrated mailbox."""
+    if '@' not in email or not pw_hash:
+        return {'success': False, 'error': 'Email and hash required'}
+
+    from services.webserver.manager import _has_sudo, _write_privileged_file
+
+    email = email.strip().lower()
+    mbox_user, domain = email.split('@', 1)
+    dovecot_hash = pw_hash if pw_hash.startswith('{') else f'{{CRYPT}}{pw_hash}'
+    home_path = maildir or str(VMAIL_BASE / domain / mbox_user)
+    entry = f"{email}:{dovecot_hash}::::{home_path}::"
+
+    env_dir = os.environ.get('W3PANEL_DOVECOT_DIR')
+    if env_dir:
+        target_dir = Path(env_dir)
+    elif DOVECOT_DIR.exists() and (os.access(str(DOVECOT_DIR), os.W_OK) or _has_sudo()):
+        target_dir = DOVECOT_DIR
+    else:
+        target_dir = Path('/tmp/w3panel/dovecot')
+
+    try:
+        users_file = target_dir / 'users'
+        existing = _read_text_privileged(users_file).splitlines()
+        filtered = [l for l in existing if not l.startswith(f"{email}:")]
+        filtered.append(entry)
+        content = "\n".join(filtered) + "\n"
+        if not _write_privileged_file(users_file, content):
+            fallback = Path('/tmp/w3panel/dovecot/users')
+            fallback.parent.mkdir(parents=True, exist_ok=True)
+            fallback.write_text(content)
+            users_file = fallback
+        _reload_mail_services()
+        return {'success': True, 'path': str(users_file)}
+    except Exception as e:
+        logger.warning(f"Could not write Dovecot users hash for {email}: {e}")
+        return {'success': False, 'error': str(e)}
+
+
+def create_mail_alias(source_email: str, destinations: list[str]) -> dict:
+    """Register Postfix virtual alias/forwarder."""
+    if not source_email or not destinations:
+        return {'success': False, 'error': 'Source and destinations required'}
+
+    from services.webserver.manager import _has_sudo, _write_privileged_file
+
+    dest_str = ", ".join(d.strip() for d in destinations if d.strip())
+    if not dest_str:
+        return {'success': False, 'error': 'No valid destinations'}
+
+    env_dir = os.environ.get('W3PANEL_POSTFIX_DIR')
+    if env_dir:
+        target_dir = Path(env_dir)
+    elif POSTFIX_DIR.exists() and (os.access(str(POSTFIX_DIR), os.W_OK) or _has_sudo()):
+        target_dir = POSTFIX_DIR
+    else:
+        target_dir = Path('/tmp/w3panel/postfix')
+
+    try:
+        virtual_file = target_dir / 'virtual'
+        existing = _read_text_privileged(virtual_file).splitlines()
+        filtered = [l for l in existing if not l.startswith(f"{source_email} ")]
+        filtered.append(f"{source_email} {dest_str}")
+        content = "\n".join(filtered) + "\n"
+        if not _write_privileged_file(virtual_file, content):
+            fallback = Path('/tmp/w3panel/postfix/virtual')
+            fallback.parent.mkdir(parents=True, exist_ok=True)
+            fallback.write_text(content)
+            virtual_file = fallback
+        if target_dir == POSTFIX_DIR and (_has_sudo() or os.geteuid() == 0):
+            cmd = ['postmap', str(virtual_file)] if os.geteuid() == 0 else ['sudo', '-n', 'postmap', str(virtual_file)]
+            subprocess.run(cmd, capture_output=True, timeout=3)
+            _reload_mail_services()
+        return {'success': True, 'path': str(virtual_file)}
+    except Exception as e:
+        logger.warning(f"Could not write Postfix virtual alias for {source_email}: {e}")
         return {'success': False, 'error': str(e)}
 

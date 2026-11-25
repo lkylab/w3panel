@@ -18,13 +18,73 @@
 
     <!-- Step 1: Source Selection -->
     <div x-show="stage === 'source'" class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm space-y-5">
-        <div class="flex gap-2">
+        <div class="flex flex-wrap gap-2">
+            <button type="button" @click="sourceMode = 'remote'"
+                    :class="sourceMode === 'remote' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'"
+                    class="px-3.5 py-2 rounded-lg text-xs font-bold transition">Live WHM / SSH Server</button>
             <button type="button" @click="sourceMode = 'path'"
                     :class="sourceMode === 'path' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'"
-                    class="px-3.5 py-2 rounded-lg text-xs font-bold transition">Server Path</button>
+                    class="px-3.5 py-2 rounded-lg text-xs font-bold transition">Server Backup Path</button>
             <button type="button" @click="sourceMode = 'upload'"
                     :class="sourceMode === 'upload' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'"
                     class="px-3.5 py-2 rounded-lg text-xs font-bold transition">Upload Archive</button>
+        </div>
+
+        <!-- Remote WHM / SSH Form -->
+        <div x-show="sourceMode === 'remote'" class="space-y-4">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div class="sm:col-span-2">
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">cPanel Server Host / IP *</label>
+                    <input type="text" x-model="remote.host" placeholder="cpanel.example.com"
+                           class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2 text-sm font-mono text-gray-900 outline-none focus:border-blue-600">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">SSH Port</label>
+                    <input type="number" x-model="remote.ssh_port"
+                           class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2 text-sm font-mono text-gray-900 outline-none focus:border-blue-600">
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">SSH User</label>
+                    <input type="text" x-model="remote.ssh_user"
+                           class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2 text-sm font-mono text-gray-900 outline-none focus:border-blue-600">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">SSH Authentication</label>
+                    <select x-model="remote.ssh_auth_mode"
+                            class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2 text-sm text-gray-900 bg-white outline-none focus:border-blue-600">
+                        <option value="password">Password</option>
+                        <option value="key">Private Key</option>
+                    </select>
+                </div>
+            </div>
+
+            <div x-show="remote.ssh_auth_mode === 'password'">
+                <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">SSH Password</label>
+                <input type="password" x-model="remote.ssh_password"
+                       class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2 text-sm text-gray-900 outline-none focus:border-blue-600">
+            </div>
+
+            <div x-show="remote.ssh_auth_mode === 'key'">
+                <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">SSH Private Key (PEM / OpenSSH)</label>
+                <textarea rows="4" x-model="remote.ssh_key" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                          class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2 text-xs font-mono text-gray-900 outline-none focus:border-blue-600"></textarea>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-gray-100">
+                <div>
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">WHM API Port</label>
+                    <input type="number" x-model="remote.whm_port"
+                           class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2 text-sm font-mono text-gray-900 outline-none focus:border-blue-600">
+                </div>
+                <div class="sm:col-span-2">
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-gray-700">WHM API Token (Optional)</label>
+                    <input type="password" x-model="remote.whm_token" placeholder="Optional — uses SSH account discovery if blank"
+                           class="mt-1.5 w-full rounded-lg border border-gray-300 px-3.5 py-2 text-sm font-mono text-gray-900 outline-none focus:border-blue-600">
+                </div>
+            </div>
         </div>
 
         <div x-show="sourceMode === 'path'">
@@ -42,7 +102,14 @@
         <div x-show="errorMsg" x-cloak class="rounded-lg bg-rose-50 border border-rose-200 px-4 py-3 text-xs text-rose-700" x-text="errorMsg"></div>
 
         <div class="flex justify-end">
-            <button type="button" @click="inspectSource()" :disabled="busy"
+            <button x-show="sourceMode === 'remote'" type="button" @click="fetchRemoteAccounts()" :disabled="busy"
+                    class="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold transition">
+                <i class="ti ti-plug-connected" x-show="!busy"></i>
+                <i class="ti ti-loader-2 animate-spin" x-show="busy" x-cloak></i>
+                <span x-text="busy ? 'Connecting...' : 'Fetch Accounts'"></span>
+            </button>
+
+            <button x-show="sourceMode !== 'remote'" type="button" @click="inspectSource()" :disabled="busy"
                     class="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold transition">
                 <i class="ti ti-search" x-show="!busy"></i>
                 <i class="ti ti-loader-2 animate-spin" x-show="busy" x-cloak></i>
@@ -51,7 +118,55 @@
         </div>
     </div>
 
-    <!-- Step 2: Review & Configure -->
+    <!-- Step 2A: Remote Account Selection -->
+    <div x-show="stage === 'remote_accounts'" x-cloak class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm space-y-5">
+        <div class="border border-gray-200 rounded-lg overflow-hidden">
+            <table class="w-full text-xs">
+                <thead class="bg-gray-50 border-b border-gray-200 text-gray-600">
+                    <tr>
+                        <th class="px-3 py-2 text-left"><input type="checkbox" @change="toggleAllRemote($event.target.checked)" class="rounded"></th>
+                        <th class="px-3 py-2 text-left">User</th>
+                        <th class="px-3 py-2 text-left">Primary Domain</th>
+                        <th class="px-3 py-2 text-left">Plan</th>
+                        <th class="px-3 py-2 text-left">Disk</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="acct in remoteAccounts" :key="acct.user">
+                        <tr class="border-b border-gray-100 last:border-0">
+                            <td class="px-3 py-2"><input type="checkbox" :value="acct.user" x-model="selectedRemoteUsers" class="rounded"></td>
+                            <td class="px-3 py-2 font-mono font-semibold text-gray-900" x-text="acct.user"></td>
+                            <td class="px-3 py-2 font-mono text-gray-700" x-text="acct.domain"></td>
+                            <td class="px-3 py-2 text-gray-600" x-text="acct.plan || '-'"></td>
+                            <td class="px-3 py-2 font-mono text-gray-600" x-text="acct.diskused || '-'"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs text-gray-700">
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.import_websites" class="rounded"> Websites & Files</label>
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.import_databases" class="rounded"> Databases</label>
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.import_mailboxes" class="rounded"> Mailboxes</label>
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.import_dns" class="rounded"> DNS Zones</label>
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.update_dns_ip" class="rounded"> Update A Records to Server IP</label>
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.import_ftp" class="rounded"> FTP Accounts</label>
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.import_cron" class="rounded"> Cron Jobs</label>
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.import_ssl" class="rounded"> SSL Certificates</label>
+            <label class="flex items-center gap-2"><input type="checkbox" x-model="opts.skip_existing" class="rounded"> Skip Existing</label>
+        </div>
+
+        <div class="flex items-center justify-between pt-2 border-t border-gray-100">
+            <button type="button" @click="stage = 'source'" class="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-xs font-semibold">Back</button>
+            <button type="button" @click="startRemoteMigration()" :disabled="selectedRemoteUsers.length === 0"
+                    class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold transition">
+                Migrate Selected (<span x-text="selectedRemoteUsers.length"></span>)
+            </button>
+        </div>
+    </div>
+
+    <!-- Step 2B: Archive Review & Configure -->
     <div x-show="stage === 'review'" x-cloak class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm space-y-6">
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
@@ -155,14 +270,24 @@
             <div class="space-y-3 text-xs border-t border-gray-100 pt-4">
                 <div class="font-bold text-gray-900">Migration Summary</div>
                 <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    <div class="p-2.5 bg-gray-50 rounded border">Websites: <strong x-text="summary.websites.length"></strong></div>
-                    <div class="p-2.5 bg-gray-50 rounded border">Databases: <strong x-text="summary.databases.length"></strong></div>
-                    <div class="p-2.5 bg-gray-50 rounded border">Mailboxes: <strong x-text="summary.mailboxes.length"></strong></div>
-                    <div class="p-2.5 bg-gray-50 rounded border">DNS Zones: <strong x-text="summary.dns_zones.length"></strong></div>
+                    <div class="p-2.5 bg-gray-50 rounded border">Websites: <strong x-text="summary.websites ? summary.websites.length : 0"></strong></div>
+                    <div class="p-2.5 bg-gray-50 rounded border">Databases: <strong x-text="summary.databases ? summary.databases.length : 0"></strong></div>
+                    <div class="p-2.5 bg-gray-50 rounded border">Mailboxes: <strong x-text="summary.mailboxes ? summary.mailboxes.length : 0"></strong></div>
+                    <div class="p-2.5 bg-gray-50 rounded border">DNS Zones: <strong x-text="summary.dns_zones ? summary.dns_zones.length : 0"></strong></div>
                 </div>
                 <template x-if="summary.account_password">
                     <div class="p-3 rounded-lg bg-blue-50 border border-blue-200 font-mono">
                         User: <strong x-text="summary.username"></strong> | Password: <strong x-text="summary.account_password"></strong>
+                    </div>
+                </template>
+                <template x-if="summary.accounts && summary.accounts.length">
+                    <div class="p-3 rounded-lg bg-blue-50 border border-blue-200 font-mono space-y-1">
+                        <template x-for="acct in summary.accounts" :key="acct.username">
+                            <div>
+                                User: <strong x-text="acct.username"></strong>
+                                <span x-show="acct.account_password"> | Password: <strong x-text="acct.account_password"></strong></span>
+                            </div>
+                        </template>
                     </div>
                 </template>
                 <template x-if="summary.warnings && summary.warnings.length">
@@ -184,7 +309,7 @@
 function cpanelMigrator() {
     return {
         stage: 'source',
-        sourceMode: 'path',
+        sourceMode: 'remote',
         localPath: '',
         sourceToken: '',
         busy: false,
@@ -192,6 +317,19 @@ function cpanelMigrator() {
         manifest: null,
         targetUsername: '',
         targetEmail: '',
+        remote: {
+            host: '',
+            ssh_port: 22,
+            ssh_user: 'root',
+            ssh_auth_mode: 'password',
+            ssh_password: '',
+            ssh_key: '',
+            whm_port: 2087,
+            whm_user: 'root',
+            whm_token: '',
+        },
+        remoteAccounts: [],
+        selectedRemoteUsers: [],
         opts: {
             import_websites: true,
             import_databases: true,
@@ -212,6 +350,36 @@ function cpanelMigrator() {
         getCsrf() {
             const m = document.cookie.match(/csrftoken=([^;]+)/);
             return m ? m[1] : '{{ csrf_token }}';
+        },
+
+        toggleAllRemote(checked) {
+            this.selectedRemoteUsers = checked ? this.remoteAccounts.map(a => a.user) : [];
+        },
+
+        async fetchRemoteAccounts() {
+            this.errorMsg = '';
+            if (!this.remote.host.trim()) { this.errorMsg = 'Enter remote cPanel host or IP.'; return; }
+            this.busy = true;
+            try {
+                const fd = new FormData();
+                fd.append('csrfmiddlewaretoken', this.getCsrf());
+                for (const [k, v] of Object.entries(this.remote)) {
+                    fd.append(k, String(v ?? ''));
+                }
+                const resp = await fetch('{% url "admin_migration_remote_accounts" migrator.id %}', { method: 'POST', body: fd });
+                const data = await resp.json();
+                if (!resp.ok || !data.success) {
+                    this.errorMsg = data.error || 'Failed to fetch accounts.';
+                    return;
+                }
+                this.remoteAccounts = data.accounts || [];
+                this.selectedRemoteUsers = [];
+                this.stage = 'remote_accounts';
+            } catch (e) {
+                this.errorMsg = e.message;
+            } finally {
+                this.busy = false;
+            }
         },
 
         async inspectSource() {
@@ -248,26 +416,15 @@ function cpanelMigrator() {
             }
         },
 
-        async startMigration() {
+        async _consumeSse(url, fd) {
             this.stage = 'running';
             this.runStatus = 'running';
             this.progress = 2;
             this.stepText = 'Starting cPanel migration...';
             this.logs = [];
             this.summary = null;
-
-            const fd = new FormData();
-            fd.append('csrfmiddlewaretoken', this.getCsrf());
-            if (this.sourceToken) fd.append('source_token', this.sourceToken);
-            else fd.append('local_path', this.localPath);
-            fd.append('target_username', this.targetUsername);
-            fd.append('email', this.targetEmail);
-            for (const [k, v] of Object.entries(this.opts)) {
-                fd.append(k, v ? '1' : '0');
-            }
-
             try {
-                const resp = await fetch('{% url "admin_migration_execute" migrator.id %}', { method: 'POST', body: fd });
+                const resp = await fetch(url, { method: 'POST', body: fd });
                 if (!resp.ok || !resp.body) {
                     this.runStatus = 'error';
                     this.stepText = 'Failed to start migration';
@@ -313,6 +470,34 @@ function cpanelMigrator() {
                 this.stepText = 'Connection error';
                 this.logs.push('>> [ERROR] ' + err.message);
             }
+        },
+
+        async startMigration() {
+            const fd = new FormData();
+            fd.append('csrfmiddlewaretoken', this.getCsrf());
+            if (this.sourceToken) fd.append('source_token', this.sourceToken);
+            else fd.append('local_path', this.localPath);
+            fd.append('target_username', this.targetUsername);
+            fd.append('email', this.targetEmail);
+            for (const [k, v] of Object.entries(this.opts)) {
+                fd.append(k, v ? '1' : '0');
+            }
+            await this._consumeSse('{% url "admin_migration_execute" migrator.id %}', fd);
+        },
+
+        async startRemoteMigration() {
+            const fd = new FormData();
+            fd.append('csrfmiddlewaretoken', this.getCsrf());
+            for (const [k, v] of Object.entries(this.remote)) {
+                fd.append(k, String(v ?? ''));
+            }
+            for (const u of this.selectedRemoteUsers) {
+                fd.append('usernames', u);
+            }
+            for (const [k, v] of Object.entries(this.opts)) {
+                fd.append(k, v ? '1' : '0');
+            }
+            await this._consumeSse('{% url "admin_migration_remote_execute" migrator.id %}', fd);
         }
     };
 }

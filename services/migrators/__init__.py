@@ -1,9 +1,11 @@
 """
-W3Panel v2 — Modular Panel Migrators Registry
-Each panel migrator can be installed/uninstalled independently so the core panel stays lightweight.
+W3Panel v2 — Modular Panel Migrator Plugin Registry
+Each panel migrator is an independent, on-demand installable plugin so the core panel stays lightweight.
 """
 import json
+import os
 import shutil
+import subprocess
 import logging
 from pathlib import Path
 from importlib import import_module
@@ -18,20 +20,22 @@ MIGRATOR_CATALOG = [
     {
         'id': 'cpanel',
         'name': 'cPanel / WHM',
-        'description': 'Migrate cpmove / full account backups (websites, addon/subdomains, MySQL dumps, mailboxes, BIND DNS zones, FTP, cron, SSL).',
-        'formats': 'cpmove-*.tar.gz, backup-*.tar.gz, .tar, extracted directory',
+        'description': 'Migrate via live WHM/SSH server connection or cpmove backup archive (websites, parked/addon/subdomains, .htaccess rules, MySQL/PostgreSQL, mailboxes + shadow hashes + forwarders, DNS, FTP, cron, SSL).',
+        'formats': 'Live WHM/SSH, cpmove-*.tar.gz, backup-*.tar.gz, extracted dir',
         'module': 'services.migrators.cpanel',
-        'apt_packages': [],
+        'apt_packages': ['sshpass'],
+        'supports_remote': True,
         'available': True,
-        'version': '1.0.0',
+        'version': '2.0.0',
     },
     {
         'id': 'cyberpanel',
         'name': 'CyberPanel (OpenLiteSpeed / LiteSpeed)',
         'description': 'Migrate CyberPanel websites, OpenLiteSpeed/LiteSpeed vhosts, .htaccess rewrites, databases, email, and DNS.',
-        'formats': 'backup-*.tar.gz, meta.xml',
+        'formats': 'Live CyberPanel / SSH, backup-*.tar.gz, meta.xml',
         'module': 'services.migrators.cyberpanel',
-        'apt_packages': ['zstd'],
+        'apt_packages': ['zstd', 'sshpass'],
+        'supports_remote': True,
         'available': False,
         'version': 'Planned',
     },
@@ -42,6 +46,7 @@ MIGRATOR_CATALOG = [
         'formats': 'Plesk dump (.tar / .tgz / .tzst + XML)',
         'module': 'services.migrators.plesk',
         'apt_packages': ['zstd'],
+        'supports_remote': False,
         'available': False,
         'version': 'Planned',
     },
@@ -52,6 +57,7 @@ MIGRATOR_CATALOG = [
         'formats': 'user.admin.*.tar.gz / .tar.zst',
         'module': 'services.migrators.directadmin',
         'apt_packages': ['zstd'],
+        'supports_remote': False,
         'available': False,
         'version': 'Planned',
     },
@@ -62,6 +68,7 @@ MIGRATOR_CATALOG = [
         'formats': 'user.*.tar / .tar.zst',
         'module': 'services.migrators.hestiacp',
         'apt_packages': ['zstd'],
+        'supports_remote': False,
         'available': False,
         'version': 'Planned',
     },
@@ -128,31 +135,52 @@ def list_migrators() -> list[dict]:
     return result
 
 
+def _ensure_apt_packages(packages: list[str]) -> list[str]:
+    """Install missing OS helper packages on demand when running as root or passwordless sudo."""
+    missing = [pkg for pkg in packages if not shutil.which(pkg)]
+    if not missing:
+        return []
+    from services.webserver.manager import _has_sudo
+    if os.geteuid() != 0 and not _has_sudo():
+        return missing
+
+    prefix = [] if os.geteuid() == 0 else ['sudo', '-n']
+    try:
+        subprocess.run(prefix + ['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'update', '-qq'], capture_output=True, timeout=60)
+        subprocess.run(prefix + ['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'install', '-y', '-qq'] + missing, capture_output=True, timeout=180)
+    except Exception as e:
+        logger.warning('Optional migrator package install warning (%s): %s', missing, e)
+    return [pkg for pkg in missing if not shutil.which(pkg)]
+
+
 def install_migrator(migrator_id: str) -> dict:
-    """Install and enable a specific panel migrator."""
+    """Install and enable a specific panel migrator plugin."""
     meta = get_migrator_meta(migrator_id)
     if not meta:
         return {'success': False, 'error': f'Unknown migrator: {migrator_id}'}
     if not meta.get('available'):
         return {'success': False, 'error': f'{meta["name"]} migrator is not yet available.'}
 
-    # Verify module loads cleanly before marking installed
     try:
-        import_module(meta['module'])
+        mod = import_module(meta['module'])
+        if not hasattr(mod, 'inspect') or not hasattr(mod, 'iter_migrate'):
+            return {'success': False, 'error': f'Migrator module {meta["module"]} does not implement plugin contract.'}
     except Exception as e:
         logger.exception('Failed to load migrator module %s', meta['module'])
         return {'success': False, 'error': f'Failed to load migrator module: {e}'}
+
+    missing_pkgs = _ensure_apt_packages(meta.get('apt_packages', []))
 
     installed = get_installed_migrator_ids()
     if migrator_id not in installed:
         installed.append(migrator_id)
         _save_installed_migrator_ids(installed)
 
-    return {'success': True, 'migrator_id': migrator_id}
+    return {'success': True, 'migrator_id': migrator_id, 'missing_optional_packages': missing_pkgs}
 
 
 def uninstall_migrator(migrator_id: str) -> dict:
-    """Uninstall a migrator and remove its temporary staging files."""
+    """Uninstall a migrator plugin and remove its temporary staging files."""
     meta = get_migrator_meta(migrator_id)
     if not meta:
         return {'success': False, 'error': f'Unknown migrator: {migrator_id}'}
@@ -168,7 +196,7 @@ def uninstall_migrator(migrator_id: str) -> dict:
 
 
 def get_migrator(migrator_id: str):
-    """Lazily import and return the installed migrator module."""
+    """Lazily import and return the installed migrator plugin module."""
     if not is_migrator_installed(migrator_id):
         raise ValueError(f'Migrator "{migrator_id}" is not installed.')
     meta = get_migrator_meta(migrator_id)

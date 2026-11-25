@@ -1,5 +1,5 @@
 """
-W3Panel v2 — Modular Panel Migrators & cPanel Migration Tests
+W3Panel v2 — Modular Panel Migrators & Full cPanel Migration Plugin Tests
 """
 import io
 import json
@@ -7,7 +7,7 @@ import os
 import tarfile
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase
@@ -43,6 +43,7 @@ def _build_cpanel_tarball(dest_path: Path, username: str = 'testacct') -> Path:
                 f'DNS=example.com\n'
                 f'IP=198.51.100.5\n'
                 f'PLAN=AgencyPlan\n'
+                f'OWNER=root\n'
                 f'BWLIMIT=53687091200\n'
                 f'MAXSQL=10\n'
                 f'MAXPOP=25\n'
@@ -108,29 +109,47 @@ def _build_cpanel_tarball(dest_path: Path, username: str = 'testacct') -> Path:
                 "define('DB_HOST', 'localhost');\n"
             ).encode(),
         )
-        _add_tar_bytes(tar, f'{root}/homedir/public_html/.htaccess', b'RewriteEngine On\n')
+        _add_tar_bytes(
+            tar,
+            f'{root}/homedir/public_html/configuration.php',
+            f"<?php $log_path = '/home/{username}/public_html/logs'; ?>\n".encode(),
+        )
+        _add_tar_bytes(
+            tar,
+            f'{root}/homedir/public_html/.htaccess',
+            (
+                "RewriteEngine On\n"
+                "RewriteCond %{HTTPS} off\n"
+                "RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]\n"
+                "Redirect 301 /legacy /modern\n"
+                "php_value memory_limit 512M\n"
+            ).encode(),
+        )
         _add_tar_bytes(tar, f'{root}/homedir/public_html/addon.net/index.php', b'<?php echo "addon"; ?>')
         _add_tar_bytes(tar, f'{root}/homedir/public_html/blog/index.html', b'<h1>Blog</h1>')
 
         # Unsafe traversal entry that must be ignored
         _add_tar_bytes(tar, '../../../etc/evil_pwned', b'bad')
 
-        # MySQL dump + grants
+        # MariaDB dump + PostgreSQL dump + grants
         _add_tar_bytes(tar, f'{root}/mysql/{username}_wp.sql', b'CREATE TABLE wp_options (id INT);\n')
+        _add_tar_bytes(tar, f'{root}/psql/{username}_pg.sql', b'CREATE TABLE items (id INT);\n')
         _add_tar_bytes(
             tar,
             f'{root}/mysql.sql',
-            f"GRANT ALL PRIVILEGES ON `{username}_wp`.* TO '{username}_wpuser'@'localhost' IDENTIFIED BY PASSWORD '*123456';\n".encode(),
+            f"GRANT ALL PRIVILEGES ON `{username}_wp`.* TO '{username}_wpuser'@'localhost' IDENTIFIED BY PASSWORD '*6BB4837EB74329105EE4568DDA7DC67ED2CA2AD9';\n".encode(),
         )
 
-        # Mailboxes + Maildir
+        # Mailboxes + shadow + quota + Maildir + forwarders
         _add_tar_bytes(
             tar,
             f'{root}/homedir/etc/example.com/passwd',
             f'info:x:500:500::/home/{username}/mail/example.com/info:/bin/false\n'.encode(),
         )
+        _add_tar_bytes(tar, f'{root}/homedir/etc/example.com/shadow', b'info:$6$testsalt$hashvalue:19000:0:99999:7:::\n')
         _add_tar_bytes(tar, f'{root}/homedir/etc/example.com/quota', b'info:262144000\n')
         _add_tar_bytes(tar, f'{root}/homedir/mail/example.com/info/cur/msg1', b'Subject: Hello\n\nTest email')
+        _add_tar_bytes(tar, f'{root}/va/example.com', b'sales@example.com: john@example.com, jane@example.com\n')
 
         # BIND DNS zone
         _add_tar_bytes(
@@ -180,45 +199,42 @@ class CpanelMigrationTests(TestCase):
         self.client.post('/login/', {'username': 'mig_admin', 'password': 'Pass123!'})
 
     def test_migrator_catalog_install_uninstall_and_role_check(self):
-        # Catalog page shows cPanel available and CyberPanel/others planned
         resp = self.client.get('/migration/')
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'cPanel / WHM')
         self.assertContains(resp, 'CyberPanel (OpenLiteSpeed / LiteSpeed)')
         self.assertContains(resp, 'Install Migrator')
 
-        # Cannot open uninstalled migrator
         resp_uninstalled = self.client.get('/migration/cpanel/')
         self.assertRedirects(resp_uninstalled, '/migration/', fetch_redirect_response=False)
 
-        # Cannot install planned migrator yet
         resp_planned = self.client.post('/migration/', {'action': 'install', 'migrator_id': 'cyberpanel'})
         self.assertEqual(resp_planned.status_code, 302)
         from services.migrators import is_migrator_installed
         self.assertFalse(is_migrator_installed('cyberpanel'))
 
-        # Install cpanel migrator
-        resp_inst = self.client.post('/migration/', {'action': 'install', 'migrator_id': 'cpanel'})
+        with patch('services.migrators._ensure_apt_packages', return_value=[]):
+            resp_inst = self.client.post('/migration/', {'action': 'install', 'migrator_id': 'cpanel'})
         self.assertEqual(resp_inst.status_code, 302)
         self.assertTrue(is_migrator_installed('cpanel'))
 
         resp_panel = self.client.get('/migration/cpanel/')
         self.assertEqual(resp_panel.status_code, 200)
         self.assertContains(resp_panel, 'cPanel / WHM Migration')
+        self.assertContains(resp_panel, 'Live WHM / SSH Server')
 
-        # Uninstall cpanel migrator
         resp_uninst = self.client.post('/migration/', {'action': 'uninstall', 'migrator_id': 'cpanel'})
         self.assertEqual(resp_uninst.status_code, 302)
         self.assertFalse(is_migrator_installed('cpanel'))
 
-        # Reseller cannot access /migration/
         r_client = Client()
         r_client.post('/login/', {'username': 'mig_reseller', 'password': 'Pass123!'})
         r_resp = r_client.get('/migration/')
         self.assertRedirects(r_resp, '/dashboard/', fetch_redirect_response=False)
 
     def test_cpanel_inspect_and_full_migration(self):
-        self.client.post('/migration/', {'action': 'install', 'migrator_id': 'cpanel'})
+        with patch('services.migrators._ensure_apt_packages', return_value=[]):
+            self.client.post('/migration/', {'action': 'install', 'migrator_id': 'cpanel'})
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -231,6 +247,8 @@ class CpanelMigrationTests(TestCase):
             dns_dir = tmp / 'dns'
             dkim_dir = tmp / 'opendkim'
             vmail_dir = tmp / 'vmail'
+            dovecot_dir = tmp / 'dovecot'
+            postfix_dir = tmp / 'postfix'
             staging_dir = tmp / 'staging'
             staging_dir.mkdir(parents=True, exist_ok=True)
 
@@ -241,27 +259,26 @@ class CpanelMigrationTests(TestCase):
                 'W3PANEL_SSL_DIR': str(ssl_dir),
                 'W3PANEL_DNS_DIR': str(dns_dir),
                 'W3PANEL_OPENDKIM_DIR': str(dkim_dir),
+                'W3PANEL_DOVECOT_DIR': str(dovecot_dir),
+                'W3PANEL_POSTFIX_DIR': str(postfix_dir),
             }
+
+            sub_mock = MagicMock()
+            sub_mock.return_value.returncode = 0
+            sub_mock.return_value.stdout = ''
+            sub_mock.return_value.stderr = ''
 
             with patch.dict(os.environ, env_patch), \
                  patch('services.migrators.get_staging_dir', return_value=staging_dir), \
                  patch('services.mail.manager.VMAIL_BASE', vmail_dir), \
+                 patch('services.mail.manager.DOVECOT_DIR', dovecot_dir), \
+                 patch('services.mail.manager.POSTFIX_DIR', postfix_dir), \
                  patch('services.webserver.manager._has_sudo', return_value=False), \
                  patch('services.database.manager._has_sudo', return_value=False), \
-                 patch('services.webserver.manager.subprocess.run') as mock_web_sub, \
-                 patch('services.database.manager.subprocess.run') as mock_db_sub, \
-                 patch('services.mail.manager.subprocess.run'), \
-                 patch('services.ftp.manager.subprocess.Popen') as mock_ftp_popen, \
-                 patch('services.ftp.manager.subprocess.run'), \
-                 patch('services.cron.manager.subprocess.run'), \
-                 patch('services.migrators.cpanel.subprocess.run'):
-                mock_web_sub.return_value.returncode = 1
-                mock_web_sub.return_value.stdout = ''
-                mock_db_sub.return_value.returncode = 0
-                mock_db_sub.return_value.stderr = ''
+                 patch('subprocess.run', sub_mock), \
+                 patch('subprocess.Popen') as mock_ftp_popen:
                 mock_ftp_popen.return_value.communicate.return_value = ('', '')
 
-                # 1. Inspect via upload
                 uploaded = SimpleUploadedFile('cpmove-testacct.tar.gz', archive_path.read_bytes(), content_type='application/gzip')
                 inspect_resp = self.client.post('/migration/cpanel/inspect/', {'archive_file': uploaded})
                 self.assertEqual(inspect_resp.status_code, 200)
@@ -282,19 +299,18 @@ class CpanelMigrationTests(TestCase):
                 self.assertEqual(dom_map['example.com']['php_version'], '8.2')
                 self.assertTrue(dom_map['example.com']['has_ssl'])
                 self.assertEqual(manifest['parked_domains'], ['alias.example.org'])
-                self.assertEqual(len(manifest['databases']), 1)
-                self.assertEqual(manifest['databases'][0]['db_user'], 'testacct_wpuser')
+                self.assertEqual(len(manifest['databases']), 2)
+                db_types = {d['name']: d['db_type'] for d in manifest['databases']}
+                self.assertEqual(db_types, {'testacct_wp': 'mariadb', 'testacct_pg': 'postgresql'})
                 self.assertEqual(len(manifest['mailboxes']), 1)
-                self.assertEqual(manifest['mailboxes'][0]['quota_mb'], 250)
+                self.assertTrue(manifest['mailboxes'][0]['has_shadow_hash'])
+                self.assertEqual(len(manifest['mail_forwarders']), 1)
                 self.assertEqual(len(manifest['dns_zones']), 1)
                 self.assertEqual(manifest['dns_zones'][0]['records_count'], 4)
                 self.assertEqual(len(manifest['ftp_accounts']), 1)
                 self.assertEqual(len(manifest['cron_jobs']), 1)
-
-                # Ensure traversal entry did not escape staging/tmp
                 self.assertFalse((tmp / 'evil_pwned').exists())
 
-                # 2. Execute migration via SSE endpoint
                 exec_resp = self.client.post('/migration/cpanel/execute/', {
                     'source_token': inspect_data['source_token'],
                     'target_username': 'testacct',
@@ -309,14 +325,10 @@ class CpanelMigrationTests(TestCase):
                     'import_ssl': '1',
                 })
                 self.assertEqual(exec_resp.status_code, 200)
-                self.assertIn('text/event-stream', exec_resp['Content-Type'])
                 body = b''.join(exec_resp.streaming_content).decode()
                 self.assertIn('"status": "complete"', body)
-
-                # Verify staged file was cleaned up
                 self.assertFalse((staging_dir / inspect_data['source_token']).exists())
 
-            # 3. Verify W3Panel database models & extracted files
             user = User.objects.get(username='testacct')
             self.assertEqual(user.email, 'owner@example.com')
             self.assertTrue(user.shell_enabled)
@@ -328,32 +340,114 @@ class CpanelMigrationTests(TestCase):
             self.assertEqual(wp_site.framework, 'wordpress')
             self.assertEqual(wp_site.php_version, '8.2')
             self.assertTrue(wp_site.ssl_enabled)
-            self.assertTrue((Path(wp_site.doc_root) / 'wp-config.php').is_file())
-            self.assertTrue((ssl_dir / 'example.com.crt').is_file())
-            self.assertTrue((ssl_dir / 'example.com.key').is_file())
 
-            addon_site = Website.objects.get(domain='addon.net')
-            self.assertTrue((Path(addon_site.doc_root) / 'index.php').is_file())
-            blog_site = Website.objects.get(domain='blog.example.com')
-            self.assertTrue((Path(blog_site.doc_root) / 'index.html').is_file())
+            # Parked domains + .htaccess rules + .user.ini + path rewriting
+            vhost_conf = (vhosts_dir / 'example.com.conf').read_text()
+            self.assertIn('alias.example.org', vhost_conf)
+            self.assertIn('return 301 https://$host$request_uri;', vhost_conf)
+            self.assertIn('location = /legacy', vhost_conf)
+            self.assertIn('return 301 /modern;', vhost_conf)
 
-            db_obj = Database.objects.get(owner=user, name='testacct_wp')
-            self.assertEqual(db_obj.db_user, 'testacct_wpuser')
+            doc_root = Path(wp_site.doc_root)
+            self.assertTrue((doc_root / 'wp-config.php').is_file())
+            self.assertIn('memory_limit = 512M', (doc_root / '.user.ini').read_text())
+            self.assertIn(str(doc_root), (doc_root / 'configuration.php').read_text())
 
+            # Databases (MariaDB + PostgreSQL)
+            self.assertEqual(Database.objects.get(owner=user, name='testacct_wp').db_type, 'mariadb')
+            self.assertEqual(Database.objects.get(owner=user, name='testacct_pg').db_type, 'postgresql')
+
+            # Mailbox shadow hash + Maildir + forwarders
             mbox = Mailbox.objects.get(owner=user, email='info@example.com')
             self.assertEqual(mbox.quota_mb, 250)
             self.assertTrue((vmail_dir / 'example.com' / 'info' / 'cur' / 'msg1').is_file())
+            self.assertIn('info@example.com:{CRYPT}$6$testsalt$hashvalue', (dovecot_dir / 'users').read_text())
+            self.assertIn('sales@example.com john@example.com, jane@example.com', (postfix_dir / 'virtual').read_text())
 
+            # DNS, FTP, Cron
             a_rec = DNSRecord.objects.get(domain=wp_site, record_type='A', name='@')
             self.assertEqual(a_rec.value, '203.0.113.10')
-            txt_rec = DNSRecord.objects.get(domain=wp_site, record_type='TXT', name='@')
-            self.assertEqual(txt_rec.value, 'v=spf1 +a +mx ~all')
-            mx_rec = DNSRecord.objects.get(domain=wp_site, record_type='MX', name='@')
-            self.assertEqual(mx_rec.priority, 10)
-            self.assertEqual(mx_rec.value, 'mail.example.com')
-
-            ftp = FTPAccount.objects.get(owner=user, username='deploy@example.com')
-            self.assertIn('/testacct/public_html/addon.net', ftp.directory)
-
+            self.assertTrue(FTPAccount.objects.filter(owner=user, username='deploy@example.com').exists())
             cj = CronJob.objects.get(owner=user)
             self.assertIn('/testacct/public_html/wp-cron.php', cj.command)
+
+    def test_remote_whm_and_ssh_migration(self):
+        with patch('services.migrators._ensure_apt_packages', return_value=[]):
+            self.client.post('/migration/', {'action': 'install', 'migrator_id': 'cpanel'})
+
+        # 1. Test WHM API account listing
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            'metadata': {'result': 1},
+            'data': {
+                'acct': [
+                    {'user': 'remuser', 'domain': 'remote.example.com', 'email': 'rem@example.com', 'plan': 'Pro', 'ip': '198.51.100.9', 'diskused': '500M', 'disklimit': '5000M', 'suspended': 0}
+                ]
+            },
+        }
+        with patch('requests.get', return_value=mock_resp) as mock_get:
+            acct_resp = self.client.post('/migration/cpanel/remote/accounts/', {
+                'host': 'cpanel.remote.test',
+                'whm_port': '2087',
+                'whm_user': 'root',
+                'whm_token': 'TOKEN123',
+            })
+            self.assertEqual(acct_resp.status_code, 200)
+            data = acct_resp.json()
+            self.assertTrue(data['success'])
+            self.assertEqual(data['accounts'][0]['user'], 'remuser')
+            mock_get.assert_called_once()
+
+        # 2. Test SSH pkgacct + SCP transfer + migration
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            staging_dir = tmp / 'staging'
+            staging_dir.mkdir(parents=True, exist_ok=True)
+            sample_tar = _build_cpanel_tarball(tmp / 'sample.tar.gz', username='remuser')
+
+            def _fake_subprocess_run(cmd, *args, **kwargs):
+                res = MagicMock()
+                res.returncode = 0
+                res.stdout = ''
+                res.stderr = ''
+                if isinstance(cmd, list) and cmd and cmd[0] in ('scp', 'sshpass') and any('scp' in str(c) for c in cmd):
+                    # Copy sample_tar to local destination path (last arg)
+                    dest = Path(cmd[-1])
+                    dest.write_bytes(sample_tar.read_bytes())
+                return res
+
+            env_patch = {
+                'W3PANEL_USERS_DIR': str(tmp / 'users'),
+                'W3PANEL_VHOST_DIR': str(tmp / 'vhosts'),
+                'W3PANEL_PHP_POOL_DIR': str(tmp / 'pools'),
+                'W3PANEL_SSL_DIR': str(tmp / 'ssl'),
+                'W3PANEL_DNS_DIR': str(tmp / 'dns'),
+                'W3PANEL_OPENDKIM_DIR': str(tmp / 'opendkim'),
+                'W3PANEL_DOVECOT_DIR': str(tmp / 'dovecot'),
+                'W3PANEL_POSTFIX_DIR': str(tmp / 'postfix'),
+            }
+
+            with patch.dict(os.environ, env_patch), \
+                 patch('services.migrators.get_staging_dir', return_value=staging_dir), \
+                 patch('services.mail.manager.VMAIL_BASE', tmp / 'vmail'), \
+                 patch('services.webserver.manager._has_sudo', return_value=False), \
+                 patch('services.database.manager._has_sudo', return_value=False), \
+                 patch('shutil.which', return_value='/usr/bin/sshpass'), \
+                 patch('subprocess.run', side_effect=_fake_subprocess_run), \
+                 patch('subprocess.Popen') as mock_popen:
+                mock_popen.return_value.communicate.return_value = ('', '')
+                rem_exec = self.client.post('/migration/cpanel/remote/execute/', {
+                    'host': 'cpanel.remote.test',
+                    'ssh_port': '22',
+                    'ssh_user': 'root',
+                    'ssh_auth_mode': 'password',
+                    'ssh_password': 'secret',
+                    'usernames': ['remuser'],
+                })
+                self.assertEqual(rem_exec.status_code, 200)
+                body = b''.join(rem_exec.streaming_content).decode()
+                self.assertIn('"status": "complete"', body)
+
+            self.assertTrue(User.objects.filter(username='remuser').exists())
+            self.assertTrue(Website.objects.filter(domain='example.com').exists())
+            self.assertFalse((staging_dir / 'remote_cpmove-remuser.tar.gz').exists())

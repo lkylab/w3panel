@@ -62,6 +62,8 @@ urlpatterns = [
     path('migration/<str:migrator_id>/', views.admin_migration_panel, name='admin_migration_panel'),
     path('migration/<str:migrator_id>/inspect/', views.admin_migration_inspect, name='admin_migration_inspect'),
     path('migration/<str:migrator_id>/execute/', views.admin_migration_execute, name='admin_migration_execute'),
+    path('migration/<str:migrator_id>/remote/accounts/', views.admin_migration_remote_accounts, name='admin_migration_remote_accounts'),
+    path('migration/<str:migrator_id>/remote/execute/', views.admin_migration_remote_execute, name='admin_migration_remote_execute'),
     
     # Security
     path('security/firewall/', views.admin_firewall, name='admin_firewall'),

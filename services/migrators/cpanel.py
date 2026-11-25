@@ -1,10 +1,14 @@
 """
-W3Panel v2 — cPanel / WHM (cpmove) Account Migrator
-Parses real cPanel pkgacct/cpmove tarballs or extracted directories and migrates:
-- Account user, email, shell access, and hosting package limits
-- Primary, addon, and subdomain websites with files, PHP version, and framework detection
-- MySQL/MariaDB databases, database users, and SQL dumps
-- Email accounts (passwd/quota) and Maildir messages
+W3Panel v2 — Full cPanel / WHM Migration Plugin
+Supports:
+- Live Remote cPanel/WHM Server Migration (WHM JSON API + SSH/SCP pkgacct, single & bulk)
+- Local/Uploaded cpmove & full backup tarballs (.tar.gz, .tgz, .tar, .tar.bz2, .tar.xz) or extracted dirs
+- Account user, reseller owner mapping, email, shell access, and hosting package limits
+- Primary, addon, subdomain, and parked-domain (Nginx server_name alias) websites
+- .htaccess -> Nginx redirects & .user.ini PHP directives + hardcoded path rewriting
+- MariaDB/MySQL dumps + wp-config.php/.env credential matching + mysql.sql password hash preservation
+- PostgreSQL dumps (psql/ / pgsql/)
+- Mailboxes + Dovecot shadow password hashes + Maildir messages + Postfix virtual forwarders (va/ / valiases/)
 - BIND RFC 1035 DNS zones (with optional A-record IP remapping)
 - ProFTPD sub-FTP accounts
 - User cron jobs
@@ -15,13 +19,12 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
-
-from django.db import transaction
 
 from packages.core.models import (
     AuditLog,
@@ -116,7 +119,6 @@ class _CpanelSource:
                         return f'{name}/', _infer_username_from_dir(child, user)
             raise ValueError('Could not locate cPanel backup structure (cp/homedir/userdata/mysql).')
 
-        # Tar archive: inspect top 2 path levels
         top_children: dict[str, set[str]] = {}
         root_entries: set[str] = set()
         for name in self._members_by_name:
@@ -272,7 +274,7 @@ def _infer_username_from_dir(root_dir: Path, fallback: str = '') -> str:
 
 
 # ---------------------------------------------------------------------------
-# Format Parsers (YAML subset, cp key=value, BIND zones, passwd, cron, SQL)
+# Format Parsers
 # ---------------------------------------------------------------------------
 
 def _unquote(val: str) -> str:
@@ -283,10 +285,7 @@ def _unquote(val: str) -> str:
 
 
 def _parse_cpanel_yaml(text: str) -> dict:
-    """
-    Lightweight pure-Python parser for cPanel userdata YAML files
-    (handles scalars, lists, nested mappings like addon_domains / customlog).
-    """
+    """Lightweight parser for cPanel userdata YAML files."""
     result: dict = {}
     if not text:
         return result
@@ -317,7 +316,6 @@ def _parse_cpanel_yaml(text: str) -> dict:
             result[key] = []
             continue
 
-        # Collect indented block
         block_lines = []
         while i < len(lines):
             nxt = lines[i]
@@ -385,7 +383,6 @@ def _map_cpanel_php_version(raw_php: str, default_php: str = '8.3') -> str:
 
 
 def _normalize_doc_root_rel(doc_root: str, old_username: str, homedir_val: str = '') -> str:
-    """Convert cPanel absolute doc_root (/home/user/public_html/sub) to homedir-relative path."""
     if not doc_root:
         return 'public_html'
     clean = doc_root.strip().rstrip('/')
@@ -393,8 +390,8 @@ def _normalize_doc_root_rel(doc_root: str, old_username: str, homedir_val: str =
     if homedir_val:
         candidates.append(homedir_val.rstrip('/') + '/')
     if old_username:
-        candidates.append(f'/home/{old_username}/')
-        candidates.append(f'/home2/{old_username}/')
+        candidates.append(f'/home/{old_user_safe(old_username)}/')
+        candidates.append(f'/home2/{old_user_safe(old_username)}/')
     for prefix in candidates:
         if clean.startswith(prefix):
             return clean[len(prefix):].lstrip('/') or 'public_html'
@@ -402,6 +399,10 @@ def _normalize_doc_root_rel(doc_root: str, old_username: str, homedir_val: str =
     if m:
         return m.group(1).lstrip('/')
     return clean.lstrip('/') or 'public_html'
+
+
+def old_user_safe(u: str) -> str:
+    return u.strip('/')
 
 
 def _detect_framework_in_source(src: _CpanelSource, rel_doc_root: str) -> str:
@@ -416,7 +417,6 @@ def _detect_framework_in_source(src: _CpanelSource, rel_doc_root: str) -> str:
 
 
 def _extract_app_db_credentials(doc_root: Path) -> list[dict]:
-    """Scan wp-config.php or Laravel .env in doc_root for DB name/user/password."""
     creds = []
     wp_cfg = doc_root / 'wp-config.php'
     if wp_cfg.is_file():
@@ -441,12 +441,96 @@ def _extract_app_db_credentials(doc_root: Path) -> list[dict]:
     return creds
 
 
+def _translate_htaccess(htaccess_text: str, ssl_enabled: bool = False) -> tuple[str, list[str], list[str]]:
+    """
+    Convert common safe Apache .htaccess directives to Nginx location/redirect rules and .user.ini lines.
+    Returns (nginx_rules_str, user_ini_lines, warnings).
+    """
+    nginx_blocks: list[str] = []
+    user_ini_lines: list[str] = []
+    warnings: list[str] = []
+
+    if not htaccess_text:
+        return '', [], []
+
+    # Force HTTPS rewrite detection
+    if ssl_enabled and re.search(r'RewriteCond\s+%\{HTTPS\}\s+(off|!=on)', htaccess_text, re.IGNORECASE):
+        nginx_blocks.append(
+            '    if ($scheme != "https") {\n'
+            '        return 301 https://$host$request_uri;\n'
+            '    }'
+        )
+
+    custom_rewrites = 0
+    for raw_line in htaccess_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#'):
+            continue
+
+        # Redirect [301|302|permanent|temp] /source /target
+        m_redir = re.match(r'^Redirect\s+(?:(301|302|permanent|temp)\s+)?(/\S*)\s+(\S+)$', line, re.IGNORECASE)
+        if m_redir:
+            code_raw = (m_redir.group(1) or '302').lower()
+            code = '301' if code_raw in ('301', 'permanent') else '302'
+            src_path = m_redir.group(2)
+            dst_url = m_redir.group(3)
+            # Sanitize against Nginx block injection
+            if re.match(r'^/[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%-]+$', src_path) and not any(c in dst_url for c in ('{', '}', ';', '\n', '\r')):
+                nginx_blocks.append(
+                    f'    location = {src_path} {{\n'
+                    f'        return {code} {dst_url};\n'
+                    f'    }}'
+                )
+            continue
+
+        # php_value / php_flag -> .user.ini
+        m_php = re.match(r'^php_(?:value|flag)\s+([A-Za-z0-9_.]+)\s+(.+)$', line, re.IGNORECASE)
+        if m_php:
+            pkey = m_php.group(1)
+            pval = _unquote(m_php.group(2))
+            if re.match(r'^[A-Za-z0-9_.]+$', pkey) and '\n' not in pval and ';' not in pval:
+                user_ini_lines.append(f'{pkey} = {pval}')
+            continue
+
+        if re.match(r'^RewriteRule\s+', line, re.IGNORECASE):
+            # Ignore standard WordPress / Laravel front controller rules handled natively by W3Panel
+            if 'index.php' not in line and 'https://' not in line.lower():
+                custom_rewrites += 1
+
+    if custom_rewrites > 0:
+        warnings.append(f'Detected {custom_rewrites} custom Apache RewriteRule directive(s) in .htaccess; review Nginx vhost if custom rewrites are needed.')
+
+    return '\n'.join(nginx_blocks), user_ini_lines, warnings
+
+
+def _rewrite_hardcoded_paths(doc_root: Path, old_paths: list[str], new_path: str) -> int:
+    """Update hardcoded old home/doc_root paths in common PHP config files."""
+    if not doc_root.is_dir():
+        return 0
+    updated = 0
+    targets = [doc_root / '.user.ini', doc_root / 'php.ini', doc_root / 'wp-config.php', doc_root / 'configuration.php']
+    for cfg in targets:
+        if not cfg.is_file():
+            continue
+        try:
+            content = cfg.read_text(errors='replace')
+            new_content = content
+            for old_p in old_paths:
+                if old_p and old_p != new_path and old_p in new_content:
+                    new_content = new_content.replace(old_p, new_path)
+            if new_content != content:
+                cfg.write_text(new_content)
+                updated += 1
+        except Exception:
+            pass
+    return updated
+
+
 def _parse_bind_zone(zone_text: str, domain: str) -> list[dict]:
     """Parse a BIND RFC 1035 zone file into W3Panel DNSRecord dicts."""
     if not zone_text:
         return []
 
-    # Strip comments outside quotes and collapse multi-line parentheses
     cleaned_lines = []
     paren_depth = 0
     buf = []
@@ -504,7 +588,6 @@ def _parse_bind_zone(zone_text: str, domain: str) -> list[dict]:
                 origin = parts[1]
             continue
 
-        # Tokenize keeping quoted strings intact
         tokens = re.findall(r'"[^"]*"|\S+', stripped)
         if not tokens:
             continue
@@ -541,7 +624,6 @@ def _parse_bind_zone(zone_text: str, domain: str) -> list[dict]:
         if not rdata:
             continue
 
-        # Normalize owner name relative to domain
         norm_owner = owner
         if norm_owner == origin or norm_owner == f'{domain}.' or norm_owner == domain:
             norm_owner = '@'
@@ -555,7 +637,6 @@ def _parse_bind_zone(zone_text: str, domain: str) -> list[dict]:
             priority = int(rdata[0])
             val = rdata[1].rstrip('.')
         elif rtype == 'TXT':
-            # Join multiple quoted TXT strings
             val = ''.join(t[1:-1] if (len(t) >= 2 and t.startswith('"') and t.endswith('"')) else t for t in rdata)
         elif rtype in ('CNAME', 'NS'):
             val = rdata[0].rstrip('.')
@@ -578,9 +659,7 @@ def _parse_bind_zone(zone_text: str, domain: str) -> list[dict]:
 
 
 def _parse_mysql_grants(mysql_sql: str, db_json_text: str | None) -> tuple[dict[str, list[str]], dict[str, str]]:
-    """
-    Return (db_to_users, user_to_hash) from mysql.sql and optional db.json.
-    """
+    """Return (db_to_users, user_to_hash) from mysql.sql and optional db.json."""
     db_to_users: dict[str, list[str]] = {}
     user_to_hash: dict[str, str] = {}
 
@@ -598,7 +677,6 @@ def _parse_mysql_grants(mysql_sql: str, db_json_text: str | None) -> tuple[dict[
             pass
 
     if mysql_sql:
-        # Match GRANT ... ON `db`.* TO 'user'@'host' ... [IDENTIFIED BY PASSWORD '*...']
         grant_re = re.compile(
             r"GRANT\s+.+?\s+ON\s+[`'\"]?([A-Za-z0-9_]+)[`'\"]?\.\*\s+TO\s+['\"]([^'\"]+)['\"]@['\"][^'\"]+['\"]"
             r"(?:.*?IDENTIFIED\s+BY\s+PASSWORD\s+['\"]([^'\"]+)['\"])?",
@@ -613,7 +691,6 @@ def _parse_mysql_grants(mysql_sql: str, db_json_text: str | None) -> tuple[dict[
             if phash and duser not in user_to_hash:
                 user_to_hash[duser] = phash
 
-        # Match CREATE USER 'user'@'host' IDENTIFIED ... AS '*...'
         user_re = re.compile(
             r"CREATE\s+USER\s+(?:IF\s+NOT\s+EXISTS\s+)?['\"]([^'\"]+)['\"]@['\"][^'\"]+['\"].*?(?:PASSWORD\s+|AS\s+)['\"]([^'\"]+)['\"]",
             re.IGNORECASE,
@@ -626,15 +703,33 @@ def _parse_mysql_grants(mysql_sql: str, db_json_text: str | None) -> tuple[dict[
     return db_to_users, user_to_hash
 
 
+def _apply_mariadb_password_hash(db_user: str, phash: str) -> bool:
+    """Apply an existing MySQL password hash (*40HEX...) to MariaDB."""
+    if not phash or not re.match(r'^\*[A-Fa-f0-9]{40}$', phash):
+        return False
+    from services.database.manager import _has_sudo
+    if os.geteuid() != 0 and not _has_sudo():
+        return False
+    prefix = [] if os.geteuid() == 0 else ['sudo', '-n']
+    for sql in (
+        f"ALTER USER '{db_user}'@'localhost' IDENTIFIED VIA mysql_native_password USING '{phash}'; FLUSH PRIVILEGES;",
+        f"SET PASSWORD FOR '{db_user}'@'localhost' = '{phash}'; FLUSH PRIVILEGES;",
+    ):
+        try:
+            res = subprocess.run(prefix + ['mysql', '-e', sql], capture_output=True, text=True, timeout=5)
+            if res.returncode == 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Public Inspect API
 # ---------------------------------------------------------------------------
 
 def inspect_cpanel_archive(source_path: str | Path) -> dict:
-    """
-    Parse a cPanel cpmove archive or extracted directory without altering the system.
-    Returns structured manifest data for preview & selection.
-    """
+    """Parse a cPanel cpmove archive or extracted directory without altering the system."""
     default_php = SystemSetting.get('default_php', '8.3')
     warnings = []
 
@@ -653,8 +748,8 @@ def inspect_cpanel_archive(source_path: str | Path) -> dict:
         email = cp_data.get('CONTACTEMAIL') or contact_json.get('CONTACTEMAIL') or f'{username}@localhost'
         old_ip = cp_data.get('IP', '').strip()
         plan_name = cp_data.get('PLAN', '').strip()
+        owner_reseller = cp_data.get('OWNER', '').strip()
 
-        # Shell status from passwd or cp file
         shell_enabled = False
         passwd_text = src.read_text('passwd') or ''
         for line in passwd_text.splitlines():
@@ -666,7 +761,6 @@ def inspect_cpanel_archive(source_path: str | Path) -> dict:
         if cp_data.get('DEMO') == '1':
             warnings.append('Source cPanel account is marked DEMO=1.')
 
-        # Quota (bytes -> MB)
         quota_mb = -1
         quota_text = (src.read_text('quota') or '').strip()
         if quota_text.isdigit() and int(quota_text) > 0:
@@ -683,7 +777,6 @@ def inspect_cpanel_archive(source_path: str | Path) -> dict:
                 return int(val)
             return -1
 
-        # Domains: parse userdata/main or userdata/{username}/main, plus cp DNS keys, sds2, addons
         userdata_prefix = f'userdata/{username}' if src.exists(f'userdata/{username}/main') else 'userdata'
         main_yaml = _parse_cpanel_yaml(src.read_text(f'{userdata_prefix}/main') or '')
 
@@ -711,7 +804,6 @@ def inspect_cpanel_archive(source_path: str | Path) -> dict:
             if isinstance(d, str) and d.strip() and d.strip().lower() not in internal_addon_subs
         ]
 
-        # Fallback to cp/{user} DNS1..DNSn and addons / sds2 if userdata/main is absent
         if not main_domain and cp_data.get('DNS'):
             main_domain = cp_data['DNS'].strip().lower()
         for k, v in cp_data.items():
@@ -742,7 +834,6 @@ def inspect_cpanel_archive(source_path: str | Path) -> dict:
                 ordered_domains.append((sd, 'subdomain'))
                 seen_doms.add(sd)
 
-        # Fallback if still empty: inspect dnszones/
         if not ordered_domains:
             for zf in src.list_files('dnszones'):
                 if zf.endswith('.db'):
@@ -773,7 +864,6 @@ def inspect_cpanel_archive(source_path: str | Path) -> dict:
 
             php_ver = _map_cpanel_php_version(dom_yaml.get('phpversion', ''), default_php)
             framework = _detect_framework_in_source(src, rel_doc_root)
-
             has_htaccess = src.exists(f'homedir/{rel_doc_root}/.htaccess')
             has_ssl = _find_ssl_pair(src, dom) is not None
             if has_ssl:
@@ -783,16 +873,17 @@ def inspect_cpanel_archive(source_path: str | Path) -> dict:
                 'domain': dom,
                 'kind': kind,
                 'source_doc_root': rel_doc_root,
+                'raw_source_doc_root': raw_doc_root or f'/home/{username}/{rel_doc_root}',
                 'php_version': php_ver,
                 'framework': framework,
                 'has_htaccess': has_htaccess,
                 'has_ssl': has_ssl,
             })
 
-        # Databases
+        # MariaDB / MySQL databases
         mysql_sql = src.read_text('mysql.sql') or ''
         db_json_text = src.read_text('mysql/db.json') or src.read_text('db.json')
-        db_to_users, _ = _parse_mysql_grants(mysql_sql, db_json_text)
+        db_to_users, user_to_hash = _parse_mysql_grants(mysql_sql, db_json_text)
 
         databases = []
         for mf in src.list_files('mysql'):
@@ -806,20 +897,43 @@ def inspect_cpanel_archive(source_path: str | Path) -> dict:
             if db_name.lower() in SKIP_DB_NAMES:
                 continue
             users = db_to_users.get(db_name, [])
+            primary_u = users[0] if users else db_name[:64]
             databases.append({
                 'name': db_name,
+                'db_type': 'mariadb',
                 'archive_path': mf,
-                'db_user': users[0] if users else db_name[:64],
+                'db_user': primary_u,
                 'all_users': users,
+                'has_password_hash': primary_u in user_to_hash,
             })
 
-        # Mailboxes (homedir/etc/{domain}/passwd + quota)
+        # PostgreSQL databases (psql/ or pgsql/)
+        for pg_dir in ('psql', 'pgsql'):
+            for pf in src.list_files(pg_dir):
+                fname = Path(pf).name
+                if fname.endswith('.sql'):
+                    db_name = fname[:-4]
+                elif fname.endswith('.sql.gz'):
+                    db_name = fname[:-7]
+                else:
+                    continue
+                if db_name.lower() in ('postgres', 'template0', 'template1'):
+                    continue
+                databases.append({
+                    'name': db_name,
+                    'db_type': 'postgresql',
+                    'archive_path': pf,
+                    'db_user': username[:64],
+                    'all_users': [username[:64]],
+                    'has_password_hash': False,
+                })
+
+        # Mailboxes (homedir/etc/{domain}/passwd + shadow + quota)
         mailboxes = []
         etc_files = src.list_files('homedir/etc')
         seen_emails = set()
         for ef in etc_files:
             parts = ef.split('/')
-            # homedir/etc/{domain}/passwd
             if len(parts) == 4 and parts[3] == 'passwd':
                 mail_domain = parts[2].lower()
                 quota_map = {}
@@ -830,6 +944,15 @@ def inspect_cpanel_archive(source_path: str | Path) -> dict:
                         qbytes = qbytes.strip()
                         if qbytes.isdigit() and int(qbytes) > 0:
                             quota_map[qu.strip()] = max(1, int(int(qbytes) / (1024 * 1024)))
+
+                shadow_map = {}
+                s_text = src.read_text(f'homedir/etc/{mail_domain}/shadow') or ''
+                for sl in s_text.splitlines():
+                    if ':' in sl:
+                        su, shash = sl.split(':', 2)[:2]
+                        if su.strip() and shash.strip() and shash.strip() not in ('*', '!', '!!', 'x'):
+                            shadow_map[su.strip()] = shash.strip()
+
                 p_text = src.read_text(ef) or ''
                 for pl in p_text.splitlines():
                     if ':' not in pl:
@@ -847,7 +970,11 @@ def inspect_cpanel_archive(source_path: str | Path) -> dict:
                         'localpart': localpart,
                         'quota_mb': quota_map.get(localpart, 1024),
                         'has_maildir': src.exists(f'homedir/mail/{mail_domain}/{localpart}'),
+                        'has_shadow_hash': localpart in shadow_map,
                     })
+
+        # Email forwarders / virtual aliases (va/{domain} or valiases/{domain} or homedir/etc/{domain}/valiases)
+        mail_forwarders = _parse_mail_forwarders(src)
 
         # DNS zones
         dns_zones = []
@@ -882,6 +1009,7 @@ def inspect_cpanel_archive(source_path: str | Path) -> dict:
             'panel': 'cpanel',
             'username': username,
             'email': email,
+            'owner_reseller': owner_reseller,
             'shell_enabled': shell_enabled,
             'old_ip': old_ip,
             'plan_name': plan_name,
@@ -896,6 +1024,7 @@ def inspect_cpanel_archive(source_path: str | Path) -> dict:
             'parked_domains': parked_domains,
             'databases': databases,
             'mailboxes': mailboxes,
+            'mail_forwarders': mail_forwarders,
             'dns_zones': dns_zones,
             'ftp_accounts': ftp_accounts,
             'cron_jobs': cron_jobs,
@@ -904,8 +1033,36 @@ def inspect_cpanel_archive(source_path: str | Path) -> dict:
         }
 
 
+def _parse_mail_forwarders(src: _CpanelSource) -> list[dict]:
+    forwarders = []
+    seen = set()
+    candidate_files = []
+    for folder in ('va', 'valiases'):
+        candidate_files.extend(src.list_files(folder))
+    for ef in src.list_files('homedir/etc'):
+        if ef.endswith('/valiases'):
+            candidate_files.append(ef)
+
+    for cf in candidate_files:
+        parts = cf.split('/')
+        domain = parts[2].lower() if cf.startswith('homedir/etc/') and len(parts) >= 4 else Path(cf).name.lower()
+        text = src.read_text(cf) or ''
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith('#') or ':' not in line:
+                continue
+            src_part, dst_part = line.split(':', 1)
+            src_part = src_part.strip().lower()
+            source_email = src_part if '@' in src_part else f'{src_part}@{domain}'
+            targets = [t.strip() for t in dst_part.split(',') if t.strip() and not t.strip().startswith(':blackhole:') and not t.strip().startswith(':fail:')]
+            if not targets or source_email in seen:
+                continue
+            seen.add(source_email)
+            forwarders.append({'source': source_email, 'targets': targets})
+    return forwarders
+
+
 def _find_ssl_pair(src: _CpanelSource, domain: str) -> tuple[str, str] | None:
-    """Find matching SSL cert and private key paths inside the cPanel archive."""
     cert_candidates = []
     key_candidates = []
     for folder in ('sslcerts', 'ssl', 'homedir/ssl/certs'):
@@ -946,14 +1103,252 @@ def _parse_cpanel_cron(cron_text: str, username: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Migration Execution
+# Live Remote cPanel / WHM Server Operations (WHM API + SSH / SCP)
+# ---------------------------------------------------------------------------
+
+def _ssh_base_cmd(conn: dict) -> tuple[list[str], dict, str | None]:
+    """Build safe ssh/scp command prefix, env (for SSHPASS), and optional temp keyfile path."""
+    ssh_port = str(int(conn.get('ssh_port') or 22))
+    auth_mode = conn.get('ssh_auth_mode', 'password')
+    env = os.environ.copy()
+    key_file = None
+
+    common_opts = [
+        '-o', 'StrictHostKeyChecking=accept-new',
+        '-o', 'ConnectTimeout=15',
+        '-o', 'BatchMode=no' if auth_mode == 'password' else 'BatchMode=yes',
+    ]
+
+    if auth_mode == 'key' and conn.get('ssh_key'):
+        tf = tempfile.NamedTemporaryFile('w', suffix='.key', delete=False)
+        tf.write(conn['ssh_key'].strip() + '\n')
+        tf.close()
+        os.chmod(tf.name, 0o600)
+        key_file = tf.name
+        prefix = ['ssh', '-p', ssh_port, '-i', key_file] + common_opts
+        scp_prefix = ['scp', '-P', ssh_port, '-i', key_file] + common_opts
+        return (prefix, scp_prefix), env, key_file
+
+    password = conn.get('ssh_password', '')
+    if password:
+        if not shutil.which('sshpass'):
+            raise ValueError('sshpass is required for SSH password authentication. Install sshpass or use an SSH private key.')
+        env['SSHPASS'] = password
+        prefix = ['sshpass', '-e', 'ssh', '-p', ssh_port] + common_opts
+        scp_prefix = ['sshpass', '-e', 'scp', '-P', ssh_port] + common_opts
+        return (prefix, scp_prefix), env, None
+
+    prefix = ['ssh', '-p', ssh_port] + common_opts
+    scp_prefix = ['scp', '-P', ssh_port] + common_opts
+    return (prefix, scp_prefix), env, None
+
+
+def list_remote_accounts(conn: dict) -> list[dict]:
+    """
+    Fetch live cPanel accounts from a remote cPanel/WHM server.
+    Supports WHM JSON API (port 2087 + API token) or SSH (/var/cpanel/users/*).
+    """
+    host = (conn.get('host') or '').strip()
+    if not host or not re.match(r'^[A-Za-z0-9._:-]+$', host):
+        raise ValueError('Valid remote host/IP is required.')
+
+    whm_token = (conn.get('whm_token') or '').strip()
+    if whm_token:
+        import requests
+        whm_user = (conn.get('whm_user') or 'root').strip()
+        whm_port = int(conn.get('whm_port') or 2087)
+        verify_ssl = bool(conn.get('verify_ssl', False))
+        url = f'https://{host}:{whm_port}/json-api/listaccts?api.version=1'
+        resp = requests.get(
+            url,
+            headers={'Authorization': f'whm {whm_user}:{whm_token}'},
+            timeout=20,
+            verify=verify_ssl,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        meta = payload.get('metadata', {})
+        if meta.get('result') != 1:
+            raise ValueError(meta.get('reason') or 'WHM API rejected request.')
+        accounts = []
+        for acct in payload.get('data', {}).get('acct', []):
+            accounts.append({
+                'user': acct.get('user', ''),
+                'domain': acct.get('domain', ''),
+                'email': acct.get('email', ''),
+                'plan': acct.get('plan', ''),
+                'ip': acct.get('ip', ''),
+                'diskused': acct.get('diskused', ''),
+                'disklimit': acct.get('disklimit', ''),
+                'suspended': bool(int(acct.get('suspended', 0) or 0)),
+            })
+        return accounts
+
+    # SSH fallback: inspect /var/cpanel/users/* on remote cPanel host
+    ssh_user = (conn.get('ssh_user') or 'root').strip()
+    (ssh_cmd, _), env, key_file = _ssh_base_cmd(conn)
+    remote_py = (
+        "for f in /var/cpanel/users/*; do "
+        "[ -f \"$f\" ] || continue; "
+        "u=$(basename \"$f\"); "
+        "[ \"$u\" = \"system\" ] && continue; "
+        "dom=$(grep -m1 '^DNS=' \"$f\" | cut -d= -f2-); "
+        "eml=$(grep -m1 '^CONTACTEMAIL=' \"$f\" | cut -d= -f2-); "
+        "pln=$(grep -m1 '^PLAN=' \"$f\" | cut -d= -f2-); "
+        "susp=$(grep -m1 '^SUSPENDED=' \"$f\" | cut -d= -f2-); "
+        "printf '%s\\t%s\\t%s\\t%s\\t%s\\n' \"$u\" \"$dom\" \"$eml\" \"$pln\" \"${susp:-0}\"; "
+        "done"
+    )
+    try:
+        res = subprocess.run(
+            ssh_cmd + [f'{ssh_user}@{host}', remote_py],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if res.returncode != 0:
+            raise ValueError(res.stderr.strip() or 'Failed to connect via SSH.')
+        accounts = []
+        for line in res.stdout.splitlines():
+            parts = line.split('\t')
+            if parts and parts[0].strip():
+                accounts.append({
+                    'user': parts[0].strip(),
+                    'domain': parts[1].strip() if len(parts) > 1 else '',
+                    'email': parts[2].strip() if len(parts) > 2 else '',
+                    'plan': parts[3].strip() if len(parts) > 3 else '',
+                    'ip': host,
+                    'diskused': '',
+                    'disklimit': '',
+                    'suspended': (parts[4].strip() == '1') if len(parts) > 4 else False,
+                })
+        return accounts
+    finally:
+        if key_file:
+            Path(key_file).unlink(missing_ok=True)
+
+
+def iter_migrate_remote(conn: dict, usernames: list[str], options: dict | None = None):
+    """
+    Package and transfer cPanel account(s) via SSH pkgacct + SCP, then migrate each into W3Panel.
+    """
+    from services.migrators import get_staging_dir
+
+    host = (conn.get('host') or '').strip()
+    if not host or not re.match(r'^[A-Za-z0-9._:-]+$', host):
+        raise ValueError('Valid remote host/IP is required.')
+    if not usernames:
+        raise ValueError('Select at least one cPanel account to migrate.')
+
+    ssh_user = (conn.get('ssh_user') or 'root').strip()
+    (ssh_cmd, scp_cmd), env, key_file = _ssh_base_cmd(conn)
+    staging = get_staging_dir('cpanel')
+    summaries = []
+
+    try:
+        total = len(usernames)
+        for idx, acct_user in enumerate(usernames, start=1):
+            acct_user = acct_user.strip()
+            if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$', acct_user):
+                raise ValueError(f'Invalid remote cPanel username: {acct_user}')
+
+            base_pct = int(((idx - 1) / total) * 100)
+            span = 100 / total
+
+            yield {
+                'percent': min(99, base_pct + 2),
+                'step': f'[{idx}/{total}] Packaging {acct_user} on {host}...',
+                'line': f'>> [{idx}/{total}] Running pkgacct on {host} for "{acct_user}"...',
+            }
+
+            q_user = shlex.quote(acct_user)
+            pkg_cmd = (
+                f"if [ -x /usr/local/cpanel/scripts/pkgacct ]; then "
+                f"/usr/local/cpanel/scripts/pkgacct --allow-override {q_user} /tmp; "
+                f"else /scripts/pkgacct {q_user} /tmp; fi"
+            )
+            pkg_res = subprocess.run(
+                ssh_cmd + [f'{ssh_user}@{host}', pkg_cmd],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=1800,
+            )
+            if pkg_res.returncode != 0:
+                raise RuntimeError(f'pkgacct failed for {acct_user}: {(pkg_res.stderr or pkg_res.stdout)[-400:]}')
+
+            remote_tar = f'/tmp/cpmove-{acct_user}.tar.gz'
+            local_tar = staging / f'remote_cpmove-{acct_user}.tar.gz'
+
+            yield {
+                'percent': min(99, base_pct + int(span * 0.2)),
+                'step': f'[{idx}/{total}] Transferring {acct_user} archive...',
+                'line': f'>> Transferring {remote_tar} from {host} via SCP...',
+            }
+
+            try:
+                scp_res = subprocess.run(
+                    scp_cmd + [f'{ssh_user}@{host}:{remote_tar}', str(local_tar)],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=1800,
+                )
+                if scp_res.returncode != 0:
+                    raise RuntimeError(f'SCP transfer failed for {acct_user}: {scp_res.stderr[-300:]}')
+            finally:
+                subprocess.run(
+                    ssh_cmd + [f'{ssh_user}@{host}', f'rm -f {shlex.quote(remote_tar)}'],
+                    env=env,
+                    capture_output=True,
+                    timeout=30,
+                )
+
+            try:
+                acct_opts = dict(options or {})
+                acct_opts['target_username'] = acct_user if total > 1 else (acct_opts.get('target_username') or acct_user)
+                for evt in iter_migrate_cpanel_archive(local_tar, options=acct_opts):
+                    if evt.get('complete'):
+                        summaries.append(evt['summary'])
+                    else:
+                        scaled = base_pct + int(span * (0.25 + 0.75 * (evt['percent'] / 100.0)))
+                        yield {
+                            'percent': min(99, scaled),
+                            'step': f'[{idx}/{total}] {evt["step"]}',
+                            'line': evt['line'],
+                        }
+            finally:
+                local_tar.unlink(missing_ok=True)
+
+        merged = summaries[0] if len(summaries) == 1 else {
+            'accounts_migrated': len(summaries),
+            'accounts': summaries,
+            'websites': [w for s in summaries for w in s.get('websites', [])],
+            'databases': [d for s in summaries for d in s.get('databases', [])],
+            'mailboxes': [m for s in summaries for m in s.get('mailboxes', [])],
+            'dns_zones': [z for s in summaries for z in s.get('dns_zones', [])],
+            'warnings': [w for s in summaries for w in s.get('warnings', [])],
+        }
+        yield {
+            'percent': 100,
+            'step': 'Remote cPanel migration completed',
+            'line': f'>> Completed migration of {len(summaries)} account(s) from {host}.',
+            'complete': True,
+            'summary': merged,
+        }
+    finally:
+        if key_file:
+            Path(key_file).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Migration Execution (Archive / Directory)
 # ---------------------------------------------------------------------------
 
 def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = None):
     """
     Generator executing migration from a cPanel cpmove archive or extracted directory into W3Panel.
-    Yields progress dicts: {'percent': int, 'step': str, 'line': str}
-    and finishes by yielding {'percent': 100, 'step': 'Migration completed', 'complete': True, 'summary': dict}.
     """
     from services.webserver import (
         create_user_php_pool,
@@ -963,8 +1358,8 @@ def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = 
         sync_system_user_shell,
     )
     from services.webserver.manager import _get_users_base_dir, _has_sudo, _write_privileged_file
-    from services.database import create_database, generate_secure_password
-    from services.mail import create_mailbox
+    from services.database import create_database, create_database_user, grant_user_privileges, generate_secure_password
+    from services.mail import create_mailbox, set_mailbox_password_hash, create_mail_alias
     from services.mail.manager import VMAIL_BASE
     from services.dns import export_zone_file
     from services.ftp import create_ftp_user
@@ -1002,6 +1397,7 @@ def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = 
         'websites': [],
         'databases': [],
         'mailboxes': [],
+        'mail_forwarders': [],
         'dns_zones': [],
         'ftp_accounts': [],
         'cron_jobs': [],
@@ -1010,7 +1406,7 @@ def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = 
     }
 
     with _CpanelSource(source_path) as src:
-        # 1. Create or validate W3Panel user & package
+        # 1. User & Package + Reseller owner mapping
         yield _evt(12, 'Provisioning user account...', f'>> Provisioning W3Panel user "{target_username}"')
         user = User.objects.filter(username=target_username).first()
         if user:
@@ -1030,6 +1426,13 @@ def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = 
                         'ftp_limit': manifest['limits']['ftp'],
                     },
                 )
+            parent_reseller = None
+            owner_res = manifest.get('owner_reseller', '')
+            if owner_res and owner_res != 'root':
+                parent_reseller = User.objects.filter(username=owner_res, role='reseller').first()
+                if not parent_reseller:
+                    summary['warnings'].append(f'Source reseller "{owner_res}" not found in W3Panel; assigned directly under root admin.')
+
             account_pass = generate_secure_password(16)
             user = User.objects.create_user(
                 username=target_username,
@@ -1037,6 +1440,7 @@ def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = 
                 password=account_pass,
                 role='user',
                 package=pkg,
+                parent_reseller=parent_reseller,
                 shell_enabled=manifest['shell_enabled'],
             )
             summary['account_password'] = account_pass
@@ -1044,11 +1448,10 @@ def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = 
             sync_system_user_password(target_username, account_pass)
             yield _evt(18, 'Created user account', f'>> Created user "{target_username}" (email: {target_email})')
 
-        # Ensure PHP pool exists even if no websites are migrated
         default_php = SystemSetting.get('default_php', '8.3')
         create_user_php_pool(username=target_username, php_version=default_php)
 
-        # 2. Migrate websites, files, and SSL certificates
+        # 2. Websites, Parked Domain Aliases, .htaccess translation, Path Rewrites, SSL
         app_db_creds: list[dict] = []
         created_websites: dict[str, Website] = {}
         users_base = _get_users_base_dir()
@@ -1072,7 +1475,6 @@ def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = 
                 php_ver = dinfo['php_version']
                 doc_root = get_doc_root(target_username, dom, framework)
 
-                # Copy files from homedir/<rel_doc_root> into W3Panel doc_root
                 src_rel = dinfo['source_doc_root']
                 if framework == 'laravel' and src_rel.endswith('/public'):
                     copied = src.extract_subtree(f'homedir/{src_rel[:-7]}', doc_root.parent)
@@ -1085,11 +1487,12 @@ def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = 
 
                 if doc_root.exists():
                     app_db_creds.extend(_extract_app_db_credentials(doc_root))
-
-                if dinfo['has_htaccess']:
-                    summary['warnings'].append(
-                        f'{dom}: .htaccess detected; W3Panel uses Nginx (rewrite rules for WordPress/Laravel are handled automatically, review custom Apache rules).'
-                    )
+                    old_candidates = [
+                        dinfo.get('raw_source_doc_root', ''),
+                        f'/home/{old_user}/{src_rel}',
+                        f'/home/{old_user}/public_html',
+                    ]
+                    _rewrite_hardcoded_paths(doc_root, old_candidates, str(doc_root))
 
                 # SSL certificates
                 ssl_cert_path = ''
@@ -1123,6 +1526,22 @@ def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = 
                             ssl_enabled = True
                             summary['ssl_certs'].append(dom)
 
+                # .htaccess -> Nginx rules & .user.ini
+                extra_nginx_rules = ''
+                if dinfo['has_htaccess']:
+                    ht_text = src.read_text(f'homedir/{src_rel}/.htaccess') or ''
+                    nginx_rules, ini_lines, ht_warnings = _translate_htaccess(ht_text, ssl_enabled=ssl_enabled)
+                    extra_nginx_rules = nginx_rules
+                    summary['warnings'].extend(f'{dom}: {w}' for w in ht_warnings)
+                    if ini_lines and doc_root.is_dir():
+                        ini_file = doc_root / '.user.ini'
+                        existing_ini = ini_file.read_text(errors='replace') if ini_file.is_file() else ''
+                        added = [ln for ln in ini_lines if ln not in existing_ini]
+                        if added:
+                            ini_file.write_text((existing_ini.rstrip() + '\n' if existing_ini else '') + '\n'.join(added) + '\n')
+
+                aliases = manifest['parked_domains'] if dinfo['kind'] == 'primary' else None
+
                 site = Website.objects.create(
                     owner=user,
                     domain=dom,
@@ -1131,7 +1550,7 @@ def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = 
                     framework=framework,
                     ssl_enabled=ssl_enabled,
                 )
-                create_vhost(site, ssl_cert=ssl_cert_path, ssl_key=ssl_key_path)
+                create_vhost(site, ssl_cert=ssl_cert_path, ssl_key=ssl_key_path, aliases=aliases, extra_nginx_rules=extra_nginx_rules)
 
                 if _has_sudo():
                     subprocess.run(['sudo', '-n', 'chown', '-R', f'{target_username}:{target_username}', str(users_base / target_username / dom)], capture_output=True, timeout=30)
@@ -1139,20 +1558,20 @@ def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = 
                 created_websites[dom] = site
                 summary['websites'].append({'domain': dom, 'framework': framework, 'php_version': php_ver, 'files': copied})
 
-            if manifest['parked_domains']:
-                summary['warnings'].append(
-                    f'Parked domains detected ({", ".join(manifest["parked_domains"])}): add as server_name aliases in vhost editor if needed.'
-                )
-
-        # 3. Migrate databases & SQL dumps
+        # 3. Databases (MariaDB + PostgreSQL) & SQL dumps + password hash preservation
         if import_databases and manifest['databases']:
+            mysql_sql = src.read_text('mysql.sql') or ''
+            db_json_text = src.read_text('mysql/db.json') or src.read_text('db.json')
+            _, user_to_hash = _parse_mysql_grants(mysql_sql, db_json_text)
+
             cred_by_user = {c['db_user']: c['db_pass'] for c in app_db_creds if c.get('db_user') and c.get('db_pass')}
             total_dbs = len(manifest['databases'])
             for idx, db_info in enumerate(manifest['databases'], start=1):
                 db_name = db_info['name'][:64]
                 db_user = db_info['db_user'][:64]
+                db_type = db_info.get('db_type', 'mariadb')
                 pct = 48 + int((idx / max(total_dbs, 1)) * 18)
-                yield _evt(pct, f'Migrating database {db_name}...', f'>> [{idx}/{total_dbs}] Importing database {db_name}')
+                yield _evt(pct, f'Migrating {db_type} database {db_name}...', f'>> [{idx}/{total_dbs}] Importing {db_type} database {db_name}')
 
                 if Database.objects.filter(owner=user, name=db_name).exists():
                     if skip_existing:
@@ -1161,24 +1580,46 @@ def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = 
                     raise ValueError(f'Database "{db_name}" already exists for user "{target_username}".')
 
                 db_pass = cred_by_user.get(db_user) or generate_secure_password(16)
-                create_database(db_name, db_user, db_pass, db_type='mariadb')
+                create_database(db_name, db_user, db_pass, db_type=db_type)
+
+                hash_preserved = False
+                if db_type == 'mariadb' and db_user not in cred_by_user and db_user in user_to_hash:
+                    hash_preserved = _apply_mariadb_password_hash(db_user, user_to_hash[db_user])
+
+                # Grant any additional database users defined in mysql.sql / db.json
+                for extra_user in db_info.get('all_users', [])[1:]:
+                    extra_user = extra_user[:64]
+                    if not extra_user or extra_user == db_user:
+                        continue
+                    extra_pass = cred_by_user.get(extra_user) or generate_secure_password(16)
+                    create_database_user(extra_user, extra_pass, db_type=db_type)
+                    grant_user_privileges(db_name, extra_user, db_type=db_type)
+                    if db_type == 'mariadb' and extra_user not in cred_by_user and extra_user in user_to_hash:
+                        _apply_mariadb_password_hash(extra_user, user_to_hash[extra_user])
 
                 sql_bytes = src.read_bytes(db_info['archive_path']) or b''
                 if db_info['archive_path'].endswith('.gz') and sql_bytes:
                     sql_bytes = gzip.decompress(sql_bytes)
 
                 imported_sql = False
-                if sql_bytes and (_has_sudo() or os.geteuid() == 0) and shutil.which('mysql'):
+                if sql_bytes and (_has_sudo() or os.geteuid() == 0):
                     with tempfile.NamedTemporaryFile(suffix='.sql', delete=False) as tmp_sql:
                         tmp_sql.write(sql_bytes)
                         tmp_sql_path = Path(tmp_sql.name)
                     try:
-                        cmd = ['mysql', db_name] if os.geteuid() == 0 else ['sudo', '-n', 'mysql', db_name]
-                        with open(tmp_sql_path, 'rb') as sql_in:
-                            res = subprocess.run(cmd, stdin=sql_in, capture_output=True, timeout=120)
-                        imported_sql = (res.returncode == 0)
-                        if not imported_sql:
-                            summary['warnings'].append(f'SQL import warning for {db_name}: {res.stderr.decode(errors="replace")[:200]}')
+                        if db_type == 'mariadb' and shutil.which('mysql'):
+                            cmd = ['mysql', db_name] if os.geteuid() == 0 else ['sudo', '-n', 'mysql', db_name]
+                            with open(tmp_sql_path, 'rb') as sql_in:
+                                res = subprocess.run(cmd, stdin=sql_in, capture_output=True, timeout=180)
+                            imported_sql = (res.returncode == 0)
+                            if not imported_sql:
+                                summary['warnings'].append(f'SQL import warning for {db_name}: {res.stderr.decode(errors="replace")[:200]}')
+                        elif db_type == 'postgresql' and shutil.which('psql'):
+                            cmd = ['sudo', '-n', '-u', 'postgres', 'psql', '-d', db_name, '-f', str(tmp_sql_path)]
+                            res = subprocess.run(cmd, capture_output=True, timeout=180)
+                            imported_sql = (res.returncode == 0)
+                            if not imported_sql:
+                                summary['warnings'].append(f'PostgreSQL import warning for {db_name}: {res.stderr.decode(errors="replace")[:200]}')
                     finally:
                         tmp_sql_path.unlink(missing_ok=True)
 
@@ -1186,20 +1627,33 @@ def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = 
                 Database.objects.create(
                     owner=user,
                     name=db_name,
-                    db_type='mariadb',
+                    db_type=db_type,
                     db_user=db_user,
                     size_mb=size_mb,
                 )
                 summary['databases'].append({
                     'name': db_name,
+                    'db_type': db_type,
                     'db_user': db_user,
-                    'db_pass': '' if db_user in cred_by_user else db_pass,
+                    'db_pass': '' if (db_user in cred_by_user or hash_preserved) else db_pass,
                     'matched_app_config': db_user in cred_by_user,
+                    'hash_preserved': hash_preserved,
                     'sql_imported': imported_sql,
                 })
 
-        # 4. Migrate mailboxes & Maildir
-        if import_mailboxes and manifest['mailboxes']:
+        # 4. Mailboxes + Dovecot Shadow Hashes + Maildir + Forwarders
+        if import_mailboxes:
+            shadow_by_email: dict[str, str] = {}
+            for ef in src.list_files('homedir/etc'):
+                parts = ef.split('/')
+                if len(parts) == 4 and parts[3] == 'shadow':
+                    mdom = parts[2].lower()
+                    for sl in (src.read_text(ef) or '').splitlines():
+                        if ':' in sl:
+                            su, shash = sl.split(':', 2)[:2]
+                            if su.strip() and shash.strip() and shash.strip() not in ('*', '!', '!!', 'x'):
+                                shadow_by_email[f'{su.strip()}@{mdom}'] = shash.strip()
+
             total_mb = len(manifest['mailboxes'])
             for idx, mbox in enumerate(manifest['mailboxes'], start=1):
                 email_addr = mbox['email']
@@ -1220,6 +1674,11 @@ def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = 
                 if mbox['has_maildir']:
                     copied_mail = src.extract_subtree(f'homedir/mail/{mbox["domain"]}/{mbox["localpart"]}', maildir_dest)
 
+                hash_saved = False
+                if email_addr in shadow_by_email:
+                    h_res = set_mailbox_password_hash(email_addr, shadow_by_email[email_addr], str(maildir_dest))
+                    hash_saved = bool(h_res.get('success'))
+
                 Mailbox.objects.create(
                     owner=user,
                     email=email_addr,
@@ -1228,11 +1687,16 @@ def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = 
                 )
                 summary['mailboxes'].append({
                     'email': email_addr,
-                    'password': mbox_pass,
+                    'password': '' if hash_saved else mbox_pass,
+                    'hash_preserved': hash_saved,
                     'messages_copied': copied_mail,
                 })
 
-        # 5. Migrate DNS zones
+            for fwd in manifest.get('mail_forwarders', []):
+                create_mail_alias(fwd['source'], fwd['targets'])
+                summary['mail_forwarders'].append(fwd)
+
+        # 5. DNS Zones
         if import_dns and manifest['dns_zones']:
             target_ip = SystemSetting.get('server_ip', '').strip()
             old_ip = manifest.get('old_ip', '').strip()
@@ -1261,7 +1725,7 @@ def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = 
                 export_zone_file(zdom, created_recs)
                 summary['dns_zones'].append({'domain': zdom, 'records': len(created_recs)})
 
-        # 6. Migrate FTP accounts
+        # 6. FTP Accounts
         if import_ftp and manifest['ftp_accounts']:
             yield _evt(90, 'Migrating FTP accounts...', '>> Importing FTP accounts')
             for ftp in manifest['ftp_accounts']:
@@ -1275,7 +1739,7 @@ def iter_migrate_cpanel_archive(source_path: str | Path, options: dict | None = 
                 FTPAccount.objects.create(owner=user, username=fuser, directory=fdir)
                 summary['ftp_accounts'].append({'username': fuser, 'directory': fdir, 'password': fpass})
 
-        # 7. Migrate cron jobs
+        # 7. Cron Jobs
         if import_cron and manifest['cron_jobs']:
             yield _evt(95, 'Migrating cron jobs...', '>> Importing scheduled cron jobs')
             for cj in manifest['cron_jobs']:
@@ -1305,3 +1769,8 @@ def migrate_cpanel_archive(source_path: str | Path, options: dict | None = None,
         if progress_cb and 'line' in evt:
             progress_cb(evt['percent'], evt['step'], evt['line'])
     return summary
+
+
+# Standardized Migrator Plugin Interface
+inspect = inspect_cpanel_archive
+iter_migrate = iter_migrate_cpanel_archive

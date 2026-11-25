@@ -478,7 +478,7 @@ def get_system_tuning_status(php_version: str = '8.3') -> dict:
     }
 
 
-def create_vhost(website, ssl_cert: str = '', ssl_key: str = '') -> dict:
+def create_vhost(website, ssl_cert: str = '', ssl_key: str = '', aliases: list = None, extra_nginx_rules: str = '') -> dict:
     """
     Create or update VirtualHost configuration and document root for a domain.
     Provisions dedicated per-tenant PHP-FPM pool for isolated execution.
@@ -568,6 +568,8 @@ def create_vhost(website, ssl_cert: str = '', ssl_key: str = '') -> dict:
         ssl_cert=ssl_cert,
         ssl_key=ssl_key,
         proxy_real_ip=proxy_real_ip,
+        aliases=aliases,
+        extra_nginx_rules=extra_nginx_rules,
     )
 
     # 4. Save Vhost File
@@ -761,6 +763,8 @@ def _generate_nginx_config(
     ssl_cert: str = '',
     ssl_key: str = '',
     proxy_real_ip: bool = False,
+    aliases: list = None,
+    extra_nginx_rules: str = '',
 ) -> str:
     """Build Nginx vhost block with per-user socket, security headers, static caching, and reverse proxy support."""
     php_sock = get_user_php_socket(username, php_version)
@@ -861,12 +865,22 @@ def _generate_nginx_config(
     ssl_ciphers HIGH:!aNULL:!MD5;
 """
 
+    server_names = [domain, f"www.{domain}"]
+    for alias in (aliases or []):
+        alias = str(alias).strip().lower()
+        if alias and alias not in server_names:
+            server_names.append(alias)
+            if not alias.startswith('www.'):
+                server_names.append(f"www.{alias}")
+    server_name_line = " ".join(server_names)
+    extra_rules_block = f"\n{extra_nginx_rules.rstrip()}\n" if extra_nginx_rules and extra_nginx_rules.strip() else ""
+
     config = f"""# W3Panel VirtualHost Configuration for {domain}
 # Tenant: {username or 'system'} | Mode: {framework} | Reverse Proxy Real-IP: {'Enabled' if proxy_real_ip else 'Disabled (Direct)'}
 server {{
     listen 80;
     listen [::]:80;
-    server_name {domain} www.{domain};
+    server_name {server_name_line};
     root {doc_root};
     index index.php index.html index.htm;
 {ssl_block}
@@ -884,7 +898,7 @@ server {{
         deny all;
         return 404;
     }}
-{routes_and_backend}
+{extra_rules_block}{routes_and_backend}
 }}
 """
     return config
