@@ -63,9 +63,9 @@
         <div id="terminal-screen" @click="if (!window.getSelection().toString()) $refs.cmdInput?.focus()" class="p-4 font-mono text-xs text-gray-200 overflow-y-auto space-y-2 h-[500px] bg-gray-950/95 leading-relaxed selection:bg-blue-600 selection:text-white cursor-text">
             <template x-for="(entry, index) in history" :key="index">
                 <div class="space-y-1">
-                    <div class="flex items-center gap-1.5 text-gray-400">
-                        <span class="text-red-400 font-bold">root@w3panel</span>:<span class="text-blue-400 font-semibold" x-text="entry.cwd || '/root'"></span>#
-                        <span class="text-white font-semibold" x-text="entry.cmd"></span>
+                    <div class="flex items-baseline gap-1.5 text-gray-400">
+                        <span class="shrink-0"><span class="text-red-400 font-bold">root@w3panel</span>:<span class="text-blue-400 font-semibold" x-text="entry.cwd || '/root'"></span>#</span>
+                        <span class="text-white font-semibold break-all" x-text="entry.cmd"></span>
                     </div>
                     <pre x-show="entry.output" class="whitespace-pre-wrap text-gray-300 pl-4 border-l border-gray-800 text-xs font-mono" x-text="entry.output"></pre>
                     <pre x-show="entry.error" class="whitespace-pre-wrap text-red-400 pl-4 border-l border-red-500/40 text-xs font-mono" x-text="entry.error"></pre>
@@ -91,7 +91,7 @@ function adminTerminal() {
     return {
         currentCommand: '',
         loading: false,
-        cwd: '/root',
+        cwd: '{{ initial_cwd|default:"/root"|escapejs }}',
         history: [],
         cmdList: [],
         cmdIndex: -1,
@@ -99,6 +99,14 @@ function adminTerminal() {
         async executeCommand() {
             const cmd = this.currentCommand.trim();
             if (!cmd || this.loading) return;
+
+            if (cmd === 'clear') {
+                this.cmdList.push(cmd);
+                this.cmdIndex = this.cmdList.length;
+                this.currentCommand = '';
+                this.clearConsole();
+                return;
+            }
 
             this.cmdList.push(cmd);
             this.cmdIndex = this.cmdList.length;

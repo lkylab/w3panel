@@ -1397,9 +1397,19 @@ def user_sso(request):
     return redirect('user_dashboard')
 
 
+def _get_user_terminal_home(user):
+    user_home = Path(f"/home/{user.username}")
+    if not user_home.exists():
+        user_home = Path(f"/tmp/w3panel_test/users/{user.username}")
+        user_home.mkdir(parents=True, exist_ok=True)
+    return str(user_home)
+
+
 def user_terminal(request):
     """Web Terminal interface for tenant user."""
     user = request.panel_user
+    user_home = _get_user_terminal_home(user)
+    request.session['user_terminal_cwd'] = user_home
     return render(request, 'user/terminal.html', {
         **_user_sidebar_context(request, 'terminal'),
         'shell_enabled': getattr(user, 'shell_enabled', False),
@@ -1427,15 +1437,13 @@ def user_terminal_exec(request):
     if any(b in cmd for b in blocked):
         return JsonResponse({'stderr': 'Command rejected by security filter.', 'returncode': 1})
 
-    user_home = Path(f"/home/{user.username}")
-    if not user_home.exists():
-        user_home = Path(f"/tmp/w3panel_test/users/{user.username}")
-        user_home.mkdir(parents=True, exist_ok=True)
+    user_home = _get_user_terminal_home(user)
 
     try:
         import pwd
         from services.webserver.manager import _has_sudo
-        
+        from packages.core.utils import run_terminal_command
+
         posix_user_exists = False
         try:
             pwd.getpwnam(user.username)
@@ -1443,18 +1451,17 @@ def user_terminal_exec(request):
         except KeyError:
             posix_user_exists = False
 
-        if _has_sudo() and posix_user_exists:
-            run_cmd = ['sudo', '-n', '-u', user.username, 'bash', '-c', f"cd '{user_home}' && {cmd}"]
-        else:
-            run_cmd = ['bash', '-c', f"cd '{user_home}' && {cmd}"]
-
-        res = subprocess.run(run_cmd, capture_output=True, text=True, timeout=15)
-        return JsonResponse({
-            'stdout': res.stdout,
-            'stderr': res.stderr,
-            'returncode': res.returncode,
-            'cwd': f"~/{Path(user_home).name}",
-        })
+        result = run_terminal_command(
+            request,
+            cmd,
+            default_cwd=user_home,
+            session_key='user_terminal_cwd',
+            sudo_user=user.username,
+            use_sudo=_has_sudo() and posix_user_exists,
+            timeout=15,
+            home_dir=user_home,
+        )
+        return JsonResponse(result)
     except subprocess.TimeoutExpired:
         return JsonResponse({'stderr': 'Command execution timed out after 15 seconds.', 'returncode': 124})
     except Exception as e:

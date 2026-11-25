@@ -394,11 +394,13 @@ admin_user_impersonate = admin_user_autologin
 
 def admin_terminal(request):
     """Admin Web Terminal Console."""
-    server_ip = request.META.get('SERVER_NAME', '127.0.0.1')
+    from services.webserver.manager import _has_sudo
+    default_cwd = '/root' if (_has_sudo() or os.geteuid() == 0) else str(Path.home())
+    request.session['admin_terminal_cwd'] = default_cwd
     return render(request, 'admin/terminal.html', {
         **_sidebar_context('terminal'),
         'active_section': 'services',
-        'server_ip': server_ip,
+        'initial_cwd': default_cwd,
     })
 
 
@@ -417,18 +419,18 @@ def admin_terminal_exec(request):
 
     try:
         from services.webserver.manager import _has_sudo
-        if _has_sudo():
-            run_cmd = ['sudo', '-n', 'bash', '-c', cmd]
-        else:
-            run_cmd = ['bash', '-c', cmd]
-
-        res = subprocess.run(run_cmd, capture_output=True, text=True, timeout=20)
-        return JsonResponse({
-            'stdout': res.stdout,
-            'stderr': res.stderr,
-            'returncode': res.returncode,
-            'cwd': '/root',
-        })
+        from packages.core.utils import run_terminal_command
+        has_sudo = _has_sudo()
+        default_cwd = '/root' if (has_sudo or os.geteuid() == 0) else str(Path.home())
+        result = run_terminal_command(
+            request,
+            cmd,
+            default_cwd=default_cwd,
+            session_key='admin_terminal_cwd',
+            use_sudo=has_sudo,
+            timeout=20,
+        )
+        return JsonResponse(result)
     except subprocess.TimeoutExpired:
         return JsonResponse({'stderr': 'Command execution timed out after 20 seconds.', 'returncode': 124})
     except Exception as e:

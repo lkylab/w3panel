@@ -158,11 +158,19 @@ class AuthAndRoleTests(TestCase):
         resp_admin_term = self.client.get('/terminal/')
         self.assertEqual(resp_admin_term.status_code, 200)
 
-        # Admin terminal exec safe command
+        # Admin terminal exec safe command & cwd persistence
         resp_admin_exec = self.client.post('/terminal/exec/', {'command': 'echo admin_ok'})
         self.assertEqual(resp_admin_exec.status_code, 200)
         data = resp_admin_exec.json()
         self.assertIn('admin_ok', data.get('stdout', ''))
+
+        resp_admin_cd = self.client.post('/terminal/exec/', {'command': 'cd /tmp'})
+        self.assertEqual(resp_admin_cd.status_code, 200)
+        self.assertEqual(resp_admin_cd.json().get('cwd'), '/tmp')
+
+        resp_admin_pwd = self.client.post('/terminal/exec/', {'command': 'pwd'})
+        self.assertEqual(resp_admin_pwd.status_code, 200)
+        self.assertEqual(resp_admin_pwd.json().get('stdout', '').strip(), '/tmp')
 
         # Admin terminal blocked command
         resp_admin_blocked = self.client.post('/terminal/exec/', {'command': 'rm -rf /'})
@@ -188,6 +196,14 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(resp_user_exec_en.status_code, 200)
         user_data = resp_user_exec_en.json()
         self.assertIn('user_ok', user_data.get('stdout', ''))
+
+        resp_user_cd = user_client.post('/user/terminal/exec/', {'command': 'cd /tmp'})
+        self.assertEqual(resp_user_cd.status_code, 200)
+        self.assertEqual(resp_user_cd.json().get('cwd'), '/tmp')
+
+        resp_user_pwd = user_client.post('/user/terminal/exec/', {'command': 'pwd'})
+        self.assertEqual(resp_user_pwd.status_code, 200)
+        self.assertEqual(resp_user_pwd.json().get('stdout', '').strip(), '/tmp')
 
     def test_create_account_role_restrictions(self):
         self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
