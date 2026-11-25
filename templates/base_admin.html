@@ -20,7 +20,7 @@ tailwind.config = { darkMode: 'class' }
     <aside class="fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-slate-800 bg-slate-900 text-slate-300 transition-all duration-200" :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'">
         <!-- Brand Header -->
         <div class="flex h-14 items-center justify-between border-b border-slate-800 px-4 bg-slate-950/60">
-            <a href="/dashboard" class="flex items-center gap-2.5 font-bold text-white tracking-wide">
+            <a href="{% if not initial_setup_completed and panel_user and panel_user.role == 'admin' %}/wizards/{% else %}/dashboard{% endif %}" class="flex items-center gap-2.5 font-bold text-white tracking-wide">
                 <div class="flex items-center justify-center size-8 rounded-lg bg-blue-600 text-white font-black text-xs shadow-sm shadow-blue-500/30">
                     W3
                 </div>
@@ -32,6 +32,7 @@ tailwind.config = { darkMode: 'class' }
             <span class="inline-flex items-center rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium text-blue-400 border border-blue-500/20">v2.0</span>
         </div>
 
+        {% if initial_setup_completed or not panel_user or panel_user.role != 'admin' %}
         <!-- Search Features Input -->
         <div class="p-2.5 border-b border-slate-800/80 bg-slate-950/30">
             <div class="relative">
@@ -74,6 +75,14 @@ tailwind.config = { darkMode: 'class' }
             {% include "admin/_sidebar_section.html" with id="settings" icon="ti ti-adjustments" title="Server Configuration" active_page=active_page items=sidebar_settings active_section=active_section %}
             {% include "admin/_sidebar_section.html" with id="security" icon="ti ti-shield-lock" title="Security Center" active_page=active_page items=sidebar_security active_section=active_section %}
         </nav>
+        {% else %}
+        <nav class="flex-1 overflow-y-auto p-2.5 space-y-1 text-xs">
+            <a href="/wizards/" class="relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-semibold text-white bg-blue-600 dark:bg-[#6366f1] shadow-sm transition outline-none">
+                <i class="ti ti-wand text-sm shrink-0"></i>
+                <span>Initial Setup Wizard</span>
+            </a>
+        </nav>
+        {% endif %}
 
         <!-- Sidebar Footer -->
         <div class="p-3 border-t border-slate-800 bg-slate-950/40 text-[11px] text-slate-400 flex items-center justify-between">
@@ -108,11 +117,13 @@ tailwind.config = { darkMode: 'class' }
                         <i class="ti ti-moon text-base"></i>
                     </button>
 
+                    {% if initial_setup_completed or not panel_user or panel_user.role != 'admin' %}
                     <!-- Quick Switch to Client Accounts -->
                     <a href="/users/" class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-xs font-bold transition shadow-xs" title="View all accounts and launch W3Client Portal">
                         <i class="ti ti-layout-grid"></i>
                         <span>List Accounts / Client Portal</span>
                     </a>
+                    {% endif %}
 
                     <!-- Server Load Average -->
                     {% if metrics %}

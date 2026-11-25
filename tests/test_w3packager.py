@@ -12,6 +12,7 @@ from packages.core.models import User, Website, Package, SystemSetting
 class W3PackagerTests(TestCase):
     def setUp(self):
         self.client = Client()
+        SystemSetting.set('initial_setup_completed', 'true')
         self.admin = User.objects.create_user('packager_admin', 'admin@packager.local', 'AdminPass123!', role='admin')
         # Configure admin session
         session = self.client.session

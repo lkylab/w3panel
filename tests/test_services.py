@@ -527,6 +527,8 @@ class HostingServicesTests(TestCase):
         self.assertFalse(CronJob.objects.filter(id=cj.id).exists())
 
         # 5. Admin GET cron page
+        from packages.core.models import SystemSetting
+        SystemSetting.set('initial_setup_completed', 'true')
         admin_user = User.objects.create_user('admin_cron_test', 'admin_cron@test.com', 'Pass123!', role='admin')
         self.client.force_login(admin_user)
         admin_session = self.client.session

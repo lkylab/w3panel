@@ -294,6 +294,17 @@ class RoleEnforcementMiddleware:
                     from django.shortcuts import redirect
                     return redirect('user_login')
 
+            if role == 'admin' and port not in (USER_PORT, 12083):
+                from .models import SystemSetting
+                is_wizard_route = path == '/wizards' or path.startswith('/wizards/')
+                is_metrics_route = path in ('/api/metrics/', '/api/metrics')
+                if (not is_wizard_route and
+                    not path.startswith(API_PREFIX) and
+                    not is_metrics_route and
+                    SystemSetting.get('initial_setup_completed', 'false') != 'true'):
+                    from django.shortcuts import redirect
+                    return redirect('admin_wizards')
+
         return self.get_response(request)
 
 

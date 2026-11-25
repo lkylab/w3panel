@@ -7,10 +7,12 @@ from packages.core.models import User, Package, LoginToken
 
 class AuthAndRoleTests(TestCase):
     def setUp(self):
+        from packages.core.models import SystemSetting
         self.client = Client()
         self.admin = User.objects.create_user('admin_test', 'admin@local.test', 'Pass123!', role='admin')
         self.user = User.objects.create_user('client_test', 'user@local.test', 'Pass123!', role='user')
         self.package = Package.objects.create(name='Pro Plan', disk_limit_mb=10000, bandwidth_limit_gb=50)
+        SystemSetting.set('initial_setup_completed', 'true')
 
     def test_user_creation_and_roles(self):
         self.assertEqual(self.admin.role, 'admin')
@@ -38,14 +40,60 @@ class AuthAndRoleTests(TestCase):
         self.assertEqual(self.client.session.get('user_id'), self.admin.id)
 
     def test_first_login_redirects_to_wizard_until_completed(self):
+        from unittest.mock import patch
         from packages.core.models import SystemSetting
         SystemSetting.set('initial_setup_completed', 'false')
         first_resp = self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
         self.assertRedirects(first_resp, '/wizards/', fetch_redirect_response=False)
 
+        # While incomplete, admin cannot move to other pages or revisit login
+        for blocked_path in ('/login/', '/dashboard/', '/users/', '/settings/', '/services/cron/', '/software/w3packager/'):
+            blocked_resp = self.client.get(blocked_path)
+            self.assertRedirects(blocked_resp, '/wizards/', fetch_redirect_response=False)
+
+        # Wizard renders clean single step numbers and locked navigation
+        with patch('apps.admin.views.subprocess.run') as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = ''
+            wiz_resp = self.client.get('/wizards/')
+        self.assertEqual(wiz_resp.status_code, 200)
+        for label in ('Network', 'Web', 'PHP', 'Database', 'Mail', 'FTP', 'Finish'):
+            self.assertContains(wiz_resp, f'<span class="truncate">{label}</span>', html=False)
+        for dup in ('1. Network', '2. Web', '3. PHP', '4. Database', '5. Mail', '6. FTP', '7. Finish'):
+            self.assertNotContains(wiz_resp, dup)
+        self.assertNotContains(wiz_resp, 'href="/users/"')
+        self.assertNotContains(wiz_resp, 'href="/dashboard"')
+
+        # Failed SSE provisioning keeps wizard mandatory
+        with patch('apps.admin.views.subprocess.run') as mock_run, \
+             patch('apps.admin.views.shutil.which', return_value=None), \
+             patch('apps.admin.views.Path.exists', return_value=False), \
+             patch('apps.admin.views._stream_cmd', side_effect=[iter(['>> Hit:1 ...']), iter(['>> [ERROR] apt failed'])]):
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = ''
+            err_sse = self.client.post('/wizards/provision/', {
+                'server_hostname': 'test.host.com',
+                'webserver_choice': 'nginx',
+                'default_php': '8.3',
+            })
+            body = b''.join(err_sse.streaming_content).decode()
+            self.assertIn('"status": "error"', body)
+        self.assertEqual(SystemSetting.get('initial_setup_completed'), 'false')
+        self.assertRedirects(self.client.get('/dashboard/'), '/wizards/', fetch_redirect_response=False)
+
+        # Logout remains accessible even before setup is completed
+        logout_resp = self.client.get('/logout/')
+        self.assertRedirects(logout_resp, '/login/', fetch_redirect_response=False)
+
         SystemSetting.set('initial_setup_completed', 'true')
         next_resp = self.client.post('/login/', {'username': 'admin_test', 'password': 'Pass123!'})
         self.assertRedirects(next_resp, '/dashboard/', fetch_redirect_response=False)
+        with patch('apps.admin.views.subprocess.run') as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = ''
+            dash_resp = self.client.get('/dashboard/')
+        self.assertEqual(dash_resp.status_code, 200)
+        self.assertContains(dash_resp, 'href="/users/"')
 
     def test_invalid_login_fails(self):
         response = self.client.post('/login/', {'username': 'admin_test', 'password': 'WrongPassword!'})
@@ -114,7 +162,8 @@ class AuthAndRoleTests(TestCase):
 
             resp_get = self.client.get('/wizards/')
             self.assertEqual(resp_get.status_code, 200)
-            self.assertContains(resp_get, '3. PHP')
+            self.assertNotContains(resp_get, '3. PHP')
+            self.assertContains(resp_get, '<span class="truncate">PHP</span>', html=False)
             self.assertContains(resp_get, 'name="php_versions"')
             self.assertContains(resp_get, 'PHP 8.4')
             self.assertContains(resp_get, 'PHP 8.2')

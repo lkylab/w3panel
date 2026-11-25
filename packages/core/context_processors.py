@@ -33,6 +33,7 @@ def panel_context(request):
         'panel_user': getattr(request, 'panel_user', None),
         'impersonated_by': impersonated_by,
         'admin_panel_url': admin_panel_url,
+        'initial_setup_completed': SystemSetting.get('initial_setup_completed', 'false') == 'true',
     }
 
 

@@ -88,7 +88,13 @@ def admin_login(request):
             return redirect('admin_dashboard')
         except ValueError as e:
             return render(request, 'login.html', {'error': str(e), 'username': username, 'panel_type': 'host'})
-    
+
+    uid = request.session.get('user_id')
+    if uid:
+        existing_user = User.objects.filter(pk=uid, is_active=True).first()
+        if existing_user and existing_user.role == 'admin' and SystemSetting.get('initial_setup_completed', 'false') != 'true':
+            return redirect('admin_wizards')
+
     return render(request, 'login.html', {'panel_type': 'host'})
 
 
@@ -3011,7 +3017,7 @@ def _run_privileged(cmd_args: list, timeout: int = 10):
     return None
 
 
-def _prepare_wizard_setup(post_data, stack_status):
+def _prepare_wizard_setup(post_data, stack_status, mark_completed=True):
     """Persist wizard settings and return (install_pkgs, services_to_start, opts)."""
     server_hostname = post_data.get('server_hostname', '').strip() or platform.node()
     server_ip = post_data.get('server_ip', '').strip()
@@ -3057,7 +3063,8 @@ def _prepare_wizard_setup(post_data, stack_status):
     SystemSetting.set('mail_dkim_enabled', 'true' if enable_dkim else 'false')
     SystemSetting.set('ftp_stack_enabled', 'true' if enable_ftp else 'false')
     SystemSetting.set('podman_enabled', 'true' if enable_podman else 'false')
-    SystemSetting.set('initial_setup_completed', 'true')
+    if mark_completed:
+        SystemSetting.set('initial_setup_completed', 'true')
 
     install_pkgs = []
     services_to_start = []
@@ -3125,7 +3132,7 @@ def admin_wizard_provision(request):
     from services.database import apply_database_tuning
 
     stack_status = get_server_stack_status()
-    install_pkgs, services_to_start, opts = _prepare_wizard_setup(request.POST, stack_status)
+    install_pkgs, services_to_start, opts = _prepare_wizard_setup(request.POST, stack_status, mark_completed=False)
 
     def event_stream():
         def sse(payload):
@@ -3200,6 +3207,7 @@ def admin_wizard_provision(request):
                 'error': 'One or more packages failed to install. Check the log above.',
             })
         else:
+            SystemSetting.set('initial_setup_completed', 'true')
             yield sse({
                 'status': 'complete',
                 'percent': 100,
