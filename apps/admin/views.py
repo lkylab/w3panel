@@ -885,7 +885,7 @@ def admin_services_status(request):
                 'php': ['php-fpm', 'php-mysql', 'php-pgsql', 'php-curl', 'php-zip', 'php-gd', 'php-mbstring', 'php-xml'],
                 'certbot': ['certbot', 'python3-certbot-nginx'],
                 'postfix': ['postfix', 'opendkim', 'opendkim-tools'],
-                'dovecot': ['dovecot-core', 'dovecot-imapd', 'dovecot-pop3d', 'dovecot-lmtpd', 'dovecot-sieve'],
+                'dovecot': ['dovecot-core', 'dovecot-imapd', 'dovecot-pop3d', 'dovecot-lmtpd', 'dovecot-sieve', 'dovecot-managesieved'],
             }
             if service_name not in pkg_map:
                 messages.error(request, f'Unknown service: {service_name}')
@@ -939,7 +939,7 @@ def admin_services_status(request):
                 'redis': ['redis-server'],
                 'ufw': ['ufw'],
                 'postfix': ['postfix', 'opendkim', 'opendkim-tools'],
-                'dovecot': ['dovecot-core', 'dovecot-imapd', 'dovecot-pop3d', 'dovecot-lmtpd', 'dovecot-sieve'],
+                'dovecot': ['dovecot-core', 'dovecot-imapd', 'dovecot-pop3d', 'dovecot-lmtpd', 'dovecot-sieve', 'dovecot-managesieved'],
             }
             if service_name not in pkg_map:
                 messages.error(request, f'Cannot uninstall service: {service_name}')
@@ -967,7 +967,7 @@ def admin_services_status(request):
             return redirect('admin_services_status')
 
         elif action in ('start', 'stop', 'restart') and service_name:
-            allowed_services = {'nginx', 'mariadb', 'mysql', 'postgresql', 'php8.3-fpm', 'ufw', 'ssh', 'pgadmin4', 'postfix', 'dovecot'}
+            allowed_services = {'nginx', 'mariadb', 'mysql', 'postgresql', 'php8.3-fpm', 'ufw', 'ssh', 'pgadmin4', 'postfix', 'postfix@-', 'dovecot'}
             if service_name not in allowed_services:
                 messages.error(request, f'Invalid service: {service_name}')
                 return redirect('admin_services_status')
@@ -981,7 +981,12 @@ def admin_services_status(request):
                         if not cfg_res.get('success'):
                             messages.error(request, cfg_res.get('error', 'Failed to configure pgadmin4.service.'))
                             return redirect('admin_services_status')
-                res = _run_privileged(['systemctl', action, service_name], timeout=15)
+                unit_name = service_name
+                if service_name == 'postfix':
+                    chk = subprocess.run(['systemctl', 'cat', 'postfix@-.service'], capture_output=True, timeout=3)
+                    if chk.returncode == 0:
+                        unit_name = 'postfix@-'
+                res = _run_privileged(['systemctl', action, unit_name], timeout=15)
                 if res is None:
                     messages.error(request, f'Insufficient privileges to {action} {service_name}.')
                 elif res.returncode != 0:
@@ -1002,7 +1007,7 @@ def admin_services_status(request):
         {'name': 'php8.3-fpm', 'display': 'PHP-FPM 8.3 Daemon', 'icon': 'ti ti-brand-php', 'cmds': ('php-fpm8.3',), 'units': ('php8.3-fpm',), 'desc': 'PHP FastCGI Process Manager for VirtualHosts'},
         {'name': 'ufw', 'display': 'UFW Host Firewall', 'icon': 'ti ti-shield', 'cmds': ('ufw',), 'units': ('ufw',), 'desc': 'Host Inbound Access Firewall'},
         {'name': 'ssh', 'display': 'SSH Remote Access', 'icon': 'ti ti-terminal-2', 'cmds': ('sshd',), 'units': ('ssh', 'sshd'), 'desc': 'Secure Shell Remote Administration'},
-        {'name': 'postfix', 'display': 'Postfix Mail Server', 'icon': 'ti ti-mail', 'cmds': ('postfix',), 'units': ('postfix',), 'desc': 'Mail Transport Agent for Outbound & Inbound Email (Ports 25 & 587)'},
+        {'name': 'postfix', 'display': 'Postfix Mail Server', 'icon': 'ti ti-mail', 'cmds': ('postfix',), 'units': ('postfix@-', 'postfix'), 'desc': 'Mail Transport Agent for Outbound & Inbound Email (Ports 25 & 587)'},
         {'name': 'dovecot', 'display': 'Dovecot IMAP Server', 'icon': 'ti ti-inbox', 'cmds': ('dovecot',), 'units': ('dovecot',), 'desc': 'Secure IMAP/POP3 Mail Storage Server (Ports 993 & 995)'},
     ]
 
@@ -1020,7 +1025,8 @@ def admin_services_status(request):
                     res = subprocess.run(['systemctl', 'is-active', unit], capture_output=True, text=True, timeout=2)
                     if res.stdout.strip() == 'active':
                         s['status'] = 'running'
-                        s['name'] = unit
+                        if unit != 'postfix@-':
+                            s['name'] = unit
                         break
                 except Exception:
                     pass
@@ -1105,7 +1111,7 @@ def admin_service_install_stream(request):
         'phpmyadmin': ['phpmyadmin', 'php-mysql', 'php-mbstring', 'php-xml'],
         'pgadmin4': ['pgadmin4-web'],
         'postfix': ['postfix', 'opendkim', 'opendkim-tools'],
-        'dovecot': ['dovecot-core', 'dovecot-imapd', 'dovecot-pop3d', 'dovecot-lmtpd', 'dovecot-sieve'],
+        'dovecot': ['dovecot-core', 'dovecot-imapd', 'dovecot-pop3d', 'dovecot-lmtpd', 'dovecot-sieve', 'dovecot-managesieved'],
         'snappymail': [],
     }
     if service_name not in pkg_map:
@@ -1530,7 +1536,7 @@ def get_server_stack_status():
         'db_postgresql': _check(('psql', 'postgres'), 'postgresql'),
         'tool_phpmyadmin': {'installed': db_tools['phpmyadmin_available'], 'active': db_tools['phpmyadmin_available']},
         'tool_pgadmin4': {'installed': db_tools['pgadmin4_available'], 'active': db_tools['pgadmin4_running']},
-        'mail_postfix': _check('postfix'),
+        'mail_postfix': _check('postfix', ('postfix@-', 'postfix')),
         'mail_dovecot': _check('dovecot'),
         'ftp_pureftpd': _check('pure-ftpd', 'pure-ftpd'),
         'security_ufw': _check('ufw'),
@@ -3518,6 +3524,7 @@ def _prepare_wizard_setup(post_data, stack_status, mark_completed=True):
     enable_mail = post_data.get('enable_mail') in ('1', 'true', 'on')
     spam_filter = post_data.get('spam_filter', 'rspamd')
     enable_dkim = post_data.get('enable_dkim') in ('1', 'true', 'on')
+    enable_snappymail = enable_mail and (post_data.get('enable_snappymail') in ('1', 'true', 'on'))
     enable_ftp = post_data.get('enable_ftp') in ('1', 'true', 'on')
     enable_ufw = post_data.get('enable_ufw') in ('1', 'true', 'on')
     enable_podman = post_data.get('enable_podman') in ('1', 'true', 'on')
@@ -3540,6 +3547,7 @@ def _prepare_wizard_setup(post_data, stack_status, mark_completed=True):
     SystemSetting.set('mail_dkim_enabled', 'true' if enable_dkim else 'false')
     SystemSetting.set('email_spam_filter', spam_filter)
     SystemSetting.set('email_dkim_enabled', 'true' if enable_dkim else 'false')
+    SystemSetting.set('mail_snappymail_enabled', 'true' if enable_snappymail else 'false')
     SystemSetting.set('ftp_stack_enabled', 'true' if enable_ftp else 'false')
     SystemSetting.set('podman_enabled', 'true' if enable_podman else 'false')
     if mark_completed:
@@ -3569,9 +3577,11 @@ def _prepare_wizard_setup(post_data, stack_status, mark_completed=True):
         install_pkgs.extend(['postgresql', 'postgresql-contrib'])
         services_to_start.append('postgresql')
 
-    if enable_mail and not stack_status['mail_postfix']['installed']:
-        install_pkgs.extend(['postfix', 'dovecot-core', 'dovecot-imapd', 'dovecot-pop3d', 'dovecot-lmtpd', 'dovecot-sieve'])
+    if enable_mail and not (stack_status['mail_postfix']['installed'] and shutil.which('dovecot')):
+        install_pkgs.extend(['postfix', 'dovecot-core', 'dovecot-imapd', 'dovecot-pop3d', 'dovecot-lmtpd', 'dovecot-sieve', 'dovecot-managesieved'])
         services_to_start.extend(['postfix', 'dovecot'])
+    elif enable_mail and not Path('/usr/share/dovecot/protocols.d/managesieved.protocol').exists():
+        install_pkgs.append('dovecot-managesieved')
     if enable_mail and enable_dkim:
         install_pkgs.extend(['opendkim', 'opendkim-tools'])
         services_to_start.append('opendkim')
@@ -3594,6 +3604,7 @@ def _prepare_wizard_setup(post_data, stack_status, mark_completed=True):
         'enable_pgadmin4': enable_pgadmin4,
         'enable_ufw': enable_ufw,
         'enable_mail': enable_mail,
+        'enable_snappymail': enable_snappymail,
         'enable_ftp': enable_ftp,
     }
     return install_pkgs, services_to_start, opts
@@ -3706,6 +3717,17 @@ def admin_wizard_provision(request):
             except Exception as e:
                 yield sse({'status': 'running', 'percent': 95, 'step': 'Mail stack configuration warning', 'line': f'>> [WARNING] Mail stack config skipped: {e}'})
 
+        if opts.get('enable_snappymail'):
+            try:
+                from services.mail import install_snappymail
+                sm_res = install_snappymail()
+                if sm_res.get('success'):
+                    yield sse({'status': 'running', 'percent': 96, 'step': 'SnappyMail Webmail installed', 'line': '>> SnappyMail Webmail configured at /snappymail/'})
+                else:
+                    yield sse({'status': 'running', 'percent': 96, 'step': 'SnappyMail Webmail skipped', 'line': f">> [WARNING] SnappyMail skipped: {sm_res.get('error', '')}"})
+            except Exception as e:
+                yield sse({'status': 'running', 'percent': 96, 'step': 'SnappyMail Webmail skipped', 'line': f'>> [WARNING] SnappyMail skipped: {e}'})
+
         if opts['enable_ufw']:
             try:
                 _apply_wizard_ufw(opts)
@@ -3775,6 +3797,13 @@ def wizard_dashboard(request):
             try:
                 from services.mail import configure_mail_stack
                 configure_mail_stack()
+            except Exception:
+                pass
+
+        if opts.get('enable_snappymail'):
+            try:
+                from services.mail import install_snappymail
+                install_snappymail()
             except Exception:
                 pass
 

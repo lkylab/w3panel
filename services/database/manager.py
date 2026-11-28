@@ -725,6 +725,7 @@ def proxy_http_upstream(
         ('HTTP_USER_AGENT', 'User-Agent'),
         ('HTTP_X_REQUESTED_WITH', 'X-Requested-With'),
         ('HTTP_X_CSRFTOKEN', 'X-CSRFToken'),
+        ('HTTP_X_SM_TOKEN', 'X-SM-Token'),
     ):
         val = request.META.get(meta_key)
         if val:

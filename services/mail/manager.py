@@ -71,6 +71,35 @@ def _read_text_privileged(path: Path) -> str:
     return ''
 
 
+def _mkdir_privileged(path: Path) -> bool:
+    """Create directory directly or escalate via sudo -n mkdir -p when permitted."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        return True
+    except (PermissionError, OSError):
+        if not _has_sudo():
+            return False
+        try:
+            res = subprocess.run(_priv_prefix() + ['mkdir', '-p', str(path)], capture_output=True, timeout=5)
+            return res.returncode == 0
+        except Exception:
+            return False
+
+
+def _path_exists_privileged(path: Path) -> bool:
+    try:
+        if path.exists():
+            return True
+    except (PermissionError, OSError):
+        pass
+    if _has_sudo():
+        try:
+            return subprocess.run(_priv_prefix() + ['test', '-e', str(path)], capture_output=True, timeout=3).returncode == 0
+        except Exception:
+            return False
+    return False
+
+
 def _resolve_dir(env_key: str, default_path: Path, fallback_path: Path, create: bool = True) -> Path:
     env_dir = os.environ.get(env_key)
     if env_dir:
@@ -78,12 +107,15 @@ def _resolve_dir(env_key: str, default_path: Path, fallback_path: Path, create: 
         if create:
             p.mkdir(parents=True, exist_ok=True)
         return p
-    if default_path.exists() and (os.access(str(default_path), os.W_OK) or _has_sudo()):
+    if default_path.exists() and (os.geteuid() == 0 or os.access(str(default_path), os.W_OK) or _has_sudo()):
         return default_path
     if os.geteuid() == 0 or (default_path.parent.exists() and os.access(str(default_path.parent), os.W_OK)):
         if create:
             default_path.mkdir(parents=True, exist_ok=True)
         return default_path
+    if _has_sudo():
+        if not create or _mkdir_privileged(default_path):
+            return default_path
     if create:
         fallback_path.mkdir(parents=True, exist_ok=True)
     return fallback_path
@@ -191,6 +223,30 @@ def _upsert_managed_block(existing: str, block_body: str) -> str:
     if cleaned:
         return cleaned + "\n\n" + managed
     return managed
+
+
+def _upsert_postfix_main_block(existing: str, block_lines: list[str]) -> str:
+    """Comment out duplicate stock assignments outside our managed block to avoid Postfix override warnings."""
+    managed_keys = {
+        ln.split('=', 1)[0].strip()
+        for ln in block_lines
+        if '=' in ln
+    }
+    in_block = False
+    filtered_lines = []
+    for line in existing.splitlines():
+        stripped = line.strip()
+        if stripped == _W3P_BLOCK_START:
+            in_block = True
+        elif stripped == _W3P_BLOCK_END:
+            in_block = False
+        elif not in_block and line and not line[0].isspace() and not stripped.startswith('#') and '=' in line:
+            key = line.split('=', 1)[0].strip()
+            if key in managed_keys:
+                filtered_lines.append(f"# {line}")
+                continue
+        filtered_lines.append(line)
+    return _upsert_managed_block("\n".join(filtered_lines), "\n".join(block_lines))
 
 
 def _ensure_vmail_system_user() -> tuple[int, int]:
@@ -351,7 +407,7 @@ def update_mailbox_quota(email: str, quota_mb: int) -> dict:
         else:
             updated.append(line)
     if found:
-        _write_privileged(users_file, "\n".join(updated) + "\n")
+        _write_dovecot_passwd_file(users_file, "\n".join(updated) + "\n")
         _reload_mail_services()
     return {'success': True, 'updated': found, 'quota_mb': quota_val}
 
@@ -370,15 +426,11 @@ def create_mailbox(email: str, password: str = '', quota_mb: int = 1024) -> dict
 
     # 1. Create Maildir + sieve storage directory
     maildir = base_vmail / domain / mbox_user
-    try:
+    if not all(_mkdir_privileged(maildir / folder) for folder in ('cur', 'new', 'tmp', 'sieve')):
+        logger.warning(f"Could not create vmail structure under {maildir}, using /tmp fallback")
+        maildir = Path(f"/tmp/w3panel/vmail/{domain}/{mbox_user}")
         for folder in ('cur', 'new', 'tmp', 'sieve'):
             (maildir / folder).mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        logger.warning(f"Could not create vmail structure: {e}")
-        fallback_maildir = Path(f"/tmp/w3panel/vmail/{domain}/{mbox_user}")
-        for folder in ('cur', 'new', 'tmp', 'sieve'):
-            (fallback_maildir / folder).mkdir(parents=True, exist_ok=True)
-        maildir = fallback_maildir
 
     if os.geteuid() == 0 or _has_sudo():
         _ensure_vmail_system_user()
@@ -443,7 +495,7 @@ def delete_mailbox(email: str) -> dict:
             lines = _read_text_privileged(users_file).splitlines()
             new_lines = [l for l in lines if not l.strip().startswith(f"{email}:")]
             content = "\n".join(new_lines) + ("\n" if new_lines else "")
-            _write_privileged(users_file, content)
+            _write_dovecot_passwd_file(users_file, content)
     except Exception as e:
         logger.warning(f"Dovecot user delete error for {email}: {e}")
 
@@ -473,7 +525,7 @@ def set_mailbox_password_hash(email: str, pw_hash: str, maildir: str = '', quota
         filtered = [l for l in existing if not l.startswith(f"{email}:")]
         filtered.append(entry)
         content = "\n".join(filtered) + "\n"
-        _write_privileged(users_file, content)
+        _write_dovecot_passwd_file(users_file, content)
         _reload_mail_services()
         return {'success': True, 'path': str(users_file)}
     except Exception as e:
@@ -633,10 +685,10 @@ def sync_mailbox_sieve(
         script = f'require [{", ".join(reqs)}];\n{vacation_stmt}'
 
     try:
-        maildir.mkdir(parents=True, exist_ok=True)
+        _mkdir_privileged(maildir / 'sieve')
         _write_privileged(sieve_file, script)
         if os.geteuid() == 0 or _has_sudo():
-            subprocess.run(_priv_prefix() + ['chown', '5000:5000', str(sieve_file)], capture_output=True, timeout=5)
+            subprocess.run(_priv_prefix() + ['chown', '-R', '5000:5000', str(maildir)], capture_output=True, timeout=5)
         return {'success': True, 'path': str(sieve_file)}
     except Exception as e:
         logger.warning(f"Failed writing sieve script for {email}: {e}")
@@ -852,32 +904,33 @@ def _generate_dkim_keypair(domain: str) -> tuple[str, str]:
     """Generate a real 2048-bit RSA DKIM keypair via opendkim-genkey or openssl. Returns (priv_path, txt_value)."""
     dkim_base = _get_opendkim_dir()
     domain_dkim_dir = dkim_base / domain
-    domain_dkim_dir.mkdir(parents=True, exist_ok=True)
+    _mkdir_privileged(domain_dkim_dir)
     priv_key = domain_dkim_dir / 'default.private'
     txt_key = domain_dkim_dir / 'default.txt'
+    priv_prefix = _priv_prefix() if (os.geteuid() == 0 or _has_sudo()) else []
 
-    if not priv_key.exists():
+    if not _path_exists_privileged(priv_key):
         generated = False
         if shutil.which('opendkim-genkey'):
             try:
                 res = subprocess.run(
-                    ['opendkim-genkey', '-b', '2048', '-s', 'default', '-d', domain, '-D', str(domain_dkim_dir)],
+                    priv_prefix + ['opendkim-genkey', '-b', '2048', '-s', 'default', '-d', domain, '-D', str(domain_dkim_dir)],
                     capture_output=True,
                     timeout=10,
                 )
-                generated = res.returncode == 0 and priv_key.exists()
+                generated = res.returncode == 0 and _path_exists_privileged(priv_key)
             except Exception:
                 pass
         if not generated and shutil.which('openssl'):
             try:
                 res = subprocess.run(
-                    ['openssl', 'genrsa', '-out', str(priv_key), '2048'],
+                    priv_prefix + ['openssl', 'genrsa', '-out', str(priv_key), '2048'],
                     capture_output=True,
                     timeout=10,
                 )
-                if res.returncode == 0 and priv_key.exists():
+                if res.returncode == 0 and _path_exists_privileged(priv_key):
                     pub = subprocess.run(
-                        ['openssl', 'rsa', '-in', str(priv_key), '-pubout', '-outform', 'PEM'],
+                        priv_prefix + ['openssl', 'rsa', '-in', str(priv_key), '-pubout', '-outform', 'PEM'],
                         capture_output=True,
                         text=True,
                         timeout=5,
@@ -887,27 +940,29 @@ def _generate_dkim_keypair(domain: str) -> tuple[str, str]:
                             ln.strip() for ln in pub.stdout.splitlines()
                             if ln.strip() and not ln.startswith('-----')
                         )
-                        txt_key.write_text(f'default._domainkey\tIN\tTXT\t( "v=DKIM1; k=rsa; p={b64}" )\n')
+                        _write_privileged(txt_key, f'default._domainkey\tIN\tTXT\t( "v=DKIM1; k=rsa; p={b64}" )\n')
             except Exception as e:
                 logger.warning(f"OpenSSL DKIM fallback error for {domain}: {e}")
 
     try:
-        if priv_key.exists():
+        if _has_sudo() or os.geteuid() == 0:
+            subprocess.run(priv_prefix + ['chmod', '600', str(priv_key)], capture_output=True, timeout=5)
+        elif priv_key.exists():
             os.chmod(priv_key, 0o600)
     except Exception:
         pass
 
     dkim_val = ''
-    if txt_key.exists():
-        content = txt_key.read_text(errors='replace')
+    if _path_exists_privileged(txt_key):
+        content = _read_text_privileged(txt_key)
         if 'p=' in content:
             extracted = content.split('p=')[1].split(')')[0].replace('"', '').replace('\n', '').replace('\r', '').replace(' ', '').replace('\t', '')
             if extracted:
                 dkim_val = f"v=DKIM1; k=rsa; p={extracted}"
-    if not dkim_val and priv_key.exists() and shutil.which('openssl'):
+    if not dkim_val and _path_exists_privileged(priv_key) and shutil.which('openssl'):
         try:
             pub = subprocess.run(
-                ['openssl', 'rsa', '-in', str(priv_key), '-pubout', '-outform', 'PEM'],
+                priv_prefix + ['openssl', 'rsa', '-in', str(priv_key), '-pubout', '-outform', 'PEM'],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -932,7 +987,7 @@ def _sync_opendkim_tables(domains: list[str]) -> None:
     host_lines = ['127.0.0.1', '::1', 'localhost']
     for dom in sorted(set(d.strip().lower() for d in domains if _is_valid_domain(d))):
         priv = keys_dir / dom / 'default.private'
-        if priv.exists():
+        if _path_exists_privileged(priv):
             key_lines.append(f"default._domainkey.{dom} {dom}:default:{priv}")
             sign_lines.append(f"*@{dom} default._domainkey.{dom}")
         host_lines.append(f"*.{dom}")
@@ -944,10 +999,8 @@ def _sync_opendkim_tables(domains: list[str]) -> None:
 
     if os.geteuid() == 0 or _has_sudo():
         subprocess.run(_priv_prefix() + ['chown', '-R', 'opendkim:opendkim', str(conf_dir)], capture_output=True, timeout=5)
-        if shutil.which('systemctl'):
-            res = subprocess.run(['systemctl', 'is-active', 'opendkim'], capture_output=True, text=True, timeout=2)
-            if res.stdout.strip() == 'active':
-                subprocess.run(_priv_prefix() + ['systemctl', 'reload', 'opendkim'], capture_output=True, timeout=3)
+        subprocess.run(_priv_prefix() + ['chmod', '755', str(conf_dir), str(keys_dir)], capture_output=True, timeout=5)
+        _control_mail_service('opendkim', 'reload')
 
 
 def _setup_dkim(domain: str) -> str:
@@ -1061,6 +1114,97 @@ def _detect_mail_tls_cert_key() -> tuple[str, str]:
     return str(panel_crt), str(panel_key)
 
 
+def _write_dovecot_passwd_file(path: Path, content: str) -> bool:
+    """Write a Dovecot passwd/users file and ensure group dovecot can read it safely (0640)."""
+    ok = _write_privileged(path, content)
+    if ok and (os.geteuid() == 0 or _has_sudo()):
+        try:
+            import grp
+            grp.getgrnam('dovecot')
+            subprocess.run(_priv_prefix() + ['chgrp', 'dovecot', str(path)], capture_output=True, timeout=5)
+        except Exception:
+            pass
+        subprocess.run(_priv_prefix() + ['chmod', '640', str(path)], capture_output=True, timeout=5)
+    return ok
+
+
+def _sync_dovecot_auth_files(dovecot_dir: Path | None = None) -> tuple[str, str]:
+    """Write Dovecot virtual user and SnappyMail master-user SSO authentication configs."""
+    target_dir = dovecot_dir or _get_dovecot_dir()
+    master_user, master_pass = _get_dovecot_master_credentials()
+    master_hash = hash_mailbox_password(master_pass)
+    conf_d = target_dir / 'conf.d'
+    users_file = target_dir / 'users'
+    if not _path_exists_privileged(users_file):
+        _write_dovecot_passwd_file(users_file, '')
+    elif os.geteuid() == 0 or _has_sudo():
+        _write_dovecot_passwd_file(users_file, _read_text_privileged(users_file))
+    master_users_file = target_dir / 'passwd.masterusers'
+
+    auth_files = {
+        conf_d / '10-auth.conf': (
+            "disable_plaintext_auth = yes\n"
+            "auth_mechanisms = plain login\n"
+            "auth_master_user_separator = *\n"
+            "!include auth-passwdfile.conf.ext\n"
+            "!include auth-master.conf.ext\n"
+        ),
+        conf_d / 'auth-passwdfile.conf.ext': (
+            f"passdb {{\n  driver = passwd-file\n  args = username_format=%u {users_file}\n}}\n"
+            f"userdb {{\n  driver = passwd-file\n  args = username_format=%u {users_file}\n}}\n"
+        ),
+        conf_d / 'auth-master.conf.ext': (
+            f"passdb {{\n  driver = passwd-file\n  master = yes\n  result_success = continue\n  args = {master_users_file}\n}}\n"
+        ),
+    }
+    for path, content in auth_files.items():
+        _write_privileged(path, content)
+    _write_dovecot_passwd_file(master_users_file, f"{master_user}:{master_hash}\n")
+    return master_user, master_pass
+
+
+def _resolve_mail_unit(service: str) -> str:
+    """Resolve Debian/Ubuntu postfix@-.service multi-instance unit when present."""
+    if service == 'postfix' and shutil.which('systemctl'):
+        try:
+            chk = subprocess.run(['systemctl', 'cat', 'postfix@-.service'], capture_output=True, timeout=3)
+            if chk.returncode == 0:
+                return 'postfix@-'
+        except Exception:
+            pass
+    return service
+
+
+def _control_mail_service(service: str, action: str = 'reload', allow_inactive_restart: bool = False) -> bool:
+    """Restart or reload a mail stack daemon cleanly."""
+    if not (os.geteuid() == 0 or _has_sudo()):
+        return False
+    if service == 'postfix' and action == 'reload' and shutil.which('postfix'):
+        try:
+            res = subprocess.run(_priv_prefix() + ['postfix', 'reload'], capture_output=True, timeout=5)
+            if res.returncode == 0:
+                return True
+        except Exception:
+            pass
+    if not shutil.which('systemctl'):
+        return False
+    unit = _resolve_mail_unit(service)
+    try:
+        state_res = subprocess.run(['systemctl', 'is-active', unit], capture_output=True, text=True, timeout=2)
+        state = state_res.stdout.strip()
+        should_act = (state == 'active') or (allow_inactive_restart and state in ('activating', 'failed', 'deactivating'))
+        if not should_act and allow_inactive_restart:
+            en_res = subprocess.run(['systemctl', 'is-enabled', service], capture_output=True, text=True, timeout=2)
+            should_act = en_res.stdout.strip() == 'enabled'
+        if should_act:
+            act = 'restart' if (action == 'reload' and state != 'active') else action
+            run_res = subprocess.run(_priv_prefix() + ['systemctl', act, unit], capture_output=True, timeout=15)
+            return run_res.returncode == 0
+    except Exception:
+        pass
+    return False
+
+
 def configure_mail_stack(
     hostname: str = '',
     smtp_port: str = '',
@@ -1099,11 +1243,13 @@ def configure_mail_stack(
     postfix_dir = _get_postfix_dir()
     dovecot_dir = _get_dovecot_dir()
     _ensure_vmail_system_user()
+    if os.geteuid() == 0 or _has_sudo():
+        subprocess.run(_priv_prefix() + ['chown', '5000:5000', str(vmail_base)], capture_output=True, timeout=5)
 
     # Ensure Postfix map files exist and sync virtual domains
     for fname in ('vmailbox_domains', 'vmailbox', 'virtual'):
         fpath = postfix_dir / fname
-        if not fpath.exists():
+        if not _path_exists_privileged(fpath):
             _write_privileged(fpath, '')
     sync_res = sync_virtual_domains()
     for fname in ('vmailbox_domains', 'vmailbox', 'virtual'):
@@ -1111,32 +1257,15 @@ def configure_mail_stack(
 
     # 1. Configure Dovecot
     cert_path, key_path = _detect_mail_tls_cert_key()
-    master_user, master_pass = _get_dovecot_master_credentials()
-    master_hash = hash_mailbox_password(master_pass)
+    _sync_dovecot_auth_files(dovecot_dir)
     conf_d = dovecot_dir / 'conf.d'
-    users_file = dovecot_dir / 'users'
-    if not users_file.exists():
-        _write_privileged(users_file, '')
-    master_users_file = dovecot_dir / 'passwd.masterusers'
 
     dovecot_files = {
-        conf_d / '10-auth.conf': (
-            "disable_plaintext_auth = yes\n"
-            "auth_mechanisms = plain login\n"
-            "auth_master_user_separator = *\n"
-            "!include auth-passwdfile.conf.ext\n"
-            "!include auth-master.conf.ext\n"
-        ),
-        conf_d / 'auth-passwdfile.conf.ext': (
-            f"passdb {{\n  driver = passwd-file\n  args = username_format=%u {users_file}\n}}\n"
-            f"userdb {{\n  driver = passwd-file\n  args = username_format=%u {users_file}\n}}\n"
-        ),
-        conf_d / 'auth-master.conf.ext': (
-            f"passdb {{\n  driver = passwd-file\n  master = yes\n  result_success = continue\n  args = {master_users_file}\n}}\n"
-        ),
-        master_users_file: f"{master_user}:{master_hash}\n",
         conf_d / '10-mail.conf': (
             f"mail_location = maildir:{vmail_base}/%d/%n\n"
+            "namespace inbox {\n"
+            "  inbox = yes\n"
+            "}\n"
             "mail_privileged_group = vmail\n"
             "first_valid_uid = 5000\n"
             "last_valid_uid = 5000\n"
@@ -1155,9 +1284,9 @@ def configure_mail_stack(
         conf_d / '10-ssl.conf': (
             f"ssl = yes\nssl_cert = <{cert_path}\nssl_key = <{key_path}\n"
         ),
-        conf_d / '20-imap.conf': "protocol imap {\n  mail_plugins = $mail_plugins quota imap_quota\n}\n",
+        conf_d / '20-imap.conf': "protocol imap {\n  mail_plugins = $mail_plugins imap_quota\n}\n",
         conf_d / '20-lmtp.conf': (
-            f"protocol lmtp {{\n  postmaster_address = postmaster@{hostname}\n  mail_plugins = $mail_plugins quota sieve\n}}\n"
+            f"protocol lmtp {{\n  postmaster_address = postmaster@{hostname}\n  mail_plugins = $mail_plugins sieve\n}}\n"
         ),
         conf_d / '90-quota.conf': (
             "plugin {\n  quota = maildir:User quota\n  quota_rule = *:storage=1024M\n  quota_rule2 = Trash:storage=+100M\n}\n"
@@ -1172,10 +1301,6 @@ def configure_mail_stack(
     }
     for path, content in dovecot_files.items():
         _write_privileged(path, content)
-    if os.geteuid() == 0 or _has_sudo():
-        subprocess.run(_priv_prefix() + ['chmod', '600', str(master_users_file)], capture_output=True, timeout=5)
-        if users_file.exists():
-            subprocess.run(_priv_prefix() + ['chmod', '640', str(users_file)], capture_output=True, timeout=5)
 
     # 2. Configure OpenDKIM & Milter list
     milters: list[str] = []
@@ -1188,6 +1313,8 @@ def configure_mail_stack(
             "Mode sv\n"
             "Canonicalization relaxed/relaxed\n"
             "Selector default\n"
+            "Background Yes\n"
+            "PidFile /run/opendkim/opendkim.pid\n"
             f"KeyTable refile:{opendkim_conf_dir}/KeyTable\n"
             f"SigningTable refile:{opendkim_conf_dir}/SigningTable\n"
             f"ExternalIgnoreList refile:{opendkim_conf_dir}/TrustedHosts\n"
@@ -1197,9 +1324,10 @@ def configure_mail_stack(
         )
         _write_privileged(_get_opendkim_conf_file(), odkim_conf)
         if os.geteuid() == 0 or _has_sudo():
-            subprocess.run(_priv_prefix() + ['mkdir', '-p', '/var/spool/postfix/opendkim'], capture_output=True, timeout=5)
+            subprocess.run(_priv_prefix() + ['mkdir', '-p', '/var/spool/postfix/opendkim', '/run/opendkim'], capture_output=True, timeout=5)
             subprocess.run(_priv_prefix() + ['chown', 'opendkim:postfix', '/var/spool/postfix/opendkim'], capture_output=True, timeout=5)
-            subprocess.run(_priv_prefix() + ['chmod', '750', '/var/spool/postfix/opendkim'], capture_output=True, timeout=5)
+            subprocess.run(_priv_prefix() + ['chmod', '750', '/var/spool/postfix/opendkim', '/run/opendkim'], capture_output=True, timeout=5)
+            subprocess.run(_priv_prefix() + ['chown', 'opendkim:opendkim', '/run/opendkim'], capture_output=True, timeout=5)
             subprocess.run(_priv_prefix() + ['usermod', '-aG', 'opendkim', 'postfix'], capture_output=True, timeout=5)
         milters.append('unix:opendkim/opendkim.sock')
 
@@ -1255,7 +1383,7 @@ def configure_mail_stack(
         f"non_smtpd_milters = {milter_line}" if milter_line else "non_smtpd_milters =",
     ]
     existing_main = _read_text_privileged(main_cf_path)
-    _write_privileged(main_cf_path, _upsert_managed_block(existing_main, "\n".join(main_block_lines)))
+    _write_privileged(main_cf_path, _upsert_postfix_main_block(existing_main, main_block_lines))
 
     master_cf_path = postfix_dir / 'master.cf'
     master_lines = [
@@ -1284,27 +1412,17 @@ def configure_mail_stack(
     existing_master = _read_text_privileged(master_cf_path)
     _write_privileged(master_cf_path, _upsert_managed_block(existing_master, "\n".join(master_lines)))
 
-    # 5. Restart/reload active mail stack daemons
-    if os.geteuid() == 0 or _has_sudo():
-        for svc in ('opendkim', 'rspamd', 'dovecot', 'postfix'):
-            res = subprocess.run(['systemctl', 'is-active', svc], capture_output=True, text=True, timeout=2)
-            if res.stdout.strip() == 'active':
-                subprocess.run(_priv_prefix() + ['systemctl', 'restart', svc], capture_output=True, timeout=10)
+    # 5. Restart active/enabled mail stack daemons (including multi-instance postfix@- and crashed opendkim)
+    for svc in ('opendkim', 'rspamd', 'dovecot', 'postfix'):
+        _control_mail_service(svc, 'restart', allow_inactive_restart=True)
 
     return {'success': True, 'hostname': hostname, 'domains': sync_res.get('domains', []), 'milters': milters}
 
 
 def _reload_mail_services():
     """Reload Postfix and Dovecot daemons if active and privileged."""
-    if not (_has_sudo() or os.geteuid() == 0):
-        return
     for service in ('postfix', 'dovecot'):
-        try:
-            res = subprocess.run(['systemctl', 'is-active', service], capture_output=True, text=True, timeout=2)
-            if res.stdout.strip() == 'active':
-                subprocess.run(_priv_prefix() + ['systemctl', 'reload', service], timeout=3)
-        except Exception:
-            pass
+        _control_mail_service(service, 'reload')
 
 
 # ---------------------------------------------------------------------------
@@ -1336,7 +1454,7 @@ def _safe_extract_zip(zip_path: Path, dest_dir: Path) -> int:
     extracted = 0
     with zipfile.ZipFile(zip_path, 'r') as zf:
         for info in zf.infolist():
-            norm = info.filename.lstrip('./')
+            norm = info.filename[2:] if info.filename.startswith('./') else info.filename.lstrip('/')
             if not norm or norm.startswith('/') or '..' in Path(norm).parts or '\x00' in norm:
                 continue
             # Reject symlinks
@@ -1357,13 +1475,40 @@ def _safe_extract_zip(zip_path: Path, dest_dir: Path) -> int:
 
 def _fetch_snappymail_release_zip(dest_zip: Path) -> str:
     """Resolve and download the latest official SnappyMail ZIP asset from GitHub."""
+    asset_url = ''
+    if shutil.which('curl'):
+        try:
+            api_res = subprocess.run(
+                ['curl', '-4', '-fsSL', '-H', 'User-Agent: W3Panel/2.0', '-H', 'Accept: application/vnd.github+json', '--max-time', '25', _SNAPPYMAIL_LATEST_API],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if api_res.returncode == 0 and api_res.stdout:
+                release = json.loads(api_res.stdout)
+                for asset in release.get('assets', []):
+                    name = asset.get('name', '')
+                    if re.match(r'^snappymail-[0-9.]+\.zip$', name):
+                        asset_url = asset.get('browser_download_url', '')
+                        break
+                if asset_url:
+                    dl_res = subprocess.run(
+                        ['curl', '-4', '-fsSL', '-H', 'User-Agent: W3Panel/2.0', '--max-time', '90', '-o', str(dest_zip), asset_url],
+                        capture_output=True,
+                        text=True,
+                        timeout=95,
+                    )
+                    if dl_res.returncode == 0 and dest_zip.is_file() and dest_zip.stat().st_size > 0:
+                        return asset_url
+        except Exception:
+            pass
+
     req = urllib.request.Request(
         _SNAPPYMAIL_LATEST_API,
         headers={'User-Agent': 'W3Panel/2.0', 'Accept': 'application/vnd.github+json'},
     )
     with urllib.request.urlopen(req, timeout=20) as resp:
         release = json.loads(resp.read().decode('utf-8'))
-    asset_url = ''
     for asset in release.get('assets', []):
         name = asset.get('name', '')
         if re.match(r'^snappymail-[0-9.]+\.zip$', name):
@@ -1465,9 +1610,7 @@ def ensure_webmail_webserver_configured() -> dict:
 def install_snappymail() -> dict:
     """Download, extract, and configure SnappyMail Webmail + 1-click Dovecot master SSO."""
     target_dir = _get_webmail_dir()
-    try:
-        target_dir.mkdir(parents=True, exist_ok=True)
-    except Exception:
+    if not _mkdir_privileged(target_dir):
         target_dir = Path('/tmp/w3panel/webmail')
         target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1477,21 +1620,36 @@ def install_snappymail() -> dict:
     if not (target_dir / 'snappymail').exists() and not skip_dl:
         import tempfile
         tmp_zip = None
+        tmp_extract = None
         try:
+            zip_to_extract = None
             if source_zip and Path(source_zip).is_file():
-                _safe_extract_zip(Path(source_zip), target_dir)
+                zip_to_extract = Path(source_zip)
             else:
                 fd, tmp_name = tempfile.mkstemp(prefix='w3p-snappymail-', suffix='.zip')
                 os.close(fd)
                 tmp_zip = Path(tmp_name)
                 _fetch_snappymail_release_zip(tmp_zip)
-                _safe_extract_zip(tmp_zip, target_dir)
+                zip_to_extract = tmp_zip
+
+            if os.access(str(target_dir), os.W_OK):
+                _safe_extract_zip(zip_to_extract, target_dir)
+            elif _has_sudo():
+                tmp_extract = Path(tempfile.mkdtemp(prefix='w3p-sm-extract-'))
+                _safe_extract_zip(zip_to_extract, tmp_extract)
+                cp_res = subprocess.run(_priv_prefix() + ['cp', '-a', f'{tmp_extract}/.', str(target_dir)], capture_output=True, text=True, timeout=30)
+                if cp_res.returncode != 0:
+                    raise RuntimeError(cp_res.stderr or 'Failed copying extracted SnappyMail files')
+            else:
+                raise PermissionError(f'Directory not writable: {target_dir}')
         except Exception as e:
             logger.error(f"SnappyMail download/extraction failed: {e}")
             return {'success': False, 'error': f"Failed to download/extract SnappyMail: {e}"}
         finally:
             if tmp_zip and tmp_zip.exists():
                 tmp_zip.unlink(missing_ok=True)
+            if tmp_extract and tmp_extract.exists():
+                shutil.rmtree(tmp_extract, ignore_errors=True)
 
     # Configure SnappyMail default domain + plugins + SSO endpoint
     data_default = target_dir / 'data' / '_data_' / '_default_'
@@ -1499,7 +1657,7 @@ def install_snappymail() -> dict:
     configs_dir = data_default / 'configs'
     plugin_dir = data_default / 'plugins' / 'w3p-master'
     for d in (domains_dir, configs_dir, plugin_dir):
-        d.mkdir(parents=True, exist_ok=True)
+        _mkdir_privileged(d)
 
     default_domain_cfg = {
         'IMAP': {'host': '127.0.0.1', 'port': 143, 'type': 0, 'shortLogin': False, 'lowerLogin': True},
@@ -1513,7 +1671,10 @@ def install_snappymail() -> dict:
         "[webmail]\n"
         'title = "W3Panel Webmail"\n\n'
         "[security]\n"
-        "allow_admin_panel = Off\n\n"
+        "allow_admin_panel = Off\n"
+        'cookie_samesite = "Lax"\n\n'
+        "[labs]\n"
+        'cookie_default_path = "/snappymail"\n\n'
         "[plugins]\n"
         "enable = On\n"
         'enabled_list = "w3p-master"\n'
@@ -1606,6 +1767,10 @@ try {{
     if os.geteuid() == 0 or _has_sudo():
         subprocess.run(_priv_prefix() + ['chown', '-R', 'www-data:www-data', str(target_dir)], capture_output=True, timeout=10)
         subprocess.run(_priv_prefix() + ['chmod', '640', str(target_dir / 'w3p-signon.php')], capture_output=True, timeout=5)
+        dovecot_dir = _get_dovecot_dir()
+        if (dovecot_dir / 'conf.d').exists():
+            _sync_dovecot_auth_files(dovecot_dir)
+            _control_mail_service('dovecot', 'reload')
 
     configure_webmail_webserver()
     return {'success': True, 'path': str(target_dir)}
@@ -1663,6 +1828,7 @@ def launch_webmail(request, mailbox_email: str = ''):
         'Content-Type': 'application/x-www-form-urlencoded',
         'Content-Length': str(len(payload)),
         'X-W3Panel-Webmail-Secret': _get_webmail_signon_secret(),
+        'X-Forwarded-Proto': 'https' if (request.is_secure() or request.META.get('HTTP_X_FORWARDED_PROTO') == 'https') else 'http',
         'Host': request.get_host(),
     }
 

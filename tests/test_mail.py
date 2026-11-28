@@ -221,15 +221,23 @@ class MailStackTests(TestCase):
         self.assertFalse(sieve_path.exists())
 
     def test_configure_mail_stack_and_deliverability_repair(self):
+        pf_dir = Path(os.environ['W3PANEL_POSTFIX_DIR'])
+        main_cf_path = pf_dir / 'main.cf'
+        main_cf_path.write_text(
+            "mydestination = $myhostname, old.local, localhost\n"
+            "smtpd_tls_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem\n"
+            "smtpd_tls_key_file=/etc/ssl/private/ssl-cert-snakeoil.key\n"
+        )
         cfg = configure_mail_stack(hostname='mail.myclientdomain.com', smtp_port='2587', spam_filter='rspamd', dkim_enabled=True, spam_threshold=5.5)
         self.assertTrue(cfg['success'])
 
-        pf_dir = Path(os.environ['W3PANEL_POSTFIX_DIR'])
         dc_dir = Path(os.environ['W3PANEL_DOVECOT_DIR'])
         rspamd_dir = Path(os.environ['W3PANEL_RSPAMD_DIR'])
         odkim_conf = Path(os.environ['W3PANEL_OPENDKIM_CONF_FILE'])
 
-        main_cf = (pf_dir / 'main.cf').read_text()
+        main_cf = main_cf_path.read_text()
+        self.assertIn('# mydestination = $myhostname, old.local, localhost', main_cf)
+        self.assertIn('# smtpd_tls_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem', main_cf)
         self.assertIn('virtual_transport = lmtp:unix:private/dovecot-lmtp', main_cf)
         self.assertIn('smtpd_sasl_type = dovecot', main_cf)
         self.assertIn('unix:opendkim/opendkim.sock', main_cf)
@@ -241,13 +249,20 @@ class MailStackTests(TestCase):
         self.assertIn('2587 inet', master_cf)
 
         self.assertIn('auth_master_user_separator = *', (dc_dir / 'conf.d' / '10-auth.conf').read_text())
+        self.assertIn('inbox = yes', (dc_dir / 'conf.d' / '10-mail.conf').read_text())
         self.assertIn('userdb {', (dc_dir / 'conf.d' / 'auth-passwdfile.conf.ext').read_text())
         self.assertIn('master = yes', (dc_dir / 'conf.d' / 'auth-master.conf.ext').read_text())
         self.assertIn('sieve_extensions = +vacation-seconds', (dc_dir / 'conf.d' / '90-sieve.conf').read_text())
+        self.assertEqual((dc_dir / 'conf.d' / '20-imap.conf').read_text().strip(), 'protocol imap {\n  mail_plugins = $mail_plugins imap_quota\n}')
+        self.assertIn('mail_plugins = $mail_plugins sieve', (dc_dir / 'conf.d' / '20-lmtp.conf').read_text())
+        self.assertNotIn('$mail_plugins quota sieve', (dc_dir / 'conf.d' / '20-lmtp.conf').read_text())
         self.assertIn('w3p_master:', (dc_dir / 'passwd.masterusers').read_text())
         self.assertIn('bind_socket = "127.0.0.1:11332"', (rspamd_dir / 'worker-proxy.inc').read_text())
         self.assertIn('add_header = 5.5;', (rspamd_dir / 'actions.conf').read_text())
-        self.assertIn('Socket local:/var/spool/postfix/opendkim/opendkim.sock', odkim_conf.read_text())
+        odkim_txt = odkim_conf.read_text()
+        self.assertIn('Socket local:/var/spool/postfix/opendkim/opendkim.sock', odkim_txt)
+        self.assertIn('PidFile /run/opendkim/opendkim.pid', odkim_txt)
+        self.assertIn('Background Yes', odkim_txt)
 
         # Deliverability check & auto-repair generates real RSA DKIM + MX/SPF/DMARC DNS records
         before = get_domain_deliverability(self.website)
@@ -292,6 +307,7 @@ class MailStackTests(TestCase):
         zip_path = self.temp_dir / 'snappymail-test.zip'
         with zipfile.ZipFile(zip_path, 'w') as zf:
             zf.writestr('index.php', '<?php echo "SNAPPYMAIL_OK"; ?>')
+            zf.writestr('.htaccess', 'Deny from all')
             zf.writestr('snappymail/v/3.1.4/include.php', '<?php // ok')
             zf.writestr('../../evil_traversal.txt', 'pwned')
 
@@ -301,6 +317,7 @@ class MailStackTests(TestCase):
             self.assertTrue(res['success'])
             webmail_dir = Path(res['path'])
             self.assertTrue((webmail_dir / 'index.php').exists())
+            self.assertTrue((webmail_dir / '.htaccess').exists())
             self.assertFalse((self.temp_dir / 'evil_traversal.txt').exists())
 
             domain_json = json.loads((webmail_dir / 'data' / '_data_' / '_default_' / 'domains' / 'default.json').read_text())
@@ -310,6 +327,8 @@ class MailStackTests(TestCase):
 
             app_ini = (webmail_dir / 'data' / '_data_' / '_default_' / 'configs' / 'application.ini').read_text()
             self.assertIn('enabled_list = "w3p-master"', app_ini)
+            self.assertIn('cookie_default_path = "/snappymail"', app_ini)
+            self.assertIn('cookie_samesite = "Lax"', app_ini)
 
             plugin_php = webmail_dir / 'data' / '_data_' / '_default_' / 'plugins' / 'w3p-master' / 'index.php'
             signon_php = webmail_dir / 'w3p-signon.php'
@@ -553,3 +572,114 @@ class MailStackTests(TestCase):
         del_res = self.client.delete(f'/api/v1/emails/?id={ok_res.json()["id"]}', **headers)
         self.assertEqual(del_res.status_code, 200)
         self.assertFalse(Mailbox.objects.filter(email=f'api@{self.website.domain}').exists())
+
+    def test_snappymail_proxy_forwards_x_sm_token_and_wizard_wires_snappymail(self):
+        # 1. SnappyMail JSON CSRF header X-SM-Token must be forwarded through proxy_http_upstream
+        (Path(os.environ['W3PANEL_WEBMAIL_DIR']) / 'index.php').parent.mkdir(parents=True, exist_ok=True)
+        (Path(os.environ['W3PANEL_WEBMAIL_DIR']) / 'index.php').write_text('<?php echo "ok"; ?>')
+        c_usr, usr_extra = self._login_user()
+
+        class _ProxyHeaders(list):
+            def get_all(self, name):
+                return []
+
+        proxy_resp = MagicMock(status=200, headers=_ProxyHeaders())
+        proxy_resp.read.return_value = b'{"Action":"Login","Result":true}'
+        fake_conn = MagicMock()
+        fake_conn.getresponse.return_value = proxy_resp
+
+        with patch('services.database.manager.http.client.HTTPConnection', return_value=fake_conn):
+            res = c_usr.post(
+                '/snappymail/?/Json/',
+                data=b'{"Action":"Login"}',
+                content_type='application/json',
+                HTTP_X_SM_TOKEN='sm_csrf_abc',
+                **usr_extra,
+            )
+            self.assertEqual(res.status_code, 200)
+            sent_headers = fake_conn.request.call_args.kwargs['headers']
+            self.assertEqual(sent_headers.get('X-SM-Token'), 'sm_csrf_abc')
+
+        # 2. Wizard _prepare_wizard_setup & admin_wizard_provision wire dovecot-managesieved and install_snappymail
+        from django.test import RequestFactory
+        from apps.admin.views import _prepare_wizard_setup, admin_wizard_provision
+        rf = RequestFactory()
+        req = rf.post('/wizards/provision/', {
+            'server_hostname': 'panel.myclientdomain.com',
+            'server_ip': '203.0.113.10',
+            'primary_ns': 'ns1.myclientdomain.com',
+            'secondary_ns': 'ns2.myclientdomain.com',
+            'admin_email': 'admin@myclientdomain.com',
+            'webserver_choice': 'nginx',
+            'default_php': '8.3',
+            'enable_mail': '1',
+            'enable_dkim': '1',
+            'enable_snappymail': '1',
+            'spam_filter': 'rspamd',
+        })
+        stack_mock = {
+            'webserver_nginx': {'installed': True, 'active': True},
+            'webserver_apache': {'installed': False, 'active': False},
+            'db_mariadb': {'installed': True, 'active': True},
+            'db_postgresql': {'installed': False, 'active': False},
+            'container_podman': {'installed': False, 'active': False},
+            'mail_postfix': {'installed': False, 'active': False},
+            'mail_dovecot': {'installed': False, 'active': False},
+            'ftp_pureftpd': {'installed': False, 'active': False},
+        }
+        pkgs, _, opts = _prepare_wizard_setup(req.POST, stack_mock, mark_completed=False)
+        self.assertIn('dovecot-managesieved', pkgs)
+        self.assertTrue(opts['enable_snappymail'])
+
+        c_adm, adm_extra = self._login_admin()
+        with patch('apps.admin.views.get_server_stack_status', return_value={
+                 **stack_mock,
+                 'mail_postfix': {'installed': True, 'active': True},
+             }), \
+             patch('apps.admin.views._stream_cmd', return_value=iter([])), \
+             patch('apps.admin.views._run_privileged', return_value=MagicMock(returncode=0)), \
+             patch('services.mail.install_snappymail', return_value={'success': True, 'path': '/var/lib/w3panel/webmail'}) as sm_mock, \
+             patch('services.mail.configure_mail_stack', return_value={'success': True}):
+            prov = c_adm.post('/wizards/provision/', {
+                'server_hostname': 'panel.myclientdomain.com',
+                'server_ip': '203.0.113.10',
+                'primary_ns': 'ns1.myclientdomain.com',
+                'secondary_ns': 'ns2.myclientdomain.com',
+                'admin_email': 'admin@myclientdomain.com',
+                'webserver_choice': 'nginx',
+                'default_php': '8.3',
+                'enable_mail': '1',
+                'enable_dkim': '1',
+                'enable_snappymail': '1',
+                'spam_filter': 'none',
+            }, **adm_extra)
+            body = b''.join(prov.streaming_content).decode()
+            self.assertTrue(sm_mock.called)
+            self.assertIn('SnappyMail Webmail configured', body)
+
+    def test_resolve_dir_and_mail_unit_dispatch(self):
+        from services.mail.manager import _control_mail_service, _resolve_dir, _resolve_mail_unit
+        fake_root = self.temp_dir / 'priv_parent'
+        fake_root.mkdir(parents=True, exist_ok=True)
+        target = fake_root / 'vmail_new'
+        with patch('services.mail.manager._has_sudo', return_value=True), \
+             patch('services.mail.manager.os.geteuid', return_value=1000), \
+             patch('services.mail.manager.os.access', return_value=False), \
+             patch('services.mail.manager._mkdir_privileged', return_value=True) as mk_mock:
+            res = _resolve_dir('W3PANEL_UNSET_DIR_CHECK', target, self.temp_dir / 'fallback')
+            self.assertEqual(res, target)
+            mk_mock.assert_called_once_with(target)
+
+        with patch('services.mail.manager.shutil.which', return_value='/usr/bin/systemctl'), \
+             patch('services.mail.manager.subprocess.run', return_value=MagicMock(returncode=0)):
+            self.assertEqual(_resolve_mail_unit('postfix'), 'postfix@-')
+
+        with patch('services.mail.manager._has_sudo', return_value=True), \
+             patch('services.mail.manager.shutil.which', side_effect=lambda c: '/usr/bin/systemctl' if c == 'systemctl' else None), \
+             patch('services.mail.manager.subprocess.run', side_effect=[
+                 MagicMock(returncode=0, stdout='activating\n'),
+                 MagicMock(returncode=0, stdout=''),
+             ]) as sub_mock:
+            ok = _control_mail_service('opendkim', 'restart', allow_inactive_restart=True)
+            self.assertTrue(ok)
+            self.assertEqual(sub_mock.call_args_list[1].args[0], ['sudo', '-n', 'systemctl', 'restart', 'opendkim'])
