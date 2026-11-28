@@ -21,6 +21,28 @@ logger = logging.getLogger('w3panel.database')
 
 _DB_IDENT_RE = re.compile(r'^[a-zA-Z0-9_]{1,64}$')
 
+# Effective privilege sets granted on a database, per engine.
+# MariaDB: privileges granted by GRANT ALL PRIVILEGES ON `db`.*
+MARIADB_DATABASE_PRIVILEGES = [
+    'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER',
+    'INDEX', 'REFERENCES', 'CREATE TEMPORARY TABLES', 'LOCK TABLES',
+    'EXECUTE', 'CREATE VIEW', 'SHOW VIEW', 'CREATE ROUTINE',
+    'ALTER ROUTINE', 'EVENT', 'TRIGGER',
+]
+# PostgreSQL: database + public-schema object privileges applied by
+# _grant_postgres_database_privileges().
+POSTGRESQL_DATABASE_PRIVILEGES = [
+    'CONNECT', 'CREATE', 'TEMPORARY', 'USAGE', 'SELECT', 'INSERT',
+    'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER', 'EXECUTE',
+]
+
+
+def get_default_privileges(db_type: str = 'mariadb') -> list[str]:
+    """Return the effective privilege set granted on a database for the engine."""
+    if db_type == 'postgresql':
+        return list(POSTGRESQL_DATABASE_PRIVILEGES)
+    return list(MARIADB_DATABASE_PRIVILEGES)
+
 
 def _validate_db_identifier(val: str, label: str = 'identifier') -> str:
     val = (val or '').strip()
@@ -194,8 +216,7 @@ def grant_user_privileges(db_name: str, db_user: str, db_type: str = 'mariadb') 
             return {'success': False, 'error': str(e)}
     elif db_type == 'postgresql':
         try:
-            cmd = ['sudo', '-n', '-u', 'postgres', 'psql', '-c', f"GRANT ALL PRIVILEGES ON DATABASE \"{db_name}\" TO \"{db_user}\";"]
-            subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            _grant_postgres_database_privileges(db_name, db_user)
             return {'success': True}
         except Exception as e:
             return {'success': False, 'error': str(e)}
@@ -288,6 +309,29 @@ def _delete_mariadb(db_name: str, db_user: str = '') -> dict:
     return {'success': True}
 
 
+def _grant_postgres_database_privileges(db_name: str, db_user: str) -> None:
+    """Grant database-level and public-schema privileges to a PostgreSQL role.
+
+    GRANT ALL PRIVILEGES ON DATABASE only covers CONNECT/CREATE/TEMPORARY, so
+    table/sequence/function access must be granted at the schema level too.
+    """
+    statements = [
+        f'GRANT ALL PRIVILEGES ON DATABASE "{db_name}" TO "{db_user}";',
+        f'GRANT ALL ON SCHEMA public TO "{db_user}";',
+        f'GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "{db_user}";',
+        f'GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO "{db_user}";',
+        f'GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public TO "{db_user}";',
+        f'ALTER DEFAULT PRIVILEGES FOR ROLE "{db_user}" IN SCHEMA public GRANT ALL ON TABLES TO "{db_user}";',
+        f'ALTER DEFAULT PRIVILEGES FOR ROLE "{db_user}" IN SCHEMA public GRANT ALL ON SEQUENCES TO "{db_user}";',
+        f'ALTER DEFAULT PRIVILEGES FOR ROLE "{db_user}" IN SCHEMA public GRANT ALL ON FUNCTIONS TO "{db_user}";',
+    ]
+    sql = ' '.join(statements)
+    subprocess.run(
+        ['sudo', '-n', '-u', 'postgres', 'psql', '-d', db_name, '-v', 'ON_ERROR_STOP=1', '-c', sql],
+        capture_output=True, text=True, timeout=10,
+    )
+
+
 def _create_postgresql(db_name: str, db_user: str, db_pass: str) -> dict:
     """Run SQL commands against local PostgreSQL."""
     try:
@@ -309,8 +353,7 @@ def _create_postgresql(db_name: str, db_user: str, db_pass: str) -> dict:
         cmd_db = ['sudo', '-n', '-u', 'postgres', 'psql', '-c', f"CREATE DATABASE \"{db_name}\" OWNER \"{db_user}\";"]
         subprocess.run(cmd_db, capture_output=True, text=True, timeout=5)
 
-        cmd_grant = ['sudo', '-n', '-u', 'postgres', 'psql', '-c', f"GRANT ALL PRIVILEGES ON DATABASE \"{db_name}\" TO \"{db_user}\";"]
-        subprocess.run(cmd_grant, capture_output=True, text=True, timeout=5)
+        _grant_postgres_database_privileges(db_name, db_user)
 
         return {'success': True, 'db_name': db_name, 'db_user': db_user, 'db_pass': db_pass}
     except Exception as e:

@@ -96,6 +96,10 @@ class DbAdminToolsIntegrationTests(TestCase):
                 u_db = c_usr.get('/databases/', **usr_extra)
                 self.assertContains(u_db, '/databases/launch/phpmyadmin/')
                 self.assertNotContains(u_db, '/databases/launch/pgadmin4/')
+                self.assertNotContains(u_db, 'MariaDB / MySQL Server')
+                self.assertNotContains(u_db, 'PostgreSQL Server')
+                self.assertNotContains(u_db, 'Active & Ready for relational SQL queries')
+                self.assertNotContains(u_db, 'Can be installed by admin in W3Host Manager')
 
                 launch_usr = c_usr.get('/databases/launch/phpmyadmin/', **usr_extra)
                 self.assertEqual(launch_usr.status_code, 302)

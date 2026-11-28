@@ -253,11 +253,29 @@ def admin_users(request):
 def admin_user_create(request):
     """Create user, with optional primary domain auto-provisioning."""
     packages = Package.objects.all()
+    default_php = SystemSetting.get('default_php', '8.3') or '8.3'
+    valid_php_versions = [r['version'] for r in PHP_RUNTIME_DEFS]
+    if default_php not in valid_php_versions:
+        default_php = '8.3'
+    valid_frameworks = {choice[0] for choice in Website.FRAMEWORK_CHOICES}
+
     if request.method == 'POST':
         username = request.POST.get('username', '').strip()
         email = request.POST.get('email', '').strip()
         password = request.POST.get('password', '').strip()
         domain = request.POST.get('domain', '').strip().lower()
+        framework = request.POST.get('framework', 'none').strip()
+        if framework not in valid_frameworks:
+            framework = 'none'
+        php_version = request.POST.get('php_version', default_php).strip()
+        if php_version not in valid_php_versions:
+            php_version = default_php
+        try:
+            port_val = int(request.POST.get('port', '3000') or '3000')
+            if not (1024 <= port_val <= 65535):
+                port_val = 3000
+        except (TypeError, ValueError):
+            port_val = 3000
         package_id = request.POST.get('package')
         role = request.POST.get('role', 'user')
         shell_enabled = request.POST.get('shell_enabled') in ('1', 'true', 'on')
@@ -301,18 +319,20 @@ def admin_user_create(request):
                 
                 # If optional primary domain is provided, provision website immediately
                 if domain:
-                    doc_root = f"/home/{user.username}/{domain}/public_html"
+                    from services.webserver import create_vhost, get_doc_root
+                    doc_root = str(get_doc_root(user.username, domain, framework))
+                    server_ip = SystemSetting.get('server_ip', '127.0.0.1') or '127.0.0.1'
                     site = Website.objects.create(
                         owner=user,
                         domain=domain,
                         doc_root=doc_root,
-                        framework='none',
-                        php_version='8.3',
+                        framework=framework,
+                        php_version=php_version,
+                        port=port_val,
                     )
-                    DNSRecord.objects.create(domain=site, record_type='A', name='@', value='127.0.0.1')
+                    DNSRecord.objects.create(domain=site, record_type='A', name='@', value=server_ip)
                     DNSRecord.objects.create(domain=site, record_type='CNAME', name='www', value=domain)
                     try:
-                        from services.webserver import create_vhost
                         create_vhost(site)
                     except Exception as e:
                         logger.warning(f"Could not provision vhost for {domain}: {e}")
@@ -321,7 +341,7 @@ def admin_user_create(request):
                 else:
                     try:
                         from services.webserver import create_user_php_pool
-                        create_user_php_pool(username=user.username, php_version='8.3')
+                        create_user_php_pool(username=user.username, php_version=default_php)
                     except Exception as e:
                         logger.warning(f"Could not provision PHP pool for {user.username}: {e}")
                     messages.success(request, f'{role.capitalize()} "{username}" created successfully.')
@@ -338,6 +358,8 @@ def admin_user_create(request):
         **_sidebar_context('users'),
         'packages': packages,
         'default_role': 'user',
+        'default_php': default_php,
+        'php_versions': valid_php_versions,
     })
 
 

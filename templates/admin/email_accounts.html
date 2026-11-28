@@ -101,7 +101,7 @@
                             <td class="px-5 py-3.5 text-right">
                                 <div class="inline-flex items-center gap-1">
                                     {% if snappymail_installed %}
-                                    <a href="{% url 'admin_email_webmail_launch' m.id %}" target="_blank" class="px-2 py-1 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition">
+                                    <a href="{% url 'admin_email_webmail_launch' m.id %}" target="_blank" rel="noopener noreferrer" class="px-2 py-1 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition">
                                         Check Email
                                     </a>
                                     {% endif %}

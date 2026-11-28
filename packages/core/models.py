@@ -317,6 +317,36 @@ class Database(models.Model):
         return f'{self.name} ({self.db_type})'
 
 
+class DatabaseUser(models.Model):
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='database_users')
+    username = models.CharField(max_length=64)
+    db_type = models.CharField(max_length=16, choices=Database.DB_TYPE_CHOICES, default='mariadb')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'w3panel_database_user'
+        unique_together = ('owner', 'username', 'db_type')
+        ordering = ['username']
+
+    def __str__(self):
+        return f'{self.username} ({self.db_type})'
+
+
+class DatabasePrivilege(models.Model):
+    database = models.ForeignKey(Database, on_delete=models.CASCADE, related_name='user_privileges')
+    db_user = models.ForeignKey(DatabaseUser, on_delete=models.CASCADE, related_name='database_privileges')
+    privileges = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'w3panel_database_privilege'
+        unique_together = ('database', 'db_user')
+        ordering = ['db_user__username']
+
+    def __str__(self):
+        return f'{self.db_user.username} -> {self.database.name}'
+
+
 # ---------------------------------------------------------------------------
 # Mailbox
 # ---------------------------------------------------------------------------

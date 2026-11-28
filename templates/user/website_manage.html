@@ -37,7 +37,7 @@
             <a href="{% url 'user_website_logs' site.id %}" class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-300 hover:border-[#ff6c2c] text-slate-700 hover:text-[#ff6c2c] rounded-lg text-xs font-semibold uppercase tracking-wider shadow-2xs transition">
                 <i class="ti ti-file-text"></i> Logs
             </a>
-            <a href="/filemanager/?path={{ site.domain }}" class="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-[#ff6c2c] hover:bg-[#e0561b] text-white rounded-lg text-xs font-bold uppercase tracking-wider shadow-sm transition">
+            <a href="/filemanager/?path={{ filemanager_path|urlencode }}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-[#ff6c2c] hover:bg-[#e0561b] text-white rounded-lg text-xs font-bold uppercase tracking-wider shadow-sm transition">
                 <i class="ti ti-folder"></i> File Manager
             </a>
         </div>

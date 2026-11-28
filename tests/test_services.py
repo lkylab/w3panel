@@ -4,7 +4,7 @@ Phase 1: Per-user PHP pool isolation, kernel tuning, and Real-IP restoration.
 """
 from django.test import TestCase
 from pathlib import Path
-from packages.core.models import User, Website, Database, DNSRecord
+from packages.core.models import User, Website, Database, DNSRecord, DatabaseUser, DatabasePrivilege
 from services.webserver import (
     create_vhost,
     remove_vhost,
@@ -404,6 +404,40 @@ class HostingServicesTests(TestCase):
         del_resp = self.client.post(f'/user/databases/{pg_obj.id}/delete/')
         self.assertEqual(del_resp.status_code, 302)
         self.assertFalse(Database.objects.filter(id=pg_obj.id).exists())
+
+    def test_shared_database_user_survives_database_delete(self):
+        """Dropping one database must not drop a user still granted on another."""
+        self.client.force_login(self.user)
+        session = self.client.session
+        session['user_id'] = self.user.id
+        session.save()
+
+        db_user = DatabaseUser.objects.create(
+            owner=self.user, username='test_owner_user', db_type='mariadb',
+        )
+        db_one = Database.objects.create(
+            owner=self.user, name='test_owner_one', db_type='mariadb', db_user='test_owner_user',
+        )
+        db_two = Database.objects.create(
+            owner=self.user, name='test_owner_two', db_type='mariadb', db_user='test_owner_user',
+        )
+        for db in (db_one, db_two):
+            DatabasePrivilege.objects.create(
+                database=db, db_user=db_user, privileges=['SELECT', 'INSERT'],
+            )
+
+        self.client.post(f'/user/databases/{db_one.id}/delete/')
+
+        self.assertFalse(Database.objects.filter(id=db_one.id).exists())
+        self.assertTrue(DatabaseUser.objects.filter(id=db_user.id).exists())
+        self.assertTrue(
+            DatabasePrivilege.objects.filter(database=db_two, db_user=db_user).exists()
+        )
+
+        self.client.post(f'/user/databases/{db_two.id}/delete/')
+
+        self.assertFalse(Database.objects.filter(id=db_two.id).exists())
+        self.assertFalse(DatabaseUser.objects.filter(id=db_user.id).exists())
 
     def test_user_website_lifecycle_views(self):
         self.client.force_login(self.user)

@@ -493,11 +493,12 @@ def create_vhost(website, ssl_cert: str = '', ssl_key: str = '', aliases: list =
     try:
         user_base = _get_users_base_dir() / username
         domain_dir = user_base / domain
+        own_target = domain_dir if (doc_root == domain_dir or domain_dir in doc_root.parents) else doc_root
         if _has_sudo():
             subprocess.run(['sudo', '-n', 'mkdir', '-p', str(doc_root)], capture_output=True, timeout=3)
             subprocess.run(['sudo', '-n', 'chmod', '755', str(user_base)], capture_output=True, timeout=3)
-            subprocess.run(['sudo', '-n', 'chown', '-R', f"{username}:{username}", str(domain_dir)], capture_output=True, timeout=3)
-            subprocess.run(['sudo', '-n', 'chmod', '-R', '755', str(domain_dir)], capture_output=True, timeout=3)
+            subprocess.run(['sudo', '-n', 'chown', '-R', f"{username}:{username}", str(own_target)], capture_output=True, timeout=3)
+            subprocess.run(['sudo', '-n', 'chmod', '-R', '755', str(own_target)], capture_output=True, timeout=3)
         else:
             doc_root.mkdir(parents=True, exist_ok=True)
 

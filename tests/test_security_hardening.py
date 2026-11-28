@@ -1,6 +1,7 @@
 """Isolated security & panel hardening tests for Host Panel, User Panel, Services, and Middleware."""
 
 import os
+import re
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -366,3 +367,181 @@ class HostAndUserPanelHardeningTests(TestCase):
             **extra,
         )
         self.assertEqual(DNSRecord.objects.filter(domain=site).count(), 0)
+
+    def test_admin_user_create_primary_domain_stack_selection(self):
+        c, extra = self._login('secadmin', url='/login/', port='2087')
+        SystemSetting.set('server_ip', '198.51.100.42')
+
+        get_resp = c.get('/users/create/', **extra)
+        self.assertEqual(get_resp.status_code, 200)
+        self.assertContains(get_resp, 'Application Stack / Framework')
+        self.assertContains(get_resp, 'name="framework"')
+        self.assertContains(get_resp, 'name="php_version"')
+        self.assertContains(get_resp, 'name="port"')
+
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             patch.dict(os.environ, {
+                 'W3PANEL_USERS_DIR': f'{tmpdir}/users',
+                 'W3PANEL_VHOST_DIR': f'{tmpdir}/vhosts',
+                 'W3PANEL_PHP_POOL_DIR': f'{tmpdir}/pools',
+             }), \
+             patch('services.webserver.manager._has_sudo', return_value=False), \
+             patch('services.webserver.sync_system_user_shell', return_value=True), \
+             patch('services.webserver.sync_system_user_password', return_value=True):
+            # Laravel primary domain uses /public doc_root, selected PHP version, and server_ip A record
+            r1 = c.post('/users/create/', {
+                'username': 'laraclient',
+                'email': 'lara@example.com',
+                'password': 'StrongPassword123!',
+                'domain': 'lara.example.com',
+                'framework': 'laravel',
+                'php_version': '8.4',
+            }, **extra)
+            self.assertEqual(r1.status_code, 302)
+            site1 = Website.objects.get(domain='lara.example.com')
+            self.assertEqual(site1.framework, 'laravel')
+            self.assertEqual(site1.php_version, '8.4')
+            self.assertTrue(site1.doc_root.endswith('/laraclient/lara.example.com/public_html/public'))
+            self.assertEqual(DNSRecord.objects.get(domain=site1, record_type='A', name='@').value, '198.51.100.42')
+            vhost1 = (Path(tmpdir) / 'vhosts' / 'lara.example.com.conf').read_text()
+            self.assertIn('Mode: laravel', vhost1)
+            self.assertIn('php8.4-fpm-laraclient.sock', vhost1)
+
+            # Node.js primary domain preserves validated port and generates reverse proxy config
+            r2 = c.post('/users/create/', {
+                'username': 'nodeclient',
+                'email': 'node@example.com',
+                'password': 'StrongPassword123!',
+                'domain': 'nodeapp.example.com',
+                'framework': 'nodejs',
+                'port': '4500',
+            }, **extra)
+            self.assertEqual(r2.status_code, 302)
+            site2 = Website.objects.get(domain='nodeapp.example.com')
+            self.assertEqual(site2.framework, 'nodejs')
+            self.assertEqual(site2.port, 4500)
+            vhost2 = (Path(tmpdir) / 'vhosts' / 'nodeapp.example.com.conf').read_text()
+            self.assertIn('proxy_pass http://127.0.0.1:4500;', vhost2)
+
+            # Invalid framework/port safely fall back to defaults
+            r3 = c.post('/users/create/', {
+                'username': 'badstack',
+                'email': 'bad@example.com',
+                'password': 'StrongPassword123!',
+                'domain': 'badstack.example.com',
+                'framework': 'invalid_stack',
+                'php_version': '9.9',
+                'port': '80',
+            }, **extra)
+            self.assertEqual(r3.status_code, 302)
+            site3 = Website.objects.get(domain='badstack.example.com')
+            self.assertEqual(site3.framework, 'none')
+            self.assertEqual(site3.php_version, '8.3')
+            self.assertEqual(site3.port, 3000)
+
+    def test_user_website_alias_domain_sharing_and_ownership(self):
+        # Allow multiple websites under tenant's package for alias creation test
+        self.pkg.websites_limit = 3
+        self.pkg.save()
+        c, extra = self._login('sectenant', url='/user/login/', port='2083')
+
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             patch.dict(os.environ, {
+                 'W3PANEL_USERS_DIR': f'{tmpdir}/users',
+                 'W3PANEL_VHOST_DIR': f'{tmpdir}/vhosts',
+                 'W3PANEL_PHP_POOL_DIR': f'{tmpdir}/pools',
+             }), \
+             patch('services.webserver.manager._has_sudo', return_value=False):
+            main_doc = f'{tmpdir}/users/sectenant/main.example.com/public_html/public'
+            Path(main_doc).mkdir(parents=True, exist_ok=True)
+            main_site = Website.objects.create(
+                owner=self.tenant,
+                domain='main.example.com',
+                doc_root=main_doc,
+                framework='laravel',
+                php_version='8.4',
+            )
+            foreign_site = Website.objects.create(
+                owner=self.other_tenant,
+                domain='foreign.example.com',
+                doc_root=f'{tmpdir}/users/otheruser/foreign.example.com/public_html',
+                framework='none',
+                php_version='8.3',
+            )
+
+            # GET create page lists owned domain for aliasing (and not foreign domain)
+            form_resp = c.get('/websites/create/', **extra)
+            self.assertEqual(form_resp.status_code, 200)
+            self.assertContains(form_resp, 'Alias Domain (Share Existing Doc Root)')
+            self.assertContains(form_resp, 'main.example.com')
+            self.assertNotContains(form_resp, 'foreign.example.com')
+
+            # Creating alias referencing another tenant's site must be rejected
+            c.post('/websites/create/', {
+                'domain': 'hijack.example.com',
+                'domain_mode': 'alias',
+                'alias_target_id': str(foreign_site.id),
+            }, **extra)
+            self.assertFalse(Website.objects.filter(domain='hijack.example.com').exists())
+
+            # Creating alias referencing own domain shares doc_root, stack, PHP version, and skips unused dir
+            ok_resp = c.post('/websites/create/', {
+                'domain': 'parked.example.com',
+                'domain_mode': 'alias',
+                'alias_target_id': str(main_site.id),
+                'proxy_real_ip': '1',
+            }, **extra)
+            self.assertEqual(ok_resp.status_code, 302)
+
+            alias_site = Website.objects.get(domain='parked.example.com')
+            self.assertEqual(alias_site.doc_root, main_doc)
+            self.assertEqual(alias_site.framework, 'laravel')
+            self.assertEqual(alias_site.php_version, '8.4')
+            self.assertTrue(alias_site.proxy_real_ip)
+            self.assertFalse((Path(tmpdir) / 'users' / 'sectenant' / 'parked.example.com').exists())
+
+            alias_vhost = (Path(tmpdir) / 'vhosts' / 'parked.example.com.conf').read_text()
+            self.assertIn(f'root {main_doc};', alias_vhost)
+            self.assertIn('php8.4-fpm-sectenant.sock', alias_vhost)
+
+            # Domains list indicates alias target and links Files to shared doc_root path
+            list_resp = c.get('/websites/', **extra)
+            self.assertEqual(list_resp.status_code, 200)
+            self.assertContains(list_resp, 'Alias &rarr; main.example.com')
+            self.assertContains(list_resp, '/filemanager/?path=main.example.com/public_html/public')
+            fm_resp = c.get('/filemanager/?path=main.example.com/public_html/public', **extra)
+            self.assertEqual(fm_resp.status_code, 200)
+
+    def test_user_webmail_and_filemanager_links_open_in_new_tab(self):
+        c, extra = self._login('sectenant', url='/user/login/', port='2083')
+
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             patch.dict(os.environ, {'W3PANEL_USERS_DIR': f'{tmpdir}/users'}), \
+             patch('services.mail.is_snappymail_installed', return_value=True), \
+             patch('services.process_manager.get_app_status', return_value={'status': 'inactive', 'is_running': False, 'port': 3000}):
+            site = Website.objects.create(
+                owner=self.tenant,
+                domain='tabcheck.example.com',
+                doc_root=f'{tmpdir}/users/sectenant/tabcheck.example.com/public_html/public',
+                framework='laravel',
+                php_version='8.3',
+            )
+
+            anchor_re = re.compile(r'<a\b[^>]*href="/(?:filemanager|webmail|snappymail)[^"]*"[^>]*>')
+            for path, expected_hrefs in [
+                ('/', ['/filemanager/', '/webmail/']),
+                ('/websites/', ['/filemanager/?path=tabcheck.example.com/public_html/public']),
+                (f'/websites/{site.id}/manage/', ['/filemanager/?path=tabcheck.example.com/public_html/public']),
+                ('/emails/', ['/webmail/']),
+                ('/webmail/', ['/snappymail/']),
+            ]:
+                resp = c.get(path, **extra)
+                self.assertEqual(resp.status_code, 200)
+                html = resp.content.decode()
+                for href in expected_hrefs:
+                    self.assertIn(f'href="{href}"', html)
+                tags = anchor_re.findall(html)
+                self.assertTrue(tags, f'Expected target links on {path}')
+                for tag in tags:
+                    self.assertIn('target="_blank"', tag, f'Missing target="_blank" in {tag} on {path}')
+                    self.assertIn('rel="noopener noreferrer"', tag, f'Missing rel="noopener noreferrer" in {tag} on {path}')

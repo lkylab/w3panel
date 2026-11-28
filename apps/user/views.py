@@ -15,7 +15,8 @@ from django.views.decorators.csrf import csrf_exempt
 
 from packages.core.models import (
     User, Website, Package, SystemSetting, AuditLog, Notification,
-    Database, Mailbox, EmailForwarder, EmailAutoresponder, EmailCatchAll,
+    Database, DatabaseUser, DatabasePrivilege,
+    Mailbox, EmailForwarder, EmailAutoresponder, EmailCatchAll,
     DNSRecord, FTPAccount, CronJob, Backup
 )
 
@@ -35,9 +36,9 @@ def _user_sidebar_context(request, active_page=''):
     if db_tools['pgadmin4_available']:
         items.append({'label': 'pgAdmin 4', 'url': '/databases/launch/pgadmin4/', 'icon': 'ti ti-brand-databricks', 'active': 'pgadmin4', 'external': True})
     items.extend([
-        {'label': 'File Manager', 'url': '/filemanager/', 'icon': 'ti ti-folder', 'active': 'files'},
+        {'label': 'File Manager', 'url': '/filemanager/', 'icon': 'ti ti-folder', 'active': 'files', 'external': True},
         {'label': 'Email Accounts', 'url': '/emails/', 'icon': 'ti ti-mail', 'active': 'emails'},
-        {'label': 'Webmail', 'url': '/webmail/', 'icon': 'ti ti-brand-chrome', 'active': 'webmail'},
+        {'label': 'Webmail', 'url': '/webmail/', 'icon': 'ti ti-brand-chrome', 'active': 'webmail', 'external': True},
         {'label': 'SSL / TLS', 'url': '/ssl/', 'icon': 'ti ti-lock', 'active': 'ssl'},
         {'label': 'PHP Version', 'url': '/php/', 'icon': 'ti ti-brand-php', 'active': 'php'},
         {'label': 'Zone Editor', 'url': '/dns/', 'icon': 'ti ti-dns', 'active': 'dns'},
@@ -180,9 +181,35 @@ def user_dashboard(request):
     })
 
 
+def _get_filemanager_path(user, doc_root: str, fallback_domain: str) -> str:
+    """Resolve File Manager ?path= relative to the tenant home directory."""
+    if not doc_root or not user:
+        return fallback_domain
+    from services.webserver.manager import _get_users_base_dir
+    user_base_resolved = (_get_users_base_dir() / user.username).resolve()
+    try:
+        rel = Path(doc_root).resolve().relative_to(user_base_resolved)
+        return str(rel).strip('/') or fallback_domain
+    except ValueError:
+        return fallback_domain
+
+
 def user_websites(request):
     """User websites list."""
-    websites = Website.objects.filter(owner=request.panel_user)
+    user = request.panel_user
+    websites = list(Website.objects.filter(owner=user))
+
+    canonical_by_root = {}
+    for s in websites:
+        if f"/{s.domain}/" in (s.doc_root or '') or (s.doc_root or '').endswith(f"/{s.domain}"):
+            canonical_by_root[s.doc_root] = s.domain
+
+    for s in websites:
+        s.alias_target_domain = ''
+        if s.doc_root in canonical_by_root and canonical_by_root[s.doc_root] != s.domain:
+            s.alias_target_domain = canonical_by_root[s.doc_root]
+        s.filemanager_path = _get_filemanager_path(user, s.doc_root, s.domain)
+
     is_nginx_installed = bool(shutil.which('nginx'))
     return render(request, 'user/websites.html', {
         **_user_sidebar_context(request, 'websites'),
@@ -196,20 +223,33 @@ _SUPPORTED_PHP_VERSIONS = {'7.4', '8.0', '8.1', '8.2', '8.3', '8.4'}
 
 
 def user_website_create(request):
-    """User website create."""
+    """User website create, supporting dedicated doc root or sharing another owned domain's doc root."""
     is_nginx_installed = bool(shutil.which('nginx'))
-    default_php = SystemSetting.get('default_php', '8.3')
+    default_php = SystemSetting.get('default_php', '8.3') or '8.3'
+    if default_php not in _SUPPORTED_PHP_VERSIONS:
+        default_php = '8.3'
+    user = request.panel_user
+    existing_websites = list(Website.objects.filter(owner=user, is_active=True).order_by('domain'))
+
     if request.method == 'POST':
         domain = request.POST.get('domain', '').strip().lower()
-        framework = request.POST.get('framework', 'none')
+        domain_mode = request.POST.get('domain_mode', 'new').strip()
+        if domain_mode not in ('new', 'alias'):
+            domain_mode = 'new'
+        framework = request.POST.get('framework', 'none').strip()
         php_version = request.POST.get('php_version', default_php).strip()
         if php_version not in _SUPPORTED_PHP_VERSIONS:
             php_version = default_php
         if framework not in ('none', 'wordpress', 'laravel', 'django', 'nodejs', 'static'):
             framework = 'none'
+        try:
+            port_val = int(request.POST.get('port', '3000') or '3000')
+            if not (1024 <= port_val <= 65535):
+                port_val = 3000
+        except (TypeError, ValueError):
+            port_val = 3000
         proxy_real_ip = request.POST.get('proxy_real_ip') in ('1', 'true', 'on')
 
-        user = request.panel_user
         pkg = getattr(user, 'package', None)
         if pkg and pkg.websites_limit >= 0 and Website.objects.filter(owner=user).count() >= pkg.websites_limit:
             messages.error(request, f'Website limit reached ({pkg.websites_limit}).')
@@ -219,27 +259,52 @@ def user_website_create(request):
             messages.error(request, f'Domain "{domain}" is already in use.')
         else:
             from services.webserver import create_vhost, get_doc_root
-            username = user.username if user else 'guest'
-            doc_root = str(get_doc_root(username, domain, framework))
-            site = Website.objects.create(
-                owner=user,
-                domain=domain,
-                doc_root=doc_root,
-                framework=framework,
-                php_version=php_version,
-                proxy_real_ip=proxy_real_ip,
-            )
-            DNSRecord.objects.create(domain=site, record_type='A', name='@', value=SystemSetting.get('server_ip', '127.0.0.1') or '127.0.0.1')
-            DNSRecord.objects.create(domain=site, record_type='CNAME', name='www', value=domain)
+            success_msg = f'Website "{domain}" created and VirtualHost provisioned successfully!'
+            target_valid = True
+            if domain_mode == 'alias':
+                alias_target_id = (request.POST.get('alias_target_id') or '').strip()
+                alias_target_domain = (request.POST.get('alias_target_domain') or '').strip().lower()
+                target_site = None
+                if alias_target_id.isdigit():
+                    target_site = Website.objects.filter(id=int(alias_target_id), owner=user, is_active=True).first()
+                elif alias_target_domain:
+                    target_site = Website.objects.filter(domain=alias_target_domain, owner=user, is_active=True).first()
+                if not target_site:
+                    messages.error(request, 'Select a valid existing domain you own to share its document root.')
+                    target_valid = False
+                else:
+                    doc_root = target_site.doc_root
+                    framework = target_site.framework
+                    php_version = target_site.php_version or default_php
+                    port_val = target_site.port or 3000
+                    success_msg = f'Alias domain "{domain}" created sharing document root with "{target_site.domain}".'
+            else:
+                username = user.username if user else 'guest'
+                doc_root = str(get_doc_root(username, domain, framework))
 
-            create_vhost(site)
-
-            messages.success(request, f'Website "{domain}" created and VirtualHost provisioned successfully!')
-            return redirect('user_websites')
+            if target_valid:
+                site = Website.objects.create(
+                    owner=user,
+                    domain=domain,
+                    doc_root=doc_root,
+                    framework=framework,
+                    php_version=php_version,
+                    port=port_val,
+                    proxy_real_ip=proxy_real_ip,
+                )
+                server_ip = SystemSetting.get('server_ip', '127.0.0.1') or '127.0.0.1'
+                DNSRecord.objects.create(domain=site, record_type='A', name='@', value=server_ip)
+                DNSRecord.objects.create(domain=site, record_type='CNAME', name='www', value=domain)
+                create_vhost(site)
+                messages.success(request, success_msg)
+                return redirect('user_websites')
 
     return render(request, 'user/website_create.html', {
         **_user_sidebar_context(request, 'websites'),
         'is_nginx_installed': is_nginx_installed,
+        'existing_websites': existing_websites,
+        'default_php': default_php,
+        'php_versions': sorted(_SUPPORTED_PHP_VERSIONS, reverse=True),
     })
 
 
@@ -324,6 +389,7 @@ def user_website_manage(request, website_id):
     return render(request, 'user/website_manage.html', {
         **_user_sidebar_context(request, 'websites'),
         'site': site,
+        'filemanager_path': _get_filemanager_path(request.panel_user, site.doc_root, site.domain),
         'app_status': app_status,
         'app_logs': app_logs,
         'releases': releases,
@@ -477,7 +543,7 @@ def user_databases(request):
         create_database_user, grant_user_privileges,
         change_user_password, delete_database_user,
         is_mariadb_installed, is_postgresql_installed,
-        generate_secure_password
+        generate_secure_password, get_default_privileges
     )
 
     mariadb_ok = is_mariadb_installed()
@@ -507,7 +573,12 @@ def user_databases(request):
                     default_user = f"{username}_user"[:64]
                     default_pass = generate_secure_password()
                     create_database(full_name, default_user, default_pass, db_type=db_type)
-                    Database.objects.create(owner=user, name=full_name, db_type=db_type, db_user=default_user)
+                    db_obj = Database.objects.create(owner=user, name=full_name, db_type=db_type, db_user=default_user)
+                    db_user_obj, _ = DatabaseUser.objects.get_or_create(owner=user, username=default_user, db_type=db_type)
+                    DatabasePrivilege.objects.get_or_create(
+                        database=db_obj, db_user=db_user_obj,
+                        defaults={'privileges': get_default_privileges(db_type)},
+                    )
                     messages.success(request, f'{db_type.capitalize()} database "{full_name}" created successfully!')
                     return redirect('user_databases')
 
@@ -525,6 +596,7 @@ def user_databases(request):
                 if not password:
                     password = generate_secure_password()
                 create_database_user(full_user, password, db_type=db_type)
+                DatabaseUser.objects.get_or_create(owner=user, username=full_user, db_type=db_type)
                 messages.success(request, f'{db_type.capitalize()} user "{full_user}" created! (Password: {password})')
                 return redirect('user_databases')
 
@@ -535,6 +607,11 @@ def user_databases(request):
             owns_db_user = db_user.startswith(f"{username}_") or Database.objects.filter(owner=user, db_user=db_user).exists()
             if db_user and owns_db_user and re.match(r'^[a-zA-Z0-9_]{1,64}$', db_user):
                 grant_user_privileges(db_obj.name, db_user, db_type=db_obj.db_type)
+                db_user_obj, _ = DatabaseUser.objects.get_or_create(owner=user, username=db_user, db_type=db_obj.db_type)
+                DatabasePrivilege.objects.update_or_create(
+                    database=db_obj, db_user=db_user_obj,
+                    defaults={'privileges': get_default_privileges(db_obj.db_type)},
+                )
                 db_obj.db_user = db_user
                 db_obj.save(update_fields=['db_user'])
                 messages.success(request, f'Granted privileges on "{db_obj.name}" to user "{db_user}".')
@@ -552,7 +629,8 @@ def user_databases(request):
                 return redirect('user_databases')
             messages.error(request, 'Invalid or unauthorized database user.')
 
-    databases = Database.objects.filter(owner=request.panel_user)
+    databases = Database.objects.filter(owner=request.panel_user).prefetch_related('user_privileges__db_user')
+    database_users = DatabaseUser.objects.filter(owner=request.panel_user).prefetch_related('database_privileges__database')
     mariadb_list = databases.filter(db_type='mariadb')
     postgres_list = databases.filter(db_type='postgresql')
 
@@ -562,6 +640,7 @@ def user_databases(request):
     return render(request, 'user/databases.html', {
         **_user_sidebar_context(request, 'databases'),
         'databases': databases,
+        'database_users': database_users,
         'mariadb_databases': mariadb_list,
         'postgres_databases': postgres_list,
         'is_mariadb_installed': mariadb_ok,
@@ -574,13 +653,24 @@ def user_databases(request):
 
 
 def user_database_delete(request, db_id):
-    """User database delete."""
+    """User database delete, keeping shared DB users that still own grants."""
     if request.method == 'POST':
-        db = get_object_or_404(Database, id=db_id, owner=request.panel_user)
-        name = db.name
-        from services.database import delete_database
-        delete_database(name, db.db_user, db.db_type)
+        user = request.panel_user
+        db = get_object_or_404(Database, id=db_id, owner=user)
+        name, db_user, db_type = db.name, db.db_user, db.db_type
+        from services.database import delete_database, delete_database_user
+
+        delete_database(name, '', db_type)
         db.delete()
+
+        if db_user:
+            still_granted = DatabasePrivilege.objects.filter(
+                db_user__owner=user, db_user__username=db_user, db_user__db_type=db_type,
+            ).exists()
+            if not still_granted:
+                delete_database_user(db_user, db_type=db_type)
+                DatabaseUser.objects.filter(owner=user, username=db_user, db_type=db_type).delete()
+
         messages.success(request, f'Database "{name}" deleted.')
     return redirect('user_databases')
 
