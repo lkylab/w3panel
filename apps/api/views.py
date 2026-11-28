@@ -239,7 +239,7 @@ def database_endpoint(request):
 @csrf_exempt
 @api_auth
 def email_endpoint(request):
-    """GET (list) or POST (create) /api/v1/emails/"""
+    """GET (list), POST (create), or DELETE /api/v1/emails/"""
     if request.method == 'GET':
         if request.api_user.role == 'admin':
             mailboxes = Mailbox.objects.all()
@@ -268,17 +268,24 @@ def email_endpoint(request):
 
         username = body.get('username', '').strip().lower()
         domain = body.get('domain', '').strip().lower()
-        quota = int(body.get('quota_mb', 1024))
+        password = body.get('password', '').strip()
+        try:
+            quota = max(1, int(body.get('quota_mb', 1024)))
+        except (ValueError, TypeError):
+            quota = 1024
 
         if not username or not domain:
             return JsonResponse({'error': 'Username and domain are required'}, status=400)
+
+        if request.api_user.role != 'admin' and not Website.objects.filter(owner=request.api_user, domain=domain, is_active=True).exists():
+            return JsonResponse({'error': 'Domain does not belong to your account'}, status=403)
 
         full_email = f"{username}@{domain}"
         if Mailbox.objects.filter(email=full_email).exists():
             return JsonResponse({'error': f'Mailbox {full_email} already exists'}, status=409)
 
         owner = request.api_user
-        create_mailbox(full_email, quota_mb=quota)
+        create_mailbox(full_email, password=password, quota_mb=quota)
         mb = Mailbox.objects.create(
             owner=owner,
             email=full_email,
@@ -292,6 +299,24 @@ def email_endpoint(request):
             'domain': mb.domain,
             'quota_mb': mb.quota_mb
         }, status=201)
+
+    elif request.method == 'DELETE':
+        mb_id = request.GET.get('id')
+        email = request.GET.get('email', '').strip().lower()
+        if not mb_id and not email and request.body:
+            try:
+                body = json.loads(request.body)
+                mb_id = body.get('id')
+                email = (body.get('email') or '').strip().lower()
+            except json.JSONDecodeError:
+                pass
+        qs = Mailbox.objects.all() if request.api_user.role == 'admin' else Mailbox.objects.filter(owner=request.api_user)
+        mb = qs.filter(id=mb_id).first() if mb_id else (qs.filter(email=email).first() if email else None)
+        if not mb:
+            return JsonResponse({'error': 'Mailbox not found'}, status=404)
+        delete_mailbox(mb.email)
+        mb.delete()
+        return JsonResponse({'deleted': True})
 
     return JsonResponse({'error': 'Method not allowed'}, status=405)
 

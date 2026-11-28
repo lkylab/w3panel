@@ -15,7 +15,8 @@ from django.views.decorators.csrf import csrf_exempt
 
 from packages.core.models import (
     User, Website, Package, SystemSetting, AuditLog, Notification,
-    Database, Mailbox, DNSRecord, FTPAccount, CronJob, Backup
+    Database, Mailbox, EmailForwarder, EmailAutoresponder, EmailCatchAll,
+    DNSRecord, FTPAccount, CronJob, Backup
 )
 
 
@@ -35,6 +36,8 @@ def _user_sidebar_context(request, active_page=''):
         items.append({'label': 'pgAdmin 4', 'url': '/databases/launch/pgadmin4/', 'icon': 'ti ti-brand-databricks', 'active': 'pgadmin4', 'external': True})
     items.extend([
         {'label': 'File Manager', 'url': '/filemanager/', 'icon': 'ti ti-folder', 'active': 'files'},
+        {'label': 'Email Accounts', 'url': '/emails/', 'icon': 'ti ti-mail', 'active': 'emails'},
+        {'label': 'Webmail', 'url': '/webmail/', 'icon': 'ti ti-brand-chrome', 'active': 'webmail'},
         {'label': 'SSL / TLS', 'url': '/ssl/', 'icon': 'ti ti-lock', 'active': 'ssl'},
         {'label': 'PHP Version', 'url': '/php/', 'icon': 'ti ti-brand-php', 'active': 'php'},
         {'label': 'Zone Editor', 'url': '/dns/', 'icon': 'ti ti-dns', 'active': 'dns'},
@@ -131,6 +134,7 @@ def user_dashboard(request):
         'databases': pkg.databases_limit if pkg else 5,
         'disk': pkg.disk_limit_mb if pkg else 10240,
         'bandwidth': pkg.bandwidth_limit_gb if pkg else 100,
+        'email': pkg.email_limit if pkg else 10,
     }
     
     disk_used_mb = sum(db.size_mb for db in databases) + 45.0  # approximate base
@@ -139,10 +143,12 @@ def user_dashboard(request):
     databases_count = databases.count()
     mariadb_count = mariadb_databases.count()
     postgres_count = postgres_databases.count()
+    mailboxes_count = Mailbox.objects.filter(owner=user).count()
     
     websites_percent = min(100, (websites_count / limits['websites']) * 100) if limits['websites'] > 0 else 0
     databases_percent = min(100, (databases_count / limits['databases']) * 100) if limits['databases'] > 0 else 0
     disk_percent = min(100, (disk_used_mb / limits['disk']) * 100) if limits['disk'] > 0 else 0
+    email_percent = min(100, (mailboxes_count / limits['email']) * 100) if limits['email'] > 0 else 0
 
     first_site = websites.first()
     primary_domain = first_site.domain if first_site else 'None'
@@ -162,9 +168,11 @@ def user_dashboard(request):
         'databases_count': databases_count,
         'mariadb_count': mariadb_count,
         'postgres_count': postgres_count,
+        'mailboxes_count': mailboxes_count,
         'limits': limits,
         'websites_percent': round(websites_percent, 1),
         'databases_percent': round(databases_percent, 1),
+        'email_percent': round(email_percent, 1),
         'disk_used_mb': round(disk_used_mb, 1),
         'disk_percent': round(disk_percent, 1),
         'primary_domain': primary_domain,
@@ -578,15 +586,11 @@ def user_database_delete(request, db_id):
 
 
 def user_db_tool_launch(request, tool):
-    """Auto-wire Nginx/Apache route if needed and redirect to same-origin phpMyAdmin or pgAdmin 4."""
-    from services.database import ensure_db_admin_webserver_configured, get_db_admin_tools_status, get_db_tool_url
+    """Auto-wire Nginx/Apache route, sign on for phpMyAdmin with tenant DBs, and redirect."""
+    from services.database import get_db_admin_tools_status, launch_db_tool
     db_tools = get_db_admin_tools_status()
-    if tool == 'phpmyadmin' and db_tools['phpmyadmin_available']:
-        ensure_db_admin_webserver_configured()
-        return redirect(get_db_tool_url(request, 'phpmyadmin'))
-    if tool == 'pgadmin4' and db_tools['pgadmin4_available']:
-        ensure_db_admin_webserver_configured()
-        return redirect(get_db_tool_url(request, 'pgadmin4'))
+    if (tool == 'phpmyadmin' and db_tools['phpmyadmin_available']) or (tool == 'pgadmin4' and db_tools['pgadmin4_available']):
+        return launch_db_tool(request, tool, request.panel_user)
     messages.error(request, 'Requested database admin tool is not available.')
     return redirect('user_databases')
 
@@ -598,6 +602,15 @@ def db_tool_proxy_view(request, tool, subpath=''):
         return HttpResponseForbidden('Authentication required.')
     from services.database import proxy_db_tool_request
     return proxy_db_tool_request(request, tool, subpath)
+
+
+@csrf_exempt
+def webmail_proxy_view(request, subpath=''):
+    """Authenticated reverse-proxy endpoint for /snappymail/ on any panel port."""
+    if not getattr(request, 'panel_user', None):
+        return HttpResponseForbidden('Authentication required.')
+    from services.mail import proxy_webmail_request
+    return proxy_webmail_request(request, subpath)
 
 
 def _format_size(size_bytes):
@@ -1704,3 +1717,341 @@ def user_terminal_exec(request):
         return JsonResponse({'stderr': 'Command execution timed out after 15 seconds.', 'returncode': 124})
     except Exception as e:
         return JsonResponse({'stderr': str(e), 'returncode': 1})
+
+
+# ===========================================================================
+# User Email Stack Views
+# ===========================================================================
+
+def user_emails(request):
+    """User email accounts, forwarders, autoresponders, catch-all & deliverability management."""
+    user = request.panel_user
+    if not user:
+        return redirect('user_login')
+
+    from services.mail import (
+        create_mailbox, create_mail_alias, get_mailbox_disk_usage,
+        set_domain_catchall, sync_mailbox_sieve,
+        get_domain_deliverability, is_snappymail_installed,
+    )
+
+    websites = Website.objects.filter(owner=user, is_active=True).order_by('domain')
+    user_domains = set(websites.values_list('domain', flat=True))
+
+    pkg = user.package if user.package else None
+    email_limit = pkg.email_limit if pkg else 10
+
+    if request.method == 'POST':
+        action = request.POST.get('action', 'create_mailbox')
+
+        if action == 'create_mailbox':
+            current_count = Mailbox.objects.filter(owner=user).count()
+            if email_limit != -1 and current_count >= email_limit:
+                messages.error(request, f'Email account limit reached ({current_count}/{email_limit}).')
+                return redirect('user_emails')
+
+            username = request.POST.get('username', '').strip().lower()
+            domain = request.POST.get('domain', '').strip().lower()
+            password = request.POST.get('password', '').strip()
+            quota_raw = request.POST.get('quota', '1024').strip()
+
+            if not username or not domain:
+                messages.error(request, 'Mailbox username and domain are required.')
+                return redirect('user_emails')
+
+            if not password:
+                messages.error(request, 'Password is required to create a mailbox.')
+                return redirect('user_emails')
+
+            if not re.match(r'^[a-z0-9._+-]+$', username):
+                messages.error(request, 'Invalid characters in mailbox username.')
+                return redirect('user_emails')
+
+            if domain not in user_domains:
+                messages.error(request, 'Selected domain does not belong to your account.')
+                return redirect('user_emails')
+
+            try:
+                quota = max(1, int(quota_raw))
+            except ValueError:
+                quota = 1024
+
+            full_email = f"{username}@{domain}"
+            if Mailbox.objects.filter(email=full_email).exists():
+                messages.error(request, f'Mailbox {full_email} already exists.')
+                return redirect('user_emails')
+
+            res = create_mailbox(full_email, password=password, quota_mb=quota)
+            if res.get('success'):
+                Mailbox.objects.create(
+                    owner=user,
+                    email=full_email,
+                    domain=domain,
+                    quota_mb=quota,
+                    used_mb=0.0,
+                    is_active=True
+                )
+                messages.success(request, f'Mailbox {full_email} created successfully!')
+            else:
+                messages.error(request, res.get('error', 'Failed to configure mailbox on mail server.'))
+            return redirect('user_emails')
+
+        elif action == 'create_forwarder':
+            source_user = request.POST.get('source_user', '').strip().lower()
+            source_domain = request.POST.get('source_domain', '').strip().lower()
+            destination = request.POST.get('destination', '').strip().lower()
+
+            if not source_user or not source_domain or not destination:
+                messages.error(request, 'Source username, domain, and destination are required.')
+                return redirect('user_emails')
+
+            if source_domain not in user_domains:
+                messages.error(request, 'Selected domain does not belong to your account.')
+                return redirect('user_emails')
+
+            source_email = f"{source_user}@{source_domain}"
+            if EmailForwarder.objects.filter(source=source_email).exists():
+                messages.error(request, f'A forwarder for {source_email} already exists.')
+                return redirect('user_emails')
+
+            dest_list = [d.strip() for d in destination.split(',') if d.strip()]
+            res = create_mail_alias(source_email, dest_list)
+            if res.get('success'):
+                EmailForwarder.objects.create(
+                    owner=user,
+                    source=source_email,
+                    destination=destination,
+                    domain=source_domain,
+                    is_active=True
+                )
+                messages.success(request, f'Forwarder for {source_email} created!')
+            else:
+                messages.error(request, res.get('error', 'Failed to configure forwarder.'))
+            return redirect('user_emails')
+
+        elif action == 'create_autoresponder':
+            username = request.POST.get('ar_user', '').strip().lower()
+            domain = request.POST.get('ar_domain', '').strip().lower()
+            subject = request.POST.get('ar_subject', '').strip()
+            body = request.POST.get('ar_body', '').strip()
+            interval_raw = request.POST.get('ar_interval', '24').strip()
+
+            if not username or not domain or not subject or not body:
+                messages.error(request, 'Address, subject, and message body are required.')
+                return redirect('user_emails')
+
+            if domain not in user_domains:
+                messages.error(request, 'Selected domain does not belong to your account.')
+                return redirect('user_emails')
+
+            full_email = f"{username}@{domain}"
+            try:
+                interval_hours = max(1, int(interval_raw))
+            except ValueError:
+                interval_hours = 24
+
+            res = sync_mailbox_sieve(full_email, subject, body, interval_hours=interval_hours, is_active=True)
+            if res.get('success'):
+                EmailAutoresponder.objects.update_or_create(
+                    email=full_email,
+                    defaults={
+                        'owner': user,
+                        'domain': domain,
+                        'subject': subject[:255],
+                        'body': body,
+                        'interval_hours': interval_hours,
+                        'is_active': True,
+                    },
+                )
+                messages.success(request, f'Autoresponder saved for {full_email}.')
+            else:
+                messages.error(request, res.get('error', 'Failed to configure autoresponder.'))
+            return redirect('user_emails')
+
+        elif action == 'set_catchall':
+            domain = request.POST.get('catchall_domain', '').strip().lower()
+            ca_action = request.POST.get('catchall_action', 'fail').strip()
+            destination = request.POST.get('catchall_destination', '').strip().lower()
+
+            if domain not in user_domains:
+                messages.error(request, 'Selected domain does not belong to your account.')
+                return redirect('user_emails')
+
+            res = set_domain_catchall(domain, ca_action, destination)
+            if res.get('success'):
+                EmailCatchAll.objects.update_or_create(
+                    domain=domain,
+                    defaults={
+                        'owner': user,
+                        'action': ca_action,
+                        'destination': destination if ca_action == 'forward' else '',
+                        'is_active': ca_action != 'fail',
+                    },
+                )
+                messages.success(request, f'Default address rule updated for {domain}.')
+            else:
+                messages.error(request, res.get('error', 'Failed to update default address rule.'))
+            return redirect('user_emails')
+
+    mailboxes = Mailbox.objects.filter(owner=user).order_by('-created_at')
+    for m in mailboxes:
+        real_mb = get_mailbox_disk_usage(m.email)
+        if real_mb > 0:
+            m.used_mb = real_mb
+
+    forwarders = EmailForwarder.objects.filter(owner=user).order_by('-created_at')
+    autoresponders = EmailAutoresponder.objects.filter(owner=user).order_by('-created_at')
+    catchalls = EmailCatchAll.objects.filter(owner=user).order_by('domain')
+    deliverability_list = [get_domain_deliverability(w) for w in websites]
+
+    import socket
+    server_hostname = SystemSetting.get('server_hostname', '').strip()
+    if not server_hostname:
+        try:
+            server_hostname = socket.gethostname()
+        except Exception:
+            server_hostname = 'localhost'
+
+    return render(request, 'user/emails.html', {
+        **_user_sidebar_context(request, 'emails'),
+        'mailboxes': mailboxes,
+        'forwarders': forwarders,
+        'autoresponders': autoresponders,
+        'catchalls': catchalls,
+        'deliverability_list': deliverability_list,
+        'websites': websites,
+        'snappymail_installed': is_snappymail_installed(),
+        'limits': {
+            'email': email_limit,
+            'email_display': 'Unlimited' if email_limit == -1 else email_limit,
+            'email_count': mailboxes.count(),
+        },
+        'mail_host': server_hostname,
+    })
+
+
+def user_email_delete(request, mailbox_id):
+    """Delete a user mailbox."""
+    user = request.panel_user
+    if not user:
+        return redirect('user_login')
+    if request.method != 'POST':
+        return HttpResponseForbidden('POST required')
+
+    from services.mail import delete_mailbox
+    mailbox = get_object_or_404(Mailbox, id=mailbox_id, owner=user)
+    email = mailbox.email
+
+    delete_mailbox(email)
+    EmailAutoresponder.objects.filter(owner=user, email=email).delete()
+    mailbox.delete()
+    messages.success(request, f'Mailbox {email} deleted successfully.')
+    return redirect('user_emails')
+
+
+def user_email_change_password(request, mailbox_id):
+    """Update user mailbox password or quota."""
+    user = request.panel_user
+    if not user:
+        return redirect('user_login')
+    if request.method != 'POST':
+        return HttpResponseForbidden('POST required')
+
+    from services.mail import set_mailbox_password, update_mailbox_quota
+    mailbox = get_object_or_404(Mailbox, id=mailbox_id, owner=user)
+
+    password = request.POST.get('password', '').strip()
+    quota_raw = request.POST.get('quota', '').strip()
+
+    if quota_raw:
+        try:
+            quota = int(quota_raw)
+            if quota > 0:
+                mailbox.quota_mb = quota
+                mailbox.save(update_fields=['quota_mb'])
+                update_mailbox_quota(mailbox.email, quota)
+                messages.success(request, f'Quota updated for {mailbox.email}.')
+        except ValueError:
+            pass
+
+    if password:
+        set_mailbox_password(mailbox.email, password, quota_mb=mailbox.quota_mb)
+        messages.success(request, f'Password updated for {mailbox.email}.')
+
+    return redirect('user_emails')
+
+
+def user_email_forwarder_delete(request, forwarder_id):
+    """Delete user email forwarder."""
+    user = request.panel_user
+    if not user:
+        return redirect('user_login')
+    if request.method != 'POST':
+        return HttpResponseForbidden('POST required')
+
+    from services.mail import delete_mail_alias
+    fwd = get_object_or_404(EmailForwarder, id=forwarder_id, owner=user)
+    source = fwd.source
+
+    delete_mail_alias(source)
+    fwd.delete()
+    messages.success(request, f'Forwarder for {source} removed.')
+    return redirect('user_emails')
+
+
+def user_email_autoresponder_delete(request, ar_id):
+    """Delete user email autoresponder and Sieve rule."""
+    user = request.panel_user
+    if not user:
+        return redirect('user_login')
+    if request.method != 'POST':
+        return HttpResponseForbidden('POST required')
+
+    from services.mail import remove_mailbox_sieve
+    ar = get_object_or_404(EmailAutoresponder, id=ar_id, owner=user)
+    remove_mailbox_sieve(ar.email)
+    ar.delete()
+    messages.success(request, f'Autoresponder for {ar.email} removed.')
+    return redirect('user_emails')
+
+
+def user_email_deliverability_repair(request):
+    """Repair MX, SPF, DKIM, and DMARC DNS records for a user-owned domain."""
+    user = request.panel_user
+    if not user:
+        return redirect('user_login')
+    if request.method != 'POST':
+        return HttpResponseForbidden('POST required')
+
+    from services.mail import repair_domain_deliverability
+    domain = request.POST.get('domain', '').strip().lower()
+    site = get_object_or_404(Website, domain=domain, owner=user, is_active=True)
+    repair_domain_deliverability(site)
+    messages.success(request, f'MX, SPF, DKIM, and DMARC records updated for {site.domain}.')
+    return redirect('user_emails')
+
+
+def user_email_webmail_launch(request, mailbox_id):
+    """1-click SnappyMail SSO launch for a user-owned mailbox."""
+    user = request.panel_user
+    if not user:
+        return redirect('user_login')
+    from services.mail import is_snappymail_installed, launch_webmail
+    if not is_snappymail_installed():
+        messages.error(request, 'Webmail is not installed yet.')
+        return redirect('user_emails')
+    mailbox = get_object_or_404(Mailbox, id=mailbox_id, owner=user)
+    return launch_webmail(request, mailbox.email)
+
+
+def user_webmail(request):
+    """Webmail client launcher view."""
+    user = request.panel_user
+    if not user:
+        return redirect('user_login')
+
+    from services.mail import is_snappymail_installed
+    return render(request, 'user/webmail_launcher.html', {
+        **_user_sidebar_context(request, 'webmail'),
+        'is_installed': is_snappymail_installed(),
+    })

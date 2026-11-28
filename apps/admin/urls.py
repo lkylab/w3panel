@@ -38,6 +38,18 @@ urlpatterns = [
     path('websites/<int:website_id>/toggle-proxy/', views.admin_website_toggle_proxy, name='admin_website_toggle_proxy'),
     path('websites/<int:website_id>/delete/', views.admin_website_delete, name='admin_website_delete'),
     path('domains/dns/', views.admin_dns_editor, name='admin_dns_editor'),
+
+    # Email Manager
+    path('email/accounts/', views.admin_email_accounts, name='admin_email_accounts'),
+    path('email/<int:mailbox_id>/delete/', views.admin_email_delete, name='admin_email_delete'),
+    path('email/<int:mailbox_id>/edit/', views.admin_email_edit, name='admin_email_edit'),
+    path('email/<int:mailbox_id>/webmail/', views.admin_email_webmail_launch, name='admin_email_webmail_launch'),
+    path('email/forwarders/<int:forwarder_id>/delete/', views.admin_email_forwarder_delete, name='admin_email_forwarder_delete'),
+    path('email/autoresponders/<int:ar_id>/delete/', views.admin_email_autoresponder_delete, name='admin_email_autoresponder_delete'),
+    path('email/queue/', views.admin_email_queue, name='admin_email_queue'),
+    path('email/queue/flush/', views.admin_email_queue_flush, name='admin_email_queue_flush'),
+    path('email/reports/', views.admin_email_reports, name='admin_email_reports'),
+    path('email/settings/', views.admin_email_settings, name='admin_email_settings'),
     
     # Services & Plugins
     path('services/vhosts/', views.admin_websites, name='admin_vhosts'),

@@ -338,6 +338,76 @@ class Mailbox(models.Model):
 
 
 # ---------------------------------------------------------------------------
+# EmailForwarder
+# ---------------------------------------------------------------------------
+
+class EmailForwarder(models.Model):
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='email_forwarders')
+    source = models.EmailField(unique=True)
+    destination = models.CharField(max_length=512)
+    domain = models.CharField(max_length=255)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'w3panel_email_forwarder'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.source} -> {self.destination}'
+
+
+# ---------------------------------------------------------------------------
+# EmailAutoresponder
+# ---------------------------------------------------------------------------
+
+class EmailAutoresponder(models.Model):
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='email_autoresponders')
+    email = models.EmailField(unique=True)
+    domain = models.CharField(max_length=255)
+    subject = models.CharField(max_length=255)
+    body = models.TextField()
+    interval_hours = models.IntegerField(default=24)
+    start_date = models.DateTimeField(null=True, blank=True)
+    end_date = models.DateTimeField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'w3panel_email_autoresponder'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Autoresponder({self.email})'
+
+
+# ---------------------------------------------------------------------------
+# EmailCatchAll
+# ---------------------------------------------------------------------------
+
+class EmailCatchAll(models.Model):
+    ACTION_CHOICES = [
+        ('forward', 'Forward to Email'),
+        ('discard', 'Discard'),
+        ('fail', 'Reject with Error'),
+    ]
+
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='email_catchalls')
+    domain = models.CharField(max_length=255, unique=True)
+    action = models.CharField(max_length=16, choices=ACTION_CHOICES, default='fail')
+    destination = models.CharField(max_length=255, blank=True, default='')
+    is_active = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'w3panel_email_catchall'
+        ordering = ['domain']
+
+    def __str__(self):
+        return f'{self.domain} -> {self.action}:{self.destination}'
+
+
+# ---------------------------------------------------------------------------
 # DNS Record
 # ---------------------------------------------------------------------------
 

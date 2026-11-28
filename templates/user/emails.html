@@ -5,91 +5,474 @@
 {% block header_title %}Email Accounts{% endblock %}
 
 {% block content %}
-<div class="space-y-6">
-    <div class="flex items-center justify-between">
+<div class="space-y-6" x-data="{ activeTab: 'mailboxes', editModal: false, editEmail: '', editAction: '', editQuota: 1024, catchallAction: 'fail' }">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-            <h2 class="text-lg font-bold text-slate-900">Email Mailboxes</h2>
-            <p class="text-xs text-slate-500">Create and manage email addresses for your domains</p>
+            <h2 class="text-lg font-bold text-slate-900">Email Accounts &amp; Routing</h2>
         </div>
-        <a href="/snappymail/" target="_blank" class="inline-flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold shadow-sm transition">
-            <i class="ti ti-brand-chrome text-base"></i> Open Webmail
-        </a>
+        <div class="flex items-center gap-2 flex-wrap">
+            <div class="flex items-center gap-1 border border-slate-200 rounded-lg p-1 bg-white text-xs font-semibold flex-wrap">
+                <button @click="activeTab = 'mailboxes'" :class="activeTab === 'mailboxes' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:text-slate-900'" class="px-3 py-1.5 rounded-md transition">
+                    Mailboxes ({{ mailboxes|length }})
+                </button>
+                <button @click="activeTab = 'forwarders'" :class="activeTab === 'forwarders' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:text-slate-900'" class="px-3 py-1.5 rounded-md transition">
+                    Forwarders ({{ forwarders|length }})
+                </button>
+                <button @click="activeTab = 'autoresponders'" :class="activeTab === 'autoresponders' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:text-slate-900'" class="px-3 py-1.5 rounded-md transition">
+                    Autoresponders ({{ autoresponders|length }})
+                </button>
+                <button @click="activeTab = 'catchall'" :class="activeTab === 'catchall' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:text-slate-900'" class="px-3 py-1.5 rounded-md transition">
+                    Default Address
+                </button>
+                <button @click="activeTab = 'deliverability'" :class="activeTab === 'deliverability' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:text-slate-900'" class="px-3 py-1.5 rounded-md transition">
+                    Deliverability
+                </button>
+                <button @click="activeTab = 'setup'" :class="activeTab === 'setup' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:text-slate-900'" class="px-3 py-1.5 rounded-md transition">
+                    Client Setup
+                </button>
+            </div>
+            <a href="{% url 'user_webmail' %}" class="inline-flex items-center gap-1.5 px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-xs font-semibold transition border border-indigo-200/60">
+                <i class="ti ti-brand-chrome text-sm"></i> Webmail
+            </a>
+        </div>
     </div>
 
-    <!-- Create Mailbox Form -->
-    <div class="bg-white rounded-xl border border-slate-200/80 p-6 shadow-sm">
-        <h3 class="font-semibold text-slate-900 mb-4 text-sm flex items-center gap-2">
-            <i class="ti ti-mail-plus text-indigo-600"></i> Add Mail Account
-        </h3>
-        <form method="post" class="space-y-4">
-            {% csrf_token %}
-            <div class="grid grid-cols-1 sm:grid-cols-4 gap-4">
-                <div>
-                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Username *</label>
-                    <input type="text" name="username" required placeholder="contact" class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-600">
+    <!-- Mailboxes Tab -->
+    <div x-show="activeTab === 'mailboxes'" class="space-y-6">
+        <div class="bg-white rounded-xl border border-slate-200/80 p-6 shadow-sm">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="font-semibold text-slate-900 text-sm flex items-center gap-2">
+                    <i class="ti ti-mail-plus text-indigo-600"></i> Add Mail Account
+                </h3>
+                <span class="text-xs font-medium text-slate-500">
+                    Plan usage: <span class="font-bold text-slate-800">{{ limits.email_count }}</span> of <span class="font-bold text-slate-800">{{ limits.email_display }}</span> mailboxes
+                </span>
+            </div>
+            <form method="post" class="space-y-4">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="create_mailbox">
+                <div class="grid grid-cols-1 sm:grid-cols-5 gap-4">
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Username *</label>
+                        <input type="text" name="username" required placeholder="contact" class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-600">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Domain *</label>
+                        <select name="domain" required class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:border-indigo-600">
+                            {% for w in websites %}
+                            <option value="{{ w.domain }}">@{{ w.domain }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Password *</label>
+                        <input type="password" name="password" required placeholder="••••••••" class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-600">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Quota (MB)</label>
+                        <input type="number" name="quota" value="1024" class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-600">
+                    </div>
+                    <div class="flex items-end">
+                        <button type="submit" class="w-full inline-flex justify-center items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold shadow-sm transition">
+                            <i class="ti ti-check"></i> Create Mailbox
+                        </button>
+                    </div>
                 </div>
-                <div>
-                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Domain *</label>
-                    <select name="domain" required class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:border-blue-600">
-                        {% for w in websites %}
-                        <option value="{{ w.domain }}">@{{ w.domain }}</option>
+            </form>
+        </div>
+
+        <div class="bg-white rounded-xl border border-slate-200/80 overflow-hidden shadow-sm">
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-slate-50/70 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                        <tr>
+                            <th class="px-5 py-3.5">Email Address</th>
+                            <th class="px-5 py-3.5">Quota Usage</th>
+                            <th class="px-5 py-3.5">Created</th>
+                            <th class="px-5 py-3.5 text-right">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        {% for m in mailboxes %}
+                        <tr class="hover:bg-slate-50/60 transition">
+                            <td class="px-5 py-3.5 font-medium text-slate-900 flex items-center gap-2">
+                                <div class="size-7 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center text-sm shrink-0">
+                                    <i class="ti ti-mail"></i>
+                                </div>
+                                <span class="font-mono">{{ m.email }}</span>
+                            </td>
+                            <td class="px-5 py-3.5 text-xs text-slate-600 font-mono">{{ m.used_mb }} / {{ m.quota_mb }} MB</td>
+                            <td class="px-5 py-3.5 text-xs text-slate-500">{{ m.created_at|date:"M d, Y" }}</td>
+                            <td class="px-5 py-3.5 text-right">
+                                <div class="flex items-center justify-end gap-1">
+                                    {% if snappymail_installed %}
+                                    <a href="{% url 'user_email_webmail_launch' m.id %}" target="_blank" class="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-xs font-semibold transition">
+                                        Check Email
+                                    </a>
+                                    {% endif %}
+                                    <button type="button" @click="editModal = true; editEmail = '{{ m.email }}'; editAction = '{% url 'user_email_change_password' m.id %}'; editQuota = {{ m.quota_mb }};" class="p-1.5 text-slate-400 hover:text-indigo-600 rounded-lg hover:bg-indigo-50 transition" title="Change Password / Quota">
+                                        <i class="ti ti-key text-base"></i>
+                                    </button>
+                                    <form method="post" action="{% url 'user_email_delete' m.id %}" onsubmit="return confirm('Delete mailbox {{ m.email }}?');" class="inline">
+                                        {% csrf_token %}
+                                        <button type="submit" class="p-1.5 text-slate-400 hover:text-red-600 rounded-lg hover:bg-red-50 transition" title="Delete Mailbox">
+                                            <i class="ti ti-trash text-base"></i>
+                                        </button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="4" class="px-5 py-8 text-center text-slate-400 text-sm">No email accounts created yet.</td>
+                        </tr>
                         {% endfor %}
-                    </select>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Forwarders Tab -->
+    <div x-show="activeTab === 'forwarders'" class="space-y-6" style="display: none;">
+        <div class="bg-white rounded-xl border border-slate-200/80 p-6 shadow-sm">
+            <h3 class="font-semibold text-slate-900 mb-4 text-sm flex items-center gap-2">
+                <i class="ti ti-arrow-forward-up text-indigo-600"></i> Add Email Forwarder
+            </h3>
+            <form method="post" class="space-y-4">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="create_forwarder">
+                <div class="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Source Username *</label>
+                        <input type="text" name="source_user" required placeholder="info" class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-600">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Domain *</label>
+                        <select name="source_domain" required class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:border-indigo-600">
+                            {% for w in websites %}
+                            <option value="{{ w.domain }}">@{{ w.domain }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Destination Email *</label>
+                        <input type="text" name="destination" required placeholder="personal@gmail.com" class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-600">
+                    </div>
+                    <div class="flex items-end">
+                        <button type="submit" class="w-full inline-flex justify-center items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold shadow-sm transition">
+                            <i class="ti ti-check"></i> Add Forwarder
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+
+        <div class="bg-white rounded-xl border border-slate-200/80 overflow-hidden shadow-sm">
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-slate-50/70 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                        <tr>
+                            <th class="px-5 py-3.5">Source Address</th>
+                            <th class="px-5 py-3.5">Forward To</th>
+                            <th class="px-5 py-3.5">Created</th>
+                            <th class="px-5 py-3.5 text-right">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        {% for f in forwarders %}
+                        <tr class="hover:bg-slate-50/60 transition">
+                            <td class="px-5 py-3.5 font-medium text-slate-900 flex items-center gap-2">
+                                <div class="size-7 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center text-sm shrink-0">
+                                    <i class="ti ti-arrow-forward-up"></i>
+                                </div>
+                                <span class="font-mono">{{ f.source }}</span>
+                            </td>
+                            <td class="px-5 py-3.5 text-slate-700 text-xs font-mono">{{ f.destination }}</td>
+                            <td class="px-5 py-3.5 text-slate-500 text-xs">{{ f.created_at|date:"M d, Y" }}</td>
+                            <td class="px-5 py-3.5 text-right">
+                                <form method="post" action="{% url 'user_email_forwarder_delete' f.id %}" onsubmit="return confirm('Delete forwarder for {{ f.source }}?');" class="inline">
+                                    {% csrf_token %}
+                                    <button type="submit" class="p-1.5 text-slate-400 hover:text-red-600 rounded-lg hover:bg-red-50 transition" title="Delete Forwarder">
+                                        <i class="ti ti-trash text-base"></i>
+                                    </button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="4" class="px-5 py-8 text-center text-slate-400 text-sm">No email forwarders created yet.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Autoresponders Tab -->
+    <div x-show="activeTab === 'autoresponders'" class="space-y-6" style="display: none;">
+        <div class="bg-white rounded-xl border border-slate-200/80 p-6 shadow-sm">
+            <h3 class="font-semibold text-slate-900 mb-4 text-sm flex items-center gap-2">
+                <i class="ti ti-message-reply text-indigo-600"></i> Add Autoresponder
+            </h3>
+            <form method="post" class="space-y-4">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="create_autoresponder">
+                <div class="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Email User *</label>
+                        <input type="text" name="ar_user" required placeholder="support" class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-600">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Domain *</label>
+                        <select name="ar_domain" required class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:border-indigo-600">
+                            {% for w in websites %}
+                            <option value="{{ w.domain }}">@{{ w.domain }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Interval (Hours)</label>
+                        <input type="number" name="ar_interval" value="24" min="1" class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-600">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Subject *</label>
+                        <input type="text" name="ar_subject" required placeholder="Out of Office" class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-600">
+                    </div>
                 </div>
                 <div>
-                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Quota (MB)</label>
-                    <input type="number" name="quota" value="1024" class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none">
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Reply Message *</label>
+                    <textarea name="ar_body" rows="3" required placeholder="I am currently away and will reply soon." class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-600"></textarea>
                 </div>
-                <div class="flex items-end">
-                    <button type="submit" class="w-full inline-flex justify-center items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold shadow-sm transition">
-                        <i class="ti ti-check"></i> Create Mailbox
+                <div class="flex justify-end">
+                    <button type="submit" class="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold shadow-sm transition">
+                        <i class="ti ti-check"></i> Save Autoresponder
                     </button>
                 </div>
-            </div>
-        </form>
-    </div>
+            </form>
+        </div>
 
-    <!-- Mailboxes Table -->
-    <div class="bg-white rounded-xl border border-slate-200/80 overflow-hidden shadow-sm">
-        <div class="overflow-x-auto">
+        <div class="bg-white rounded-xl border border-slate-200/80 overflow-hidden shadow-sm">
             <table class="w-full text-left text-sm">
                 <thead class="bg-slate-50/70 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
                     <tr>
-                        <th class="px-5 py-3.5">Email Address</th>
-                        <th class="px-5 py-3.5">Quota Usage</th>
-                        <th class="px-5 py-3.5">Created</th>
+                        <th class="px-5 py-3.5">Email</th>
+                        <th class="px-5 py-3.5">Subject</th>
+                        <th class="px-5 py-3.5">Interval</th>
                         <th class="px-5 py-3.5 text-right">Actions</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-100">
-                    {% for m in mailboxes %}
-                    <tr class="hover:bg-slate-50/60 transition">
-                        <td class="px-5 py-3.5 font-medium text-slate-900 flex items-center gap-2">
-                            <i class="ti ti-mail text-indigo-600"></i> {{ m.email }}
-                        </td>
-                        <td class="px-5 py-3.5 text-xs text-slate-600">{{ m.used_mb }} / {{ m.quota_mb }} MB</td>
-                        <td class="px-5 py-3.5 text-xs text-slate-500">{{ m.created_at|date:"M d, Y" }}</td>
+                    {% for ar in autoresponders %}
+                    <tr>
+                        <td class="px-5 py-3.5 font-mono text-slate-900">{{ ar.email }}</td>
+                        <td class="px-5 py-3.5 text-xs text-slate-700">{{ ar.subject }}</td>
+                        <td class="px-5 py-3.5 text-xs text-slate-600">{{ ar.interval_hours }}h</td>
                         <td class="px-5 py-3.5 text-right">
-                            <div class="flex items-center justify-end gap-1">
-                                <a href="/snappymail/" target="_blank" class="p-1.5 text-indigo-600 hover:text-indigo-800 rounded-lg hover:bg-indigo-50 transition" title="Open in SnappyMail">
-                                    <i class="ti ti-brand-chrome text-base"></i>
-                                </a>
-                                <form method="post" action="{% url 'user_email_delete' m.id %}" onsubmit="return confirm('Delete mailbox {{ m.email }}?');" class="inline">
-                                    {% csrf_token %}
-                                    <button type="submit" class="p-1.5 text-slate-400 hover:text-red-600 rounded-lg hover:bg-red-50 transition" title="Delete Mailbox">
-                                        <i class="ti ti-trash text-base"></i>
-                                    </button>
-                                </form>
-                            </div>
+                            <form method="post" action="{% url 'user_email_autoresponder_delete' ar.id %}" class="inline">
+                                {% csrf_token %}
+                                <button type="submit" class="p-1.5 text-slate-400 hover:text-red-600 rounded-lg hover:bg-red-50 transition" title="Delete Autoresponder">
+                                    <i class="ti ti-trash text-base"></i>
+                                </button>
+                            </form>
                         </td>
                     </tr>
                     {% empty %}
                     <tr>
-                        <td colspan="4" class="px-5 py-8 text-center text-slate-400 text-sm">No email accounts created yet.</td>
+                        <td colspan="4" class="px-5 py-8 text-center text-slate-400 text-sm">No autoresponders configured.</td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+    </div>
+
+    <!-- Default Address (Catch-All) Tab -->
+    <div x-show="activeTab === 'catchall'" class="space-y-6" style="display: none;">
+        <div class="bg-white rounded-xl border border-slate-200/80 p-6 shadow-sm">
+            <h3 class="font-semibold text-slate-900 mb-4 text-sm flex items-center gap-2">
+                <i class="ti ti-route text-indigo-600"></i> Default Address (Catch-All)
+            </h3>
+            <form method="post" class="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="set_catchall">
+                <div>
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Domain *</label>
+                    <select name="catchall_domain" required class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:border-indigo-600">
+                        {% for w in websites %}
+                        <option value="{{ w.domain }}">{{ w.domain }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Unrouted Mail Action</label>
+                    <select name="catchall_action" x-model="catchallAction" class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white outline-none focus:border-indigo-600">
+                        <option value="fail">Reject with Error (Recommended)</option>
+                        <option value="forward">Forward to Email Address</option>
+                        <option value="discard">Discard Silently</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Forward Destination</label>
+                    <input type="email" name="catchall_destination" :disabled="catchallAction !== 'forward'" placeholder="admin@domain.com" class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-600 disabled:bg-slate-100">
+                </div>
+                <div class="flex items-end">
+                    <button type="submit" class="w-full inline-flex justify-center items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold shadow-sm transition">
+                        <i class="ti ti-check"></i> Save Rule
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <div class="bg-white rounded-xl border border-slate-200/80 overflow-hidden shadow-sm">
+            <table class="w-full text-left text-sm">
+                <thead class="bg-slate-50/70 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    <tr>
+                        <th class="px-5 py-3.5">Domain</th>
+                        <th class="px-5 py-3.5">Action</th>
+                        <th class="px-5 py-3.5">Destination</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100">
+                    {% for ca in catchalls %}
+                    <tr>
+                        <td class="px-5 py-3.5 font-mono text-slate-900">{{ ca.domain }}</td>
+                        <td class="px-5 py-3.5 text-xs font-semibold uppercase">{{ ca.action }}</td>
+                        <td class="px-5 py-3.5 font-mono text-xs text-slate-600">{{ ca.destination|default:"-" }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="3" class="px-5 py-8 text-center text-slate-400 text-sm">No custom catch-all rules set.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Email Deliverability Tab -->
+    <div x-show="activeTab === 'deliverability'" class="space-y-6" style="display: none;">
+        <div class="bg-white rounded-xl border border-slate-200/80 overflow-hidden shadow-sm">
+            <table class="w-full text-left text-sm">
+                <thead class="bg-slate-50/70 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    <tr>
+                        <th class="px-5 py-3.5">Domain</th>
+                        <th class="px-5 py-3.5">MX</th>
+                        <th class="px-5 py-3.5">SPF</th>
+                        <th class="px-5 py-3.5">DKIM</th>
+                        <th class="px-5 py-3.5">DMARC</th>
+                        <th class="px-5 py-3.5 text-right">Action</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100">
+                    {% for d in deliverability_list %}
+                    <tr>
+                        <td class="px-5 py-3.5 font-mono text-slate-900">{{ d.domain }}</td>
+                        <td class="px-5 py-3.5 text-xs font-semibold {% if d.mx.ok %}text-emerald-600{% else %}text-amber-600{% endif %}">{% if d.mx.ok %}Valid{% else %}Missing{% endif %}</td>
+                        <td class="px-5 py-3.5 text-xs font-semibold {% if d.spf.ok %}text-emerald-600{% else %}text-amber-600{% endif %}">{% if d.spf.ok %}Valid{% else %}Missing{% endif %}</td>
+                        <td class="px-5 py-3.5 text-xs font-semibold {% if d.dkim.ok %}text-emerald-600{% else %}text-amber-600{% endif %}">{% if d.dkim.ok %}Valid{% else %}Missing{% endif %}</td>
+                        <td class="px-5 py-3.5 text-xs font-semibold {% if d.dmarc.ok %}text-emerald-600{% else %}text-amber-600{% endif %}">{% if d.dmarc.ok %}Valid{% else %}Missing{% endif %}</td>
+                        <td class="px-5 py-3.5 text-right">
+                            <form method="post" action="{% url 'user_email_deliverability_repair' %}" class="inline">
+                                {% csrf_token %}
+                                <input type="hidden" name="domain" value="{{ d.domain }}">
+                                <button type="submit" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold transition">
+                                    {% if d.all_ok %}Sync DNS{% else %}Repair DNS{% endif %}
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="6" class="px-5 py-8 text-center text-slate-400 text-sm">No active domains found.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Client Setup Instructions Tab -->
+    <div x-show="activeTab === 'setup'" class="space-y-6" style="display: none;">
+        <div class="bg-white rounded-xl border border-slate-200/80 p-6 shadow-sm">
+            <h3 class="font-bold text-slate-900 text-sm mb-4 flex items-center gap-2">
+                <i class="ti ti-settings text-indigo-600"></i> Mail Client Configuration
+            </h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="p-4 rounded-xl border border-slate-200 bg-slate-50/50 space-y-3">
+                    <div class="font-semibold text-xs text-slate-700 uppercase tracking-wider flex items-center gap-2">
+                        <i class="ti ti-inbox text-indigo-600"></i> Incoming Server (IMAP / POP3)
+                    </div>
+                    <div class="space-y-1.5 text-xs">
+                        <div class="flex justify-between border-b border-slate-200/80 pb-1.5">
+                            <span class="text-slate-500">Host:</span>
+                            <span class="font-mono font-bold text-slate-800">{{ mail_host }}</span>
+                        </div>
+                        <div class="flex justify-between border-b border-slate-200/80 pb-1.5">
+                            <span class="text-slate-500">IMAP Port:</span>
+                            <span class="font-mono font-bold text-slate-800">993 (SSL/TLS) / 143 (STARTTLS)</span>
+                        </div>
+                        <div class="flex justify-between border-b border-slate-200/80 pb-1.5">
+                            <span class="text-slate-500">POP3 Port:</span>
+                            <span class="font-mono font-bold text-slate-800">995 (SSL/TLS) / 110 (STARTTLS)</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-slate-500">Username:</span>
+                            <span class="font-mono text-slate-800">Full email address</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="p-4 rounded-xl border border-slate-200 bg-slate-50/50 space-y-3">
+                    <div class="font-semibold text-xs text-slate-700 uppercase tracking-wider flex items-center gap-2">
+                        <i class="ti ti-send text-indigo-600"></i> Outgoing Server (SMTP)
+                    </div>
+                    <div class="space-y-1.5 text-xs">
+                        <div class="flex justify-between border-b border-slate-200/80 pb-1.5">
+                            <span class="text-slate-500">Host:</span>
+                            <span class="font-mono font-bold text-slate-800">{{ mail_host }}</span>
+                        </div>
+                        <div class="flex justify-between border-b border-slate-200/80 pb-1.5">
+                            <span class="text-slate-500">Port:</span>
+                            <span class="font-mono font-bold text-slate-800">587 (STARTTLS) / 465 (SSL/TLS)</span>
+                        </div>
+                        <div class="flex justify-between border-b border-slate-200/80 pb-1.5">
+                            <span class="text-slate-500">Username:</span>
+                            <span class="font-mono text-slate-800">Full email address</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-slate-500">Authentication:</span>
+                            <span class="font-semibold text-slate-800">Required (Normal password)</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Mailbox Modal -->
+    <div x-show="editModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" style="display: none;" x-cloak>
+        <div class="bg-white rounded-xl shadow-xl max-w-md w-full p-6 space-y-4" @click.away="editModal = false">
+            <div class="flex items-center justify-between border-b pb-3">
+                <h3 class="font-bold text-slate-900 text-sm">Edit Mailbox: <span class="font-mono text-indigo-600" x-text="editEmail"></span></h3>
+                <button type="button" @click="editModal = false" class="text-slate-400 hover:text-slate-600"><i class="ti ti-x text-base"></i></button>
+            </div>
+            <form method="post" :action="editAction" class="space-y-4">
+                {% csrf_token %}
+                <div>
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">New Password (leave blank to keep current)</label>
+                    <input type="password" name="password" placeholder="••••••••" class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-600">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-700">Quota (MB)</label>
+                    <input type="number" name="quota" x-model="editQuota" class="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-600">
+                </div>
+                <div class="flex justify-end gap-2 pt-2">
+                    <button type="button" @click="editModal = false" class="px-4 py-2 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-50">Cancel</button>
+                    <button type="submit" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold shadow-sm">Save Changes</button>
+                </div>
+            </form>
         </div>
     </div>
 </div>

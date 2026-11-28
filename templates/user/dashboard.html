@@ -123,6 +123,50 @@
             </div>
         </div>
 
+        <!-- EMAILS SECTION -->
+        <div class="bg-white rounded-xl border border-slate-200/80 overflow-hidden shadow-xs">
+            <div class="border-b border-slate-100 bg-slate-50/50 px-5 py-3 flex items-center justify-between">
+                <h3 class="font-bold text-xs uppercase tracking-wider text-slate-700 flex items-center gap-2">
+                    <i class="ti ti-mail text-indigo-600 text-sm"></i> Email
+                </h3>
+                <span class="text-[11px] text-slate-400 font-mono">{{ mailboxes_count }} active</span>
+            </div>
+            <div class="p-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <!-- Email Accounts -->
+                <a href="/emails/" class="p-3 rounded-xl hover:bg-indigo-50/60 dark:hover:bg-indigo-500/10 transition flex items-center gap-3 group">
+                    <div class="size-10 rounded-lg bg-indigo-50 text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white flex items-center justify-center text-lg transition shrink-0">
+                        <i class="ti ti-mail"></i>
+                    </div>
+                    <div class="min-w-0">
+                        <div class="text-xs font-bold text-slate-800 truncate">Email Accounts</div>
+                        <div class="text-[11px] text-slate-400 truncate">Manage mailboxes</div>
+                    </div>
+                </a>
+
+                <!-- Email Forwarders -->
+                <a href="/emails/" class="p-3 rounded-xl hover:bg-blue-50/60 dark:hover:bg-blue-500/10 transition flex items-center gap-3 group">
+                    <div class="size-10 rounded-lg bg-blue-50 text-blue-600 group-hover:bg-blue-600 group-hover:text-white flex items-center justify-center text-lg transition shrink-0">
+                        <i class="ti ti-arrow-forward-up"></i>
+                    </div>
+                    <div class="min-w-0">
+                        <div class="text-xs font-bold text-slate-800 truncate">Forwarders</div>
+                        <div class="text-[11px] text-slate-400 truncate">Email routing & aliases</div>
+                    </div>
+                </a>
+
+                <!-- Webmail Launcher -->
+                <a href="/webmail/" class="p-3 rounded-xl hover:bg-purple-50/60 dark:hover:bg-purple-500/10 transition flex items-center gap-3 group">
+                    <div class="size-10 rounded-lg bg-purple-50 text-purple-600 group-hover:bg-purple-600 group-hover:text-white flex items-center justify-center text-lg transition shrink-0">
+                        <i class="ti ti-brand-chrome"></i>
+                    </div>
+                    <div class="min-w-0">
+                        <div class="text-xs font-bold text-slate-800 truncate">Webmail</div>
+                        <div class="text-[11px] text-slate-400 truncate">SnappyMail client</div>
+                    </div>
+                </a>
+            </div>
+        </div>
+
         <!-- FILES SECTION -->
         <div class="bg-white rounded-xl border border-slate-200/80 overflow-hidden shadow-xs">
             <div class="border-b border-slate-100 bg-slate-50/50 px-5 py-3 flex items-center justify-between">
@@ -294,6 +338,17 @@
                     </div>
                     <div class="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
                         <div class="h-full bg-indigo-600 rounded-full" style="width: {{ databases_percent }}%"></div>
+                    </div>
+                </div>
+
+                <!-- Email Accounts -->
+                <div>
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="font-medium text-slate-600 flex items-center gap-1.5"><i class="ti ti-mail text-indigo-600"></i> Email Accounts</span>
+                        <span class="font-mono text-[11px] text-slate-500">{{ mailboxes_count }} / {% if limits.email == -1 %}Unlimited{% else %}{{ limits.email }}{% endif %}</span>
+                    </div>
+                    <div class="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                        <div class="h-full bg-indigo-500 rounded-full" style="width: {{ email_percent }}%"></div>
                     </div>
                 </div>
 

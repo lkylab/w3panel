@@ -18,11 +18,15 @@ from .manager import (
     configure_db_admin_webserver,
     configure_pgadmin4_runtime,
     ensure_db_admin_webserver_configured,
+    ensure_pgadmin4_service_ready,
     install_phpmyadmin,
     uninstall_phpmyadmin,
     install_pgadmin4,
     uninstall_pgadmin4,
     proxy_db_tool_request,
+    ensure_phpmyadmin_signon_configured,
+    provision_phpmyadmin_sso_credentials,
+    launch_db_tool,
 )
 
 __all__ = [
@@ -45,10 +49,14 @@ __all__ = [
     'configure_db_admin_webserver',
     'configure_pgadmin4_runtime',
     'ensure_db_admin_webserver_configured',
+    'ensure_pgadmin4_service_ready',
     'install_phpmyadmin',
     'uninstall_phpmyadmin',
     'install_pgadmin4',
     'uninstall_pgadmin4',
     'proxy_db_tool_request',
+    'ensure_phpmyadmin_signon_configured',
+    'provision_phpmyadmin_sso_credentials',
+    'launch_db_tool',
 ]
 

@@ -1,32 +1,96 @@
 {% extends "base_admin.html" %}
 {% load static %}
 
-{% block title %}Email Summary Reports — W3Panel{% endblock %}
+{% block title %}Email Reports — W3Panel{% endblock %}
 {% block page_title %}Email Reports{% endblock %}
 
 {% block content %}
 <div class="space-y-6">
-    <div>
-        <h2 class="text-lg font-bold text-gray-900">Email Delivery Reports</h2>
-        <p class="text-xs text-gray-500">Summary statistics for inbound and outbound email traffic</p>
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+            <h2 class="text-lg font-bold text-gray-900">Email Delivery Reports & Track Delivery</h2>
+        </div>
+        <form method="get" class="flex items-center gap-2">
+            <input type="text" name="domain" value="{{ domain_filter }}" placeholder="Filter domain..." class="rounded-lg border border-gray-300 px-3 py-1.5 text-xs outline-none focus:border-blue-600">
+            <button type="submit" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold">Filter</button>
+        </form>
     </div>
 
-    <div class="grid grid-cols-4 gap-4">
-        <div class="bg-white rounded-xl border border-gray-200 p-4 text-center">
-            <div class="text-2xl font-bold text-gray-900">0</div>
-            <div class="text-xs text-gray-500 mt-1">Sent Today</div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="bg-white rounded-xl border border-gray-200 p-4 text-center shadow-xs">
+            <div class="text-2xl font-bold text-gray-900">{{ stats.sent_today|default:"0" }}</div>
+            <div class="text-xs text-gray-500 mt-1">Sent</div>
         </div>
-        <div class="bg-white rounded-xl border border-gray-200 p-4 text-center">
-            <div class="text-2xl font-bold text-gray-900">0</div>
-            <div class="text-xs text-gray-500 mt-1">Received Today</div>
+        <div class="bg-white rounded-xl border border-gray-200 p-4 text-center shadow-xs">
+            <div class="text-2xl font-bold text-gray-900">{{ stats.received_today|default:"0" }}</div>
+            <div class="text-xs text-gray-500 mt-1">Delivered</div>
         </div>
-        <div class="bg-white rounded-xl border border-gray-200 p-4 text-center">
-            <div class="text-2xl font-bold text-emerald-600">100%</div>
+        <div class="bg-white rounded-xl border border-gray-200 p-4 text-center shadow-xs">
+            <div class="text-2xl font-bold text-emerald-600">{{ stats.delivery_rate|default:"100%" }}</div>
             <div class="text-xs text-gray-500 mt-1">Delivery Success</div>
         </div>
-        <div class="bg-white rounded-xl border border-gray-200 p-4 text-center">
-            <div class="text-2xl font-bold text-red-500">0</div>
+        <div class="bg-white rounded-xl border border-gray-200 p-4 text-center shadow-xs">
+            <div class="text-2xl font-bold text-red-500">{{ stats.bounced_today|default:"0" }}</div>
             <div class="text-xs text-gray-500 mt-1">Bounced / Rejected</div>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-xs">
+            <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Total Mailboxes</div>
+            <div class="text-2xl font-bold text-gray-900 mt-2">{{ stats.total_mailboxes|default:"0" }}</div>
+            <div class="text-xs text-gray-400 mt-1">{{ stats.active_mailboxes|default:"0" }} active | {{ stats.total_forwarders|default:"0" }} forwarders</div>
+        </div>
+        <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-xs">
+            <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Mail Queue Length</div>
+            <div class="text-2xl font-bold text-blue-600 mt-2">{{ stats.queue_count|default:"0" }}</div>
+            <div class="text-xs text-gray-400 mt-1">{{ stats.total_autoresponders|default:"0" }} active autoresponders</div>
+        </div>
+        <div class="bg-white rounded-xl border border-gray-200 p-5 shadow-xs">
+            <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider">DKIM Signatures</div>
+            <div class="text-2xl font-bold text-indigo-600 mt-2">{{ stats.dkim_configured|default:"0" }}</div>
+            <div class="text-xs text-gray-400 mt-1">Domains with OpenDKIM DNS keys</div>
+        </div>
+    </div>
+
+    <!-- Track Delivery Log -->
+    <div class="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+        <div class="px-5 py-3.5 border-b border-gray-200 font-semibold text-sm text-gray-900">
+            Track Delivery Log
+        </div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs">
+                <thead class="bg-gray-50/70 border-b border-gray-200 font-semibold text-gray-500 uppercase tracking-wider">
+                    <tr>
+                        <th class="px-4 py-3">Time</th>
+                        <th class="px-4 py-3">Queue ID</th>
+                        <th class="px-4 py-3">Sender</th>
+                        <th class="px-4 py-3">Recipient</th>
+                        <th class="px-4 py-3">Status</th>
+                        <th class="px-4 py-3">Detail</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                    {% for ev in deliveries %}
+                    <tr class="hover:bg-gray-50/60">
+                        <td class="px-4 py-2.5 text-gray-500 whitespace-nowrap">{{ ev.timestamp }}</td>
+                        <td class="px-4 py-2.5 font-mono text-gray-700">{{ ev.queue_id }}</td>
+                        <td class="px-4 py-2.5 font-mono text-gray-700">{{ ev.sender }}</td>
+                        <td class="px-4 py-2.5 font-mono text-gray-900">{{ ev.recipient }}</td>
+                        <td class="px-4 py-2.5">
+                            <span class="px-2 py-0.5 rounded font-semibold uppercase {% if ev.status == 'sent' %}bg-emerald-100 text-emerald-700{% elif ev.status == 'deferred' %}bg-amber-100 text-amber-700{% else %}bg-red-100 text-red-700{% endif %}">
+                                {{ ev.status }}
+                            </span>
+                        </td>
+                        <td class="px-4 py-2.5 text-gray-600 truncate max-w-xs">{{ ev.detail }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="6" class="px-4 py-8 text-center text-gray-400">No mail delivery log events recorded yet.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
     </div>
 </div>

@@ -10,9 +10,10 @@ urlpatterns = [
     path('sso/', user_views.user_sso, name='admin_sso_direct'),
     path('user/sso/', user_views.user_sso, name='admin_user_sso_direct'),
 
-    # Same-origin Database Admin Tool reverse proxies
+    # Same-origin Database Admin & Webmail Tool reverse proxies
     re_path(r'^phpmyadmin(?:/(?P<subpath>.*))?$', user_views.db_tool_proxy_view, {'tool': 'phpmyadmin'}, name='admin_proxy_phpmyadmin'),
     re_path(r'^pgadmin4(?:/(?P<subpath>.*))?$', user_views.db_tool_proxy_view, {'tool': 'pgadmin4'}, name='admin_proxy_pgadmin4'),
+    re_path(r'^snappymail(?:/(?P<subpath>.*))?$', user_views.webmail_proxy_view, name='admin_proxy_snappymail'),
 
     # Top-level admin routes (W3Host standard)
     path('', include('apps.admin.urls')),

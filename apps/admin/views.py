@@ -20,7 +20,8 @@ from django.conf import settings
 
 from packages.core.models import (
     User, Website, Package, SystemSetting, AuditLog, Notification,
-    Database, Mailbox, DNSRecord, FTPAccount, CronJob, Backup, FirewallRule, APIToken
+    Database, Mailbox, EmailForwarder, EmailAutoresponder, EmailCatchAll,
+    DNSRecord, FTPAccount, CronJob, Backup, FirewallRule, APIToken
 )
 from packages.plugins.manager import PluginManager
 
@@ -68,6 +69,12 @@ def _sidebar_context(active_page=''):
         ],
         'sidebar_domains': [
             {'label': 'DNS Zone Editor', 'url': '/domains/dns/', 'active': 'dns'},
+        ],
+        'sidebar_email': [
+            {'label': 'Email Accounts', 'url': '/email/accounts/', 'active': 'email_accounts'},
+            {'label': 'Mail Queue', 'url': '/email/queue/', 'active': 'email_queue'},
+            {'label': 'Email Reports', 'url': '/email/reports/', 'active': 'email_reports'},
+            {'label': 'Email Settings', 'url': '/email/settings/', 'active': 'email_settings'},
         ],
         'sidebar_services': sidebar_services,
         'sidebar_settings': [
@@ -824,6 +831,7 @@ def admin_services_status(request):
     from services.database import (
         configure_db_admin_webserver,
         configure_pgadmin4_runtime,
+        ensure_pgadmin4_service_ready,
         get_database_tuning_status,
         get_db_admin_tools_status,
         install_pgadmin4,
@@ -858,6 +866,15 @@ def admin_services_status(request):
                     messages.error(request, res.get('error', 'pgAdmin 4 installation failed.'))
                 return redirect('admin_services_status')
 
+            if service_name == 'snappymail':
+                from services.mail import install_snappymail
+                res = install_snappymail()
+                if res.get('success'):
+                    messages.success(request, 'SnappyMail Webmail Suite configured successfully!')
+                else:
+                    messages.error(request, res.get('error', 'SnappyMail installation failed.'))
+                return redirect('admin_services_status')
+
             # Package mapping for individual services
             pkg_map = {
                 'nginx': ['nginx'],
@@ -867,6 +884,8 @@ def admin_services_status(request):
                 'ufw': ['ufw'],
                 'php': ['php-fpm', 'php-mysql', 'php-pgsql', 'php-curl', 'php-zip', 'php-gd', 'php-mbstring', 'php-xml'],
                 'certbot': ['certbot', 'python3-certbot-nginx'],
+                'postfix': ['postfix', 'opendkim', 'opendkim-tools'],
+                'dovecot': ['dovecot-core', 'dovecot-imapd', 'dovecot-pop3d', 'dovecot-lmtpd', 'dovecot-sieve'],
             }
             if service_name not in pkg_map:
                 messages.error(request, f'Unknown service: {service_name}')
@@ -878,7 +897,11 @@ def admin_services_status(request):
                 if res.returncode == 0:
                     daemon_name = 'mariadb' if service_name == 'mariadb' else service_name
                     _run_privileged(['systemctl', 'enable', '--now', daemon_name], timeout=10)
-                    configure_db_admin_webserver()
+                    if service_name in ('postfix', 'dovecot'):
+                        from services.mail import configure_mail_stack
+                        configure_mail_stack()
+                    else:
+                        configure_db_admin_webserver()
                     messages.success(request, f'{service_name.capitalize()} installed and started successfully!')
                 else:
                     messages.error(request, f'Installation failed: {res.stderr or res.stdout}')
@@ -903,12 +926,20 @@ def admin_services_status(request):
                     messages.error(request, res.get('error', 'Uninstall failed.'))
                 return redirect('admin_services_status')
 
+            if service_name == 'snappymail':
+                from services.mail import uninstall_snappymail
+                uninstall_snappymail()
+                messages.success(request, 'SnappyMail Webmail uninstalled successfully.')
+                return redirect('admin_services_status')
+
             pkg_map = {
                 'nginx': ['nginx', 'nginx-common'],
                 'mariadb': ['mariadb-server', 'mariadb-client'],
                 'postgresql': ['postgresql', 'postgresql-contrib'],
                 'redis': ['redis-server'],
                 'ufw': ['ufw'],
+                'postfix': ['postfix', 'opendkim', 'opendkim-tools'],
+                'dovecot': ['dovecot-core', 'dovecot-imapd', 'dovecot-pop3d', 'dovecot-lmtpd', 'dovecot-sieve'],
             }
             if service_name not in pkg_map:
                 messages.error(request, f'Cannot uninstall service: {service_name}')
@@ -936,7 +967,7 @@ def admin_services_status(request):
             return redirect('admin_services_status')
 
         elif action in ('start', 'stop', 'restart') and service_name:
-            allowed_services = {'nginx', 'mariadb', 'mysql', 'postgresql', 'php8.3-fpm', 'ufw', 'ssh', 'pgadmin4'}
+            allowed_services = {'nginx', 'mariadb', 'mysql', 'postgresql', 'php8.3-fpm', 'ufw', 'ssh', 'pgadmin4', 'postfix', 'dovecot'}
             if service_name not in allowed_services:
                 messages.error(request, f'Invalid service: {service_name}')
                 return redirect('admin_services_status')
@@ -971,6 +1002,8 @@ def admin_services_status(request):
         {'name': 'php8.3-fpm', 'display': 'PHP-FPM 8.3 Daemon', 'icon': 'ti ti-brand-php', 'cmds': ('php-fpm8.3',), 'units': ('php8.3-fpm',), 'desc': 'PHP FastCGI Process Manager for VirtualHosts'},
         {'name': 'ufw', 'display': 'UFW Host Firewall', 'icon': 'ti ti-shield', 'cmds': ('ufw',), 'units': ('ufw',), 'desc': 'Host Inbound Access Firewall'},
         {'name': 'ssh', 'display': 'SSH Remote Access', 'icon': 'ti ti-terminal-2', 'cmds': ('sshd',), 'units': ('ssh', 'sshd'), 'desc': 'Secure Shell Remote Administration'},
+        {'name': 'postfix', 'display': 'Postfix Mail Server', 'icon': 'ti ti-mail', 'cmds': ('postfix',), 'units': ('postfix',), 'desc': 'Mail Transport Agent for Outbound & Inbound Email (Ports 25 & 587)'},
+        {'name': 'dovecot', 'display': 'Dovecot IMAP Server', 'icon': 'ti ti-inbox', 'cmds': ('dovecot',), 'units': ('dovecot',), 'desc': 'Secure IMAP/POP3 Mail Storage Server (Ports 993 & 995)'},
     ]
 
     for s in services_list:
@@ -1016,6 +1049,18 @@ def admin_services_status(request):
             'launch_url': '/services/db-tool/pgadmin4/' if db_tools['pgadmin4_installed'] else '',
         })
 
+    from services.mail import is_snappymail_installed
+    snappymail_installed = is_snappymail_installed()
+    services_list.append({
+        'name': 'snappymail',
+        'display': 'SnappyMail Webmail',
+        'icon': 'ti ti-brand-chrome',
+        'desc': 'Modern lightweight webmail client for virtual mailboxes',
+        'status': 'running' if snappymail_installed else 'not_installed',
+        'is_web_tool': True,
+        'launch_url': '/snappymail/' if snappymail_installed else '',
+    })
+
     return render(request, 'admin/services.html', {
         **_sidebar_context('services'),
         'services': services_list,
@@ -1024,15 +1069,12 @@ def admin_services_status(request):
 
 
 def admin_db_tool_launch(request, tool):
-    """Auto-wire Nginx/Apache route if needed and redirect to phpMyAdmin or pgAdmin 4."""
-    from services.database import ensure_db_admin_webserver_configured, get_db_admin_tools_status, get_db_tool_url
+    """Auto-wire Nginx/Apache route, sign on for phpMyAdmin, and redirect to same-origin tool."""
+    from services.database import get_db_admin_tools_status, launch_db_tool
     db_tools = get_db_admin_tools_status()
-    if tool == 'phpmyadmin' and db_tools['phpmyadmin_available']:
-        ensure_db_admin_webserver_configured()
-        return redirect(get_db_tool_url(request, 'phpmyadmin'))
-    if tool == 'pgadmin4' and db_tools['pgadmin4_available']:
-        ensure_db_admin_webserver_configured()
-        return redirect(get_db_tool_url(request, 'pgadmin4'))
+    actor = getattr(request, 'panel_user', None)
+    if (tool == 'phpmyadmin' and db_tools['phpmyadmin_available']) or (tool == 'pgadmin4' and db_tools['pgadmin4_available']):
+        return launch_db_tool(request, tool, actor)
     messages.error(request, 'Requested database admin tool is not available.')
     return redirect('admin_services_status')
 
@@ -1062,6 +1104,9 @@ def admin_service_install_stream(request):
         'ufw': ['ufw'],
         'phpmyadmin': ['phpmyadmin', 'php-mysql', 'php-mbstring', 'php-xml'],
         'pgadmin4': ['pgadmin4-web'],
+        'postfix': ['postfix', 'opendkim', 'opendkim-tools'],
+        'dovecot': ['dovecot-core', 'dovecot-imapd', 'dovecot-pop3d', 'dovecot-lmtpd', 'dovecot-sieve'],
+        'snappymail': [],
     }
     if service_name not in pkg_map:
         return JsonResponse({'error': f'Unsupported service: {service_name}'}, status=400)
@@ -1074,6 +1119,16 @@ def admin_service_install_stream(request):
     def event_stream():
         def sse(payload):
             return f"data: {json.dumps(payload)}\n\n"
+
+        if service_name == 'snappymail':
+            from services.mail import install_snappymail
+            yield sse({'status': 'running', 'percent': 30, 'step': 'Downloading SnappyMail...', 'line': '>> Fetching SnappyMail release & configuring Dovecot SSO...'})
+            sm_res = install_snappymail()
+            if not sm_res.get('success'):
+                yield sse({'status': 'error', 'percent': 100, 'error': sm_res.get('error', 'SnappyMail installation failed.')})
+                return
+            yield sse({'status': 'complete', 'percent': 100, 'step': 'SnappyMail Webmail ready', 'line': f">> SnappyMail installed at {sm_res.get('path')} and wired at /snappymail/"})
+            return
 
         has_error = False
         pkgs = pkg_map[service_name]
@@ -1136,17 +1191,21 @@ def admin_service_install_stream(request):
             return
 
         if service_name == 'phpmyadmin':
-            from services.webserver.manager import _write_privileged_file as _wpf
-            pma_conf_dir = Path(os.environ.get('W3PANEL_PHPMYADMIN_CONF_DIR', '/etc/phpmyadmin')) / 'conf.d'
-            _wpf(pma_conf_dir / '99-w3panel.php', "<?php\n$cfg['Servers'][1]['auth_type'] = 'cookie';\n$cfg['Servers'][1]['host'] = 'localhost';\n$cfg['Servers'][1]['AllowNoPassword'] = false;\n")
+            from services.database import ensure_phpmyadmin_signon_configured
+            ensure_phpmyadmin_signon_configured()
             configure_db_admin_webserver()
             yield sse({'status': 'complete', 'percent': 100, 'step': 'phpMyAdmin ready', 'line': '>> phpMyAdmin configured successfully.'})
             return
 
         daemon_name = 'mariadb' if service_name == 'mariadb' else service_name
         _run_privileged(['systemctl', 'enable', '--now', daemon_name], timeout=15)
-        configure_db_admin_webserver()
-        yield sse({'status': 'complete', 'percent': 100, 'step': f'{service_name} installed', 'line': f'>> {service_name} enabled and started.'})
+        if service_name in ('postfix', 'dovecot'):
+            from services.mail import configure_mail_stack
+            _run_privileged(['systemctl', 'enable', '--now', 'opendkim'], timeout=10)
+            configure_mail_stack()
+        else:
+            configure_db_admin_webserver()
+        yield sse({'status': 'complete', 'percent': 100, 'step': f'{service_name} installed', 'line': f'>> {service_name} enabled and configured.'})
 
     resp = StreamingHttpResponse(event_stream(), content_type='text/event-stream')
     resp['Cache-Control'] = 'no-cache'
@@ -3479,6 +3538,8 @@ def _prepare_wizard_setup(post_data, stack_status, mark_completed=True):
     SystemSetting.set('mail_stack_enabled', 'true' if enable_mail else 'false')
     SystemSetting.set('mail_spam_filter', spam_filter)
     SystemSetting.set('mail_dkim_enabled', 'true' if enable_dkim else 'false')
+    SystemSetting.set('email_spam_filter', spam_filter)
+    SystemSetting.set('email_dkim_enabled', 'true' if enable_dkim else 'false')
     SystemSetting.set('ftp_stack_enabled', 'true' if enable_ftp else 'false')
     SystemSetting.set('podman_enabled', 'true' if enable_podman else 'false')
     if mark_completed:
@@ -3509,8 +3570,17 @@ def _prepare_wizard_setup(post_data, stack_status, mark_completed=True):
         services_to_start.append('postgresql')
 
     if enable_mail and not stack_status['mail_postfix']['installed']:
-        install_pkgs.extend(['postfix', 'dovecot-imapd', 'dovecot-pop3d'])
+        install_pkgs.extend(['postfix', 'dovecot-core', 'dovecot-imapd', 'dovecot-pop3d', 'dovecot-lmtpd', 'dovecot-sieve'])
         services_to_start.extend(['postfix', 'dovecot'])
+    if enable_mail and enable_dkim:
+        install_pkgs.extend(['opendkim', 'opendkim-tools'])
+        services_to_start.append('opendkim')
+    if enable_mail and spam_filter == 'rspamd':
+        install_pkgs.extend(['rspamd', 'redis-server'])
+        services_to_start.extend(['redis-server', 'rspamd'])
+    elif enable_mail and spam_filter == 'spamassassin':
+        install_pkgs.extend(['spamassassin', 'spamass-milter'])
+        services_to_start.extend(['spamassassin', 'spamass-milter'])
 
     if enable_ftp and not stack_status['ftp_pureftpd']['installed']:
         install_pkgs.extend(['pure-ftpd'])
@@ -3628,6 +3698,14 @@ def admin_wizard_provision(request):
             else:
                 yield sse({'status': 'running', 'percent': 94, 'step': 'pgAdmin 4 skipped', 'line': f">> [WARNING] pgAdmin 4 skipped: {pg4_res.get('error', '')}"})
 
+        if opts['enable_mail']:
+            try:
+                from services.mail import configure_mail_stack
+                configure_mail_stack()
+                yield sse({'status': 'running', 'percent': 95, 'step': 'Configured Postfix, Dovecot, DKIM & Spam Stack', 'line': '>> Mail server stack configured (Postfix + Dovecot + DKIM + Spam filter).'})
+            except Exception as e:
+                yield sse({'status': 'running', 'percent': 95, 'step': 'Mail stack configuration warning', 'line': f'>> [WARNING] Mail stack config skipped: {e}'})
+
         if opts['enable_ufw']:
             try:
                 _apply_wizard_ufw(opts)
@@ -3692,6 +3770,13 @@ def wizard_dashboard(request):
         if opts.get('enable_pgadmin4'):
             from services.database import install_pgadmin4
             install_pgadmin4(admin_email=SystemSetting.get('admin_email', ''))
+
+        if opts['enable_mail']:
+            try:
+                from services.mail import configure_mail_stack
+                configure_mail_stack()
+            except Exception:
+                pass
 
         if opts['enable_ufw']:
             try:
@@ -4040,3 +4125,372 @@ def admin_migration_remote_execute(request, migrator_id):
         mod.iter_migrate_remote(conn, usernames, options=options),
         migrator_id=migrator_id,
     )
+
+
+# ===========================================================================
+# Email Stack Management Views
+# ===========================================================================
+
+def admin_email_accounts(request):
+    """Admin Email Accounts, Forwarders, Autoresponders, Catch-All & Deliverability management."""
+    from services.mail import (
+        create_mailbox, create_mail_alias, get_mailbox_disk_usage,
+        set_domain_catchall, sync_mailbox_sieve,
+        get_domain_deliverability, repair_domain_deliverability,
+        is_snappymail_installed,
+    )
+
+    if request.method == 'POST':
+        action = request.POST.get('action', 'create_mailbox')
+
+        if action == 'create_mailbox':
+            username = request.POST.get('username', '').strip().lower()
+            domain = request.POST.get('domain', '').strip().lower()
+            password = request.POST.get('password', '').strip()
+            quota_raw = request.POST.get('quota', '1024').strip()
+
+            if not username or not domain:
+                messages.error(request, 'Mailbox username and domain are required.')
+                return redirect('admin_email_accounts')
+
+            if not re.match(r'^[a-z0-9._+-]+$', username):
+                messages.error(request, 'Invalid characters in mailbox username.')
+                return redirect('admin_email_accounts')
+
+            try:
+                quota = max(1, int(quota_raw))
+            except ValueError:
+                quota = 1024
+
+            full_email = f"{username}@{domain}"
+            if Mailbox.objects.filter(email=full_email).exists():
+                messages.error(request, f'Mailbox {full_email} already exists.')
+                return redirect('admin_email_accounts')
+
+            site = Website.objects.filter(domain=domain).first()
+            owner = site.owner if site else request.panel_user
+
+            res = create_mailbox(full_email, password=password, quota_mb=quota)
+            if res.get('success'):
+                Mailbox.objects.create(
+                    owner=owner,
+                    email=full_email,
+                    domain=domain,
+                    quota_mb=quota,
+                    used_mb=0.0,
+                    is_active=True
+                )
+                messages.success(request, f'Mailbox {full_email} created successfully!')
+            else:
+                messages.error(request, res.get('error', 'Failed to create mailbox on server.'))
+            return redirect('admin_email_accounts')
+
+        elif action == 'create_forwarder':
+            source_user = request.POST.get('source_user', '').strip().lower()
+            source_domain = request.POST.get('source_domain', '').strip().lower()
+            destination = request.POST.get('destination', '').strip().lower()
+
+            if not source_user or not source_domain or not destination:
+                messages.error(request, 'Forwarder source address and destination are required.')
+                return redirect('admin_email_accounts')
+
+            source_email = f"{source_user}@{source_domain}"
+            if EmailForwarder.objects.filter(source=source_email).exists():
+                messages.error(request, f'Forwarder for {source_email} already exists.')
+                return redirect('admin_email_accounts')
+
+            dest_list = [d.strip() for d in destination.split(',') if d.strip()]
+            res = create_mail_alias(source_email, dest_list)
+            if res.get('success'):
+                site = Website.objects.filter(domain=source_domain).first()
+                owner = site.owner if site else request.panel_user
+                EmailForwarder.objects.create(
+                    owner=owner,
+                    source=source_email,
+                    destination=destination,
+                    domain=source_domain,
+                    is_active=True
+                )
+                messages.success(request, f'Email forwarder for {source_email} created successfully!')
+            else:
+                messages.error(request, res.get('error', 'Failed to configure forwarder on server.'))
+            return redirect('admin_email_accounts')
+
+        elif action == 'create_autoresponder':
+            username = request.POST.get('ar_user', '').strip().lower()
+            domain = request.POST.get('ar_domain', '').strip().lower()
+            subject = request.POST.get('ar_subject', '').strip()
+            body = request.POST.get('ar_body', '').strip()
+            interval_raw = request.POST.get('ar_interval', '24').strip()
+            if not username or not domain or not subject or not body:
+                messages.error(request, 'Autoresponder address, subject, and message body are required.')
+                return redirect('admin_email_accounts')
+            full_email = f"{username}@{domain}"
+            try:
+                interval_hours = max(1, int(interval_raw))
+            except ValueError:
+                interval_hours = 24
+            site = Website.objects.filter(domain=domain).first()
+            owner = site.owner if site else request.panel_user
+            res = sync_mailbox_sieve(full_email, subject, body, interval_hours=interval_hours, is_active=True)
+            if res.get('success'):
+                EmailAutoresponder.objects.update_or_create(
+                    email=full_email,
+                    defaults={
+                        'owner': owner,
+                        'domain': domain,
+                        'subject': subject[:255],
+                        'body': body,
+                        'interval_hours': interval_hours,
+                        'is_active': True,
+                    },
+                )
+                messages.success(request, f'Autoresponder saved for {full_email}.')
+            else:
+                messages.error(request, res.get('error', 'Failed to configure autoresponder.'))
+            return redirect('admin_email_accounts')
+
+        elif action == 'set_catchall':
+            domain = request.POST.get('catchall_domain', '').strip().lower()
+            ca_action = request.POST.get('catchall_action', 'fail').strip()
+            destination = request.POST.get('catchall_destination', '').strip().lower()
+            res = set_domain_catchall(domain, ca_action, destination)
+            if res.get('success'):
+                site = Website.objects.filter(domain=domain).first()
+                owner = site.owner if site else request.panel_user
+                EmailCatchAll.objects.update_or_create(
+                    domain=domain,
+                    defaults={
+                        'owner': owner,
+                        'action': ca_action,
+                        'destination': destination if ca_action == 'forward' else '',
+                        'is_active': ca_action != 'fail',
+                    },
+                )
+                messages.success(request, f'Default address rule updated for {domain}.')
+            else:
+                messages.error(request, res.get('error', 'Failed to update default address rule.'))
+            return redirect('admin_email_accounts')
+
+        elif action == 'repair_deliverability':
+            domain = request.POST.get('domain', '').strip().lower()
+            site = Website.objects.filter(domain=domain).first()
+            if site:
+                repair_domain_deliverability(site)
+                messages.success(request, f'MX, SPF, DKIM, and DMARC records updated for {domain}.')
+            else:
+                messages.error(request, 'Domain not found.')
+            return redirect('admin_email_accounts')
+
+    mailboxes = Mailbox.objects.select_related('owner').order_by('-created_at')
+    for m in mailboxes:
+        real_mb = get_mailbox_disk_usage(m.email)
+        if real_mb > 0:
+            m.used_mb = real_mb
+
+    forwarders = EmailForwarder.objects.select_related('owner').order_by('-created_at')
+    autoresponders = EmailAutoresponder.objects.select_related('owner').order_by('-created_at')
+    catchalls = EmailCatchAll.objects.select_related('owner').order_by('domain')
+    websites = Website.objects.filter(is_active=True).order_by('domain')
+    deliverability_list = [get_domain_deliverability(w) for w in websites]
+
+    return render(request, 'admin/email_accounts.html', {
+        **_sidebar_context('email_accounts'),
+        'mailboxes': mailboxes,
+        'forwarders': forwarders,
+        'autoresponders': autoresponders,
+        'catchalls': catchalls,
+        'deliverability_list': deliverability_list,
+        'websites': websites,
+        'snappymail_installed': is_snappymail_installed(),
+        'active_section': 'email',
+    })
+
+
+def admin_email_delete(request, mailbox_id):
+    """Delete mailbox."""
+    if request.method != 'POST':
+        return HttpResponseForbidden('POST required')
+
+    from services.mail import delete_mailbox
+    mailbox = get_object_or_404(Mailbox, id=mailbox_id)
+    email = mailbox.email
+
+    delete_mailbox(email)
+    EmailAutoresponder.objects.filter(email=email).delete()
+    mailbox.delete()
+    messages.success(request, f'Mailbox {email} deleted successfully.')
+    return redirect('admin_email_accounts')
+
+
+def admin_email_edit(request, mailbox_id):
+    """Update mailbox password or quota."""
+    if request.method != 'POST':
+        return HttpResponseForbidden('POST required')
+
+    from services.mail import set_mailbox_password, update_mailbox_quota
+    mailbox = get_object_or_404(Mailbox, id=mailbox_id)
+    password = request.POST.get('password', '').strip()
+    quota_raw = request.POST.get('quota', '').strip()
+
+    if quota_raw:
+        try:
+            quota = int(quota_raw)
+            if quota > 0:
+                mailbox.quota_mb = quota
+                mailbox.save(update_fields=['quota_mb'])
+                update_mailbox_quota(mailbox.email, quota)
+                messages.success(request, f'Quota updated for {mailbox.email}.')
+        except ValueError:
+            pass
+
+    if password:
+        set_mailbox_password(mailbox.email, password, quota_mb=mailbox.quota_mb)
+        messages.success(request, f'Password updated for {mailbox.email}.')
+
+    return redirect('admin_email_accounts')
+
+
+def admin_email_webmail_launch(request, mailbox_id):
+    """1-click SnappyMail SSO launch for an admin-selected mailbox."""
+    from services.mail import is_snappymail_installed, launch_webmail
+    if not is_snappymail_installed():
+        messages.error(request, 'SnappyMail Webmail is not installed yet. Install it from Service Manager.')
+        return redirect('admin_email_accounts')
+    mailbox = get_object_or_404(Mailbox, id=mailbox_id)
+    return launch_webmail(request, mailbox.email)
+
+
+def admin_email_forwarder_delete(request, forwarder_id):
+    """Delete an email forwarder."""
+    if request.method != 'POST':
+        return HttpResponseForbidden('POST required')
+
+    from services.mail import delete_mail_alias
+    fwd = get_object_or_404(EmailForwarder, id=forwarder_id)
+    source = fwd.source
+
+    delete_mail_alias(source)
+    fwd.delete()
+    messages.success(request, f'Forwarder for {source} removed.')
+    return redirect('admin_email_accounts')
+
+
+def admin_email_autoresponder_delete(request, ar_id):
+    """Delete an email autoresponder and its Sieve rule."""
+    if request.method != 'POST':
+        return HttpResponseForbidden('POST required')
+
+    from services.mail import remove_mailbox_sieve
+    ar = get_object_or_404(EmailAutoresponder, id=ar_id)
+    remove_mailbox_sieve(ar.email)
+    ar.delete()
+    messages.success(request, f'Autoresponder for {ar.email} removed.')
+    return redirect('admin_email_accounts')
+
+
+def admin_email_queue(request):
+    """View and manage Postfix mail delivery queue."""
+    from services.mail import get_mail_queue, flush_mail_queue, delete_mail_queue
+
+    if request.method == 'POST':
+        action = request.POST.get('action')
+        if action == 'flush':
+            res = flush_mail_queue()
+            if res.get('success'):
+                messages.success(request, 'Mail queue flush triggered successfully.')
+            else:
+                messages.error(request, res.get('error', 'Failed to flush queue.'))
+            return redirect('admin_email_queue')
+        elif action == 'delete_all':
+            delete_mail_queue('ALL')
+            messages.success(request, 'All messages removed from the mail queue.')
+            return redirect('admin_email_queue')
+        elif action == 'delete':
+            msg_id = request.POST.get('message_id', '').strip()
+            if msg_id:
+                delete_mail_queue(msg_id)
+                messages.success(request, f'Message {msg_id} removed from queue.')
+            return redirect('admin_email_queue')
+
+    queue_data = get_mail_queue()
+    return render(request, 'admin/email_queue.html', {
+        **_sidebar_context('email_queue'),
+        'queue': queue_data,
+        'active_section': 'email',
+    })
+
+
+def admin_email_queue_flush(request):
+    """Trigger mail queue flush."""
+    if request.method != 'POST':
+        return HttpResponseForbidden('POST required')
+    from services.mail import flush_mail_queue
+    flush_mail_queue()
+    messages.success(request, 'Mail queue flush initiated.')
+    return redirect('admin_email_queue')
+
+
+def admin_email_reports(request):
+    """Summary statistics and Track Delivery logs for mail server traffic and health."""
+    from services.mail import get_mail_stats, get_mail_delivery_log
+    domain_filter = request.GET.get('domain', '').strip().lower()
+    stats = get_mail_stats()
+    deliveries = get_mail_delivery_log(limit=100, domain_filter=domain_filter) if domain_filter else stats.get('recent_deliveries', [])
+    return render(request, 'admin/email_reports.html', {
+        **_sidebar_context('email_reports'),
+        'stats': stats,
+        'deliveries': deliveries,
+        'domain_filter': domain_filter,
+        'active_section': 'email',
+    })
+
+
+def admin_email_settings(request):
+    """Email global configuration (SMTP port, spam filter threshold, DKIM, and daemon sync)."""
+    if request.method == 'POST':
+        smtp_port = request.POST.get('smtp_port', '587').strip()
+        spam_filter = request.POST.get('spam_filter', 'rspamd').strip()
+        spam_threshold = request.POST.get('spam_threshold', '6.0').strip() or '6.0'
+        dkim_enabled = request.POST.get('dkim_enabled') == 'on' or request.POST.get('dkim_enabled') == '1'
+
+        if spam_filter not in ('rspamd', 'spamassassin', 'none'):
+            spam_filter = 'rspamd'
+
+        SystemSetting.set('email_smtp_port', smtp_port, description='Submission SMTP port')
+        SystemSetting.set('email_spam_filter', spam_filter, description='Spam filter engine')
+        SystemSetting.set('mail_spam_filter', spam_filter, description='Spam filter engine')
+        SystemSetting.set('email_spam_threshold', spam_threshold, description='Spam filter score threshold')
+        SystemSetting.set('email_dkim_enabled', 'true' if dkim_enabled else 'false', description='DKIM signing enabled')
+        SystemSetting.set('mail_dkim_enabled', 'true' if dkim_enabled else 'false', description='DKIM signing enabled')
+
+        try:
+            threshold_val = float(spam_threshold)
+        except ValueError:
+            threshold_val = 6.0
+
+        from services.mail import configure_mail_stack
+        configure_mail_stack(
+            smtp_port=smtp_port,
+            spam_filter=spam_filter,
+            dkim_enabled=dkim_enabled,
+            spam_threshold=threshold_val,
+        )
+
+        messages.success(request, 'Email settings saved and mail stack updated successfully.')
+        return redirect('admin_email_settings')
+
+    smtp_port = SystemSetting.get('email_smtp_port', '587')
+    spam_filter = SystemSetting.get('email_spam_filter', '') or SystemSetting.get('mail_spam_filter', 'rspamd')
+    spam_threshold = SystemSetting.get('email_spam_threshold', '6.0')
+    dkim_enabled = SystemSetting.get('email_dkim_enabled', 'true') == 'true'
+
+    return render(request, 'admin/email_settings.html', {
+        **_sidebar_context('email_settings'),
+        'smtp_port': smtp_port,
+        'spam_filter': spam_filter,
+        'spam_threshold': spam_threshold,
+        'dkim_enabled': dkim_enabled,
+        'active_section': 'email',
+    })
+

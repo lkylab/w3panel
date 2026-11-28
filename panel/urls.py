@@ -30,9 +30,10 @@ urlpatterns = [
     # Direct SSO endpoint (1-click user autologin)
     path('sso/', user_views.user_sso, name='sso_direct'),
 
-    # Same-origin Database Admin Tool reverse proxies (preserve port/host/HTTPS)
+    # Same-origin Database Admin & Webmail Tool reverse proxies (preserve port/host/HTTPS)
     re_path(r'^phpmyadmin(?:/(?P<subpath>.*))?$', user_views.db_tool_proxy_view, {'tool': 'phpmyadmin'}, name='proxy_phpmyadmin'),
     re_path(r'^pgadmin4(?:/(?P<subpath>.*))?$', user_views.db_tool_proxy_view, {'tool': 'pgadmin4'}, name='proxy_pgadmin4'),
+    re_path(r'^snappymail(?:/(?P<subpath>.*))?$', user_views.webmail_proxy_view, name='proxy_snappymail'),
 
     # Admin
     path('', include('apps.admin.urls')),

@@ -185,13 +185,25 @@ class DbAdminToolsIntegrationTests(TestCase):
 
                 c_adm, adm_extra = self._login('dbadmin', '/login/', '2087')
                 with patch('services.database.configure_pgadmin4_runtime', return_value={'success': True}) as mock_cfg, \
-                     patch('apps.admin.views._run_privileged', return_value=MagicMock(returncode=0, stdout='', stderr='')) as mock_priv:
+                     patch('services.database.manager.is_pgadmin4_running', return_value=False):
                     resp = c_adm.post('/services/', {'service': 'pgadmin4', 'action': 'start'}, **adm_extra)
                     self.assertEqual(resp.status_code, 302)
                     mock_cfg.assert_called_once()
-                    mock_priv.assert_called_once_with(['systemctl', 'start', 'pgadmin4'], timeout=15)
 
-                (sysd_dir / 'pgadmin4.service').write_text('[Unit]\nDescription=pgadmin4\n')
+                # Broken unit referencing /usr/local/w3panel/ must be rewritten automatically
+                unit_file = sysd_dir / 'pgadmin4.service'
+                unit_file.write_text('ExecStart=/usr/local/w3panel/venv/bin/gunicorn pgAdmin4:app\n')
+                with patch('services.database.manager._has_sudo', return_value=False), \
+                     patch('services.database.manager.is_mariadb_installed', return_value=False), \
+                     patch('services.database.manager.is_postgresql_installed', return_value=False), \
+                     patch('services.database.manager.subprocess.run', return_value=MagicMock(returncode=0, stdout='', stderr='')):
+                    from services.database import ensure_pgadmin4_service_ready
+                    rep = ensure_pgadmin4_service_ready()
+                    self.assertTrue(rep['success'])
+                    unit_txt = unit_file.read_text()
+                    self.assertNotIn('/usr/local/w3panel/venv/bin/gunicorn', unit_txt)
+                    self.assertIn('pgAdmin4.py', unit_txt)
+
                 self.assertTrue(is_pgadmin4_installed())
 
                 # Verify streaming install endpoint handles pgadmin4 cleanly
@@ -329,3 +341,78 @@ class DbAdminToolsIntegrationTests(TestCase):
                 self.assertEqual(resp['Location'], '/phpmyadmin/index.php?route=/')
                 self.assertEqual(resp.cookies['phpMyAdmin'].value, 'sess123')
                 self.assertEqual(resp.cookies['pma_lang'].value, 'en')
+
+    def test_phpmyadmin_signon_provisioning_scoping_and_php_syntax(self):
+        """phpMyAdmin SSO provisions admin vs tenant-scoped SQL grants, writes valid PHP, and sets W3PanelPMASignon."""
+        import shutil
+        import subprocess as real_subproc
+        from packages.core.models import Database
+        from services.database.manager import ensure_phpmyadmin_signon_configured, provision_phpmyadmin_sso_credentials
+
+        other = User.objects.create_user('otherpma', 'otherpma@local.test', 'Pass123!', role='user')
+        Database.objects.create(owner=self.user, name='dbuser_app', db_type='mariadb', db_user='dbuser_u')
+        Database.objects.create(owner=other, name='otherpma_secret', db_type='mariadb', db_user='otherpma_u')
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pma_dir = Path(tmpdir) / 'phpmyadmin'
+            conf_dir = Path(tmpdir) / 'conf'
+            pma_dir.mkdir()
+            (conf_dir / 'conf.d').mkdir(parents=True)
+            (pma_dir / 'index.php').write_text('<?php echo 1;')
+
+            env = {
+                'W3PANEL_PHPMYADMIN_DIR': str(pma_dir),
+                'W3PANEL_PHPMYADMIN_CONF_DIR': str(conf_dir),
+            }
+            with patch.dict(os.environ, env), \
+                 patch('services.database.manager._has_sudo', return_value=False), \
+                 patch('services.database.manager.is_mariadb_installed', return_value=True):
+                self.assertTrue(ensure_phpmyadmin_signon_configured())
+                conf_php = conf_dir / 'conf.d' / '99-w3panel.php'
+                signon_php = pma_dir / 'w3p-signon.php'
+                self.assertTrue(conf_php.exists())
+                self.assertTrue(signon_php.exists())
+                self.assertIn('W3PanelPMASignon', conf_php.read_text())
+                self.assertIn('PMA_single_signon_user', signon_php.read_text())
+
+                if shutil.which('php'):
+                    for pf in (conf_php, signon_php):
+                        lint = real_subproc.run(['php', '-l', str(pf)], capture_output=True, text=True)
+                        self.assertEqual(lint.returncode, 0, lint.stderr)
+
+                with patch('services.database.manager.subprocess.run', return_value=MagicMock(returncode=0, stdout='', stderr='')) as mock_sql:
+                    adm_cred = provision_phpmyadmin_sso_credentials(self.admin)
+                    self.assertTrue(adm_cred['success'])
+                    self.assertEqual(adm_cred['db_user'], 'w3p_admin_pma')
+                    adm_sql = mock_sql.call_args.args[0][-1]
+                    self.assertIn('ON *.* TO', adm_sql)
+
+                with patch('services.database.manager.subprocess.run', return_value=MagicMock(returncode=0, stdout='', stderr='')) as mock_sql:
+                    usr_cred = provision_phpmyadmin_sso_credentials(self.user)
+                    self.assertTrue(usr_cred['success'])
+                    self.assertEqual(usr_cred['db_user'], 'dbuser_pma')
+                    usr_sql = mock_sql.call_args.args[0][-1]
+                    self.assertIn('ON `dbuser_app`.* TO', usr_sql)
+                    self.assertNotIn('otherpma_secret', usr_sql)
+                    self.assertNotIn('*.*', usr_sql)
+
+                # Launch flow forwards W3PanelPMASignon cookie onto /phpmyadmin/ redirect
+                c_adm, adm_extra = self._login('dbadmin', '/login/', '12087')
+
+                class _FakeHeaders(list):
+                    def get_all(self, name):
+                        return [v for k, v in self if k.lower() == name.lower()]
+
+                signon_hdrs = _FakeHeaders([('Set-Cookie', 'W3PanelPMASignon=phpsess999; path=/phpmyadmin; HttpOnly; SameSite=Lax')])
+                signon_resp = MagicMock(status=200, headers=signon_hdrs)
+                signon_resp.read.return_value = b'{"success":true}'
+                fake_conn = MagicMock()
+                fake_conn.getresponse.return_value = signon_resp
+
+                with patch('services.database.manager.ensure_db_admin_webserver_configured', return_value={'success': True}), \
+                     patch('services.database.manager.subprocess.run', return_value=MagicMock(returncode=0, stdout='', stderr='')), \
+                     patch('services.database.manager.http.client.HTTPConnection', return_value=fake_conn):
+                    launch = c_adm.get('/services/db-tool/phpmyadmin/', **adm_extra)
+                    self.assertEqual(launch.status_code, 302)
+                    self.assertEqual(launch.url, '/phpmyadmin/')
+                    self.assertEqual(launch.cookies['W3PanelPMASignon'].value, 'phpsess999')

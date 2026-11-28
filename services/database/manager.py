@@ -14,6 +14,7 @@ import logging
 import secrets
 import string
 import tempfile
+import urllib.parse
 from pathlib import Path
 
 logger = logging.getLogger('w3panel.database')
@@ -682,28 +683,21 @@ def ensure_db_admin_webserver_configured() -> dict:
     return configure_db_admin_webserver()
 
 
-def proxy_db_tool_request(request, tool: str, subpath: str = ''):
-    """Reverse-proxy /phpmyadmin/... and /pgadmin4/... on the active panel host & port."""
+def proxy_http_upstream(
+    request,
+    slug: str,
+    subpath: str,
+    targets: list[tuple[str, int]],
+    extra_headers: dict | None = None,
+    on_unreachable=None,
+):
+    """Reverse-proxy an internal web tool on the active panel host, port, and scheme."""
     from django.http import HttpResponse
     from django.shortcuts import redirect
-
-    slug = 'phpmyadmin' if tool == 'phpmyadmin' else ('pgadmin4' if tool == 'pgadmin4' else '')
-    if not slug:
-        return HttpResponse('Unknown database tool.', status=404)
-
-    db_tools = get_db_admin_tools_status()
-    if (slug == 'phpmyadmin' and not db_tools['phpmyadmin_available']) or (slug == 'pgadmin4' and not db_tools['pgadmin4_available']):
-        return HttpResponse(f'{slug} is not installed or its database engine is unavailable.', status=404)
 
     if not subpath and not request.path_info.endswith('/'):
         qs = request.META.get('QUERY_STRING', '')
         return redirect(f'/{slug}/' + (f'?{qs}' if qs else ''))
-
-    if slug == 'phpmyadmin':
-        ensure_db_admin_webserver_configured()
-        targets = [('127.0.0.1', 8090), ('127.0.0.1', 80)]
-    else:
-        targets = [('127.0.0.1', 5050)]
 
     clean_sub = (subpath or '').lstrip('/')
     upstream_path = f'/{slug}/{clean_sub}'
@@ -720,8 +714,8 @@ def proxy_db_tool_request(request, tool: str, subpath: str = ''):
         'X-Scheme': proto,
         'Accept-Encoding': 'identity',
     }
-    if slug == 'pgadmin4':
-        fwd_headers['X-Script-Name'] = '/pgadmin4'
+    if extra_headers:
+        fwd_headers.update(extra_headers)
 
     for meta_key, hdr_name in (
         ('CONTENT_TYPE', 'Content-Type'),
@@ -740,26 +734,29 @@ def proxy_db_tool_request(request, tool: str, subpath: str = ''):
     if body_bytes is not None:
         fwd_headers['Content-Length'] = str(len(body_bytes))
 
-    upstream_resp = None
-    upstream_body = b''
-    last_err = None
-    for host, port in targets:
-        conn = None
-        try:
-            conn = http.client.HTTPConnection(host, port, timeout=60)
-            conn.request(request.method, upstream_path, body=body_bytes, headers=fwd_headers)
-            upstream_resp = conn.getresponse()
-            upstream_body = upstream_resp.read()
-            break
-        except Exception as e:
-            last_err = e
-            upstream_resp = None
-        finally:
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+    def _try_upstream():
+        last_e = None
+        for host, port in targets:
+            conn = None
+            try:
+                conn = http.client.HTTPConnection(host, port, timeout=60)
+                conn.request(request.method, upstream_path, body=body_bytes, headers=fwd_headers)
+                r = conn.getresponse()
+                return r, r.read(), None
+            except Exception as exc:
+                last_e = exc
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+        return None, b'', last_e
+
+    upstream_resp, upstream_body, last_err = _try_upstream()
+    if upstream_resp is None and on_unreachable is not None:
+        if on_unreachable():
+            upstream_resp, upstream_body, last_err = _try_upstream()
 
     if upstream_resp is None:
         return HttpResponse(f'Unable to reach {slug} backend ({last_err}). Check service status in Service Manager.', status=502)
@@ -775,6 +772,7 @@ def proxy_db_tool_request(request, tool: str, subpath: str = ''):
         if low == 'location':
             for prefix in (
                 'http://127.0.0.1:8090', 'https://127.0.0.1:8090',
+                'http://127.0.0.1:8091', 'https://127.0.0.1:8091',
                 'http://127.0.0.1:5050', 'https://127.0.0.1:5050',
                 'http://127.0.0.1:80', 'http://127.0.0.1',
                 f'https://{host_no_port}', f'http://{host_no_port}',
@@ -797,6 +795,254 @@ def proxy_db_tool_request(request, tool: str, subpath: str = ''):
                     resp.cookies[cname]['secure'] = True
         except Exception:
             pass
+
+    return resp
+
+
+def proxy_db_tool_request(request, tool: str, subpath: str = ''):
+    """Reverse-proxy /phpmyadmin/... and /pgadmin4/... on the active panel host & port."""
+    from django.http import HttpResponse
+
+    slug = 'phpmyadmin' if tool == 'phpmyadmin' else ('pgadmin4' if tool == 'pgadmin4' else '')
+    if not slug:
+        return HttpResponse('Unknown database tool.', status=404)
+
+    db_tools = get_db_admin_tools_status()
+    if (slug == 'phpmyadmin' and not db_tools['phpmyadmin_available']) or (slug == 'pgadmin4' and not db_tools['pgadmin4_available']):
+        return HttpResponse(f'{slug} is not installed or its database engine is unavailable.', status=404)
+
+    extra_headers = None
+    on_unreachable = None
+    if slug == 'phpmyadmin':
+        ensure_db_admin_webserver_configured()
+        targets = [('127.0.0.1', 8090), ('127.0.0.1', 80)]
+    else:
+        targets = [('127.0.0.1', 5050)]
+        extra_headers = {'X-Script-Name': '/pgadmin4'}
+
+        def _recover_pg4():
+            if ensure_pgadmin4_service_ready().get('success'):
+                import time
+                time.sleep(0.6)
+                return True
+            return False
+
+        on_unreachable = _recover_pg4
+
+    return proxy_http_upstream(
+        request,
+        slug=slug,
+        subpath=subpath,
+        targets=targets,
+        extra_headers=extra_headers,
+        on_unreachable=on_unreachable,
+    )
+
+
+def _get_pma_signon_secret() -> str:
+    """Return persistent HMAC/header secret shared with phpMyAdmin signon endpoint."""
+    try:
+        from packages.core.models import SystemSetting
+        secret = SystemSetting.get('pma_signon_secret', '').strip()
+        if not secret:
+            secret = secrets.token_hex(32)
+            SystemSetting.set('pma_signon_secret', secret)
+        return secret
+    except Exception:
+        return os.environ.get('W3PANEL_PMA_SIGNON_SECRET', 'w3panel-dev-signon-secret')
+
+
+def ensure_phpmyadmin_signon_configured() -> bool:
+    """Write phpMyAdmin signon PHP config override and loopback signon script."""
+    if not is_phpmyadmin_installed():
+        return False
+
+    secret = _get_pma_signon_secret()
+    pma_conf_dir = Path(os.environ.get('W3PANEL_PHPMYADMIN_CONF_DIR', '/etc/phpmyadmin')) / 'conf.d'
+    conf_file = pma_conf_dir / '99-w3panel.php'
+    pma_dir = _get_phpmyadmin_dir()
+    signon_file = pma_dir / 'w3p-signon.php'
+
+    safe_secret = secret.replace("'", "\\'")
+    conf_php = f"""<?php
+if (!defined('W3P_PMA_SIGNON_SECRET')) {{
+    define('W3P_PMA_SIGNON_SECRET', '{safe_secret}');
+}}
+$cfg['Servers'][1]['host'] = 'localhost';
+$cfg['Servers'][1]['AllowNoPassword'] = false;
+$cfg['Servers'][1]['auth_type'] = isset($_COOKIE['W3PanelPMASignon']) ? 'signon' : 'cookie';
+$cfg['Servers'][1]['SignonSession'] = 'W3PanelPMASignon';
+$cfg['Servers'][1]['SignonCookieParams'] = [
+    'lifetime' => 0,
+    'path' => '/phpmyadmin',
+    'httponly' => true,
+    'samesite' => 'Lax',
+];
+$cfg['Servers'][1]['SignonURL'] = '/phpmyadmin/w3p-signon.php';
+$cfg['Servers'][1]['LogoutURL'] = '/phpmyadmin/w3p-signon.php?logout=1';
+"""
+    safe_conf_path = str(conf_file).replace("'", "\\'")
+    signon_php = f"""<?php
+declare(strict_types=1);
+$confFile = '{safe_conf_path}';
+if (is_readable($confFile)) {{
+    require_once $confFile;
+}}
+$provided = $_SERVER['HTTP_X_W3PANEL_SIGNON_SECRET'] ?? '';
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
+    && defined('W3P_PMA_SIGNON_SECRET')
+    && W3P_PMA_SIGNON_SECRET !== ''
+    && is_string($provided)
+    && hash_equals(W3P_PMA_SIGNON_SECRET, $provided)
+) {{
+    $user = (string)($_POST['user'] ?? '');
+    $pass = (string)($_POST['password'] ?? '');
+    $host = (string)($_POST['host'] ?? 'localhost');
+    $port = (string)($_POST['port'] ?? '3306');
+    if ($user === '') {{
+        http_response_code(400);
+        exit;
+    }}
+    ini_set('session.use_cookies', '1');
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path' => '/phpmyadmin',
+        'domain' => '',
+        'secure' => false,
+        'httponly' => true,
+        'samesite' => 'Lax',
+    ]);
+    session_name('W3PanelPMASignon');
+    @session_start();
+    $_SESSION['PMA_single_signon_user'] = $user;
+    $_SESSION['PMA_single_signon_password'] = $pass;
+    $_SESSION['PMA_single_signon_host'] = $host;
+    $_SESSION['PMA_single_signon_port'] = $port;
+    $_SESSION['PMA_single_signon_HMAC_secret'] = hash('sha1', random_bytes(16), true);
+    @session_write_close();
+    header('Content-Type: application/json');
+    echo '{{"success":true}}';
+    exit;
+}}
+setcookie('W3PanelPMASignon', '', [
+    'expires' => time() - 3600,
+    'path' => '/phpmyadmin',
+    'httponly' => true,
+    'samesite' => 'Lax',
+]);
+header('Location: /phpmyadmin/');
+exit;
+"""
+    ok_conf = _write_privileged_file(conf_file, conf_php)
+    ok_signon = _write_privileged_file(signon_file, signon_php)
+    if ok_conf and _has_sudo():
+        prefix = _priv_prefix()
+        subprocess.run(prefix + ['chgrp', 'www-data', str(conf_file)], capture_output=True, timeout=5)
+        subprocess.run(prefix + ['chmod', '640', str(conf_file)], capture_output=True, timeout=5)
+    return ok_conf and ok_signon
+
+
+def provision_phpmyadmin_sso_credentials(panel_user) -> dict:
+    """Create or rotate scoped MariaDB SSO credentials for admin or tenant user."""
+    if not panel_user or not is_mariadb_installed():
+        return {'success': False, 'error': 'MariaDB or panel user unavailable'}
+
+    pwd = generate_secure_password(24)
+    safe_pwd = _escape_sql_str(pwd)
+    prefix = _priv_prefix()
+
+    try:
+        role = getattr(panel_user, 'role', 'user')
+        if role == 'admin':
+            db_user = 'w3p_admin_pma'
+            sql = (
+                f"DROP USER IF EXISTS '{db_user}'@'localhost';"
+                f" CREATE USER '{db_user}'@'localhost' IDENTIFIED BY '{safe_pwd}';"
+                f" GRANT ALL PRIVILEGES ON *.* TO '{db_user}'@'localhost' WITH GRANT OPTION;"
+                " FLUSH PRIVILEGES;"
+            )
+        else:
+            clean = re.sub(r'[^a-zA-Z0-9_]', '', getattr(panel_user, 'username', '') or 'usr') or 'usr'
+            db_user = _validate_db_identifier(f"{clean[:27]}_pma"[:32], 'sso_user')
+            from packages.core.models import Database
+            owned_dbs = list(
+                Database.objects.filter(owner=panel_user, db_type='mariadb').values_list('name', flat=True)
+            )
+            stmts = [
+                f"DROP USER IF EXISTS '{db_user}'@'localhost';",
+                f"CREATE USER '{db_user}'@'localhost' IDENTIFIED BY '{safe_pwd}';",
+            ]
+            for db_name in owned_dbs:
+                safe_db = _validate_db_identifier(db_name, 'database name')
+                stmts.append(f"GRANT ALL PRIVILEGES ON `{safe_db}`.* TO '{db_user}'@'localhost';")
+            stmts.append("FLUSH PRIVILEGES;")
+            sql = " ".join(stmts)
+
+        res = subprocess.run(prefix + ['mysql', '-e', sql], capture_output=True, text=True, timeout=10)
+        if res.returncode != 0:
+            return {'success': False, 'error': res.stderr or res.stdout or 'Failed to provision MariaDB SSO user'}
+        return {'success': True, 'db_user': db_user, 'db_pass': pwd}
+    except Exception as e:
+        logger.warning(f"phpMyAdmin SSO provisioning failed: {e}")
+        return {'success': False, 'error': str(e)}
+
+
+def launch_db_tool(request, tool: str, panel_user):
+    """Auto-wire Nginx route, establish phpMyAdmin SSO cookie if available, and redirect same-origin."""
+    from django.shortcuts import redirect
+
+    ensure_db_admin_webserver_configured()
+    if tool != 'phpmyadmin':
+        ensure_pgadmin4_service_ready(admin_email=getattr(panel_user, 'email', '') or '')
+        return redirect(get_db_tool_url(request, 'pgadmin4'))
+
+    ensure_phpmyadmin_signon_configured()
+    resp = redirect(get_db_tool_url(request, 'phpmyadmin'))
+
+    cred_res = provision_phpmyadmin_sso_credentials(panel_user)
+    if not cred_res.get('success'):
+        return resp
+
+    payload = urllib.parse.urlencode({
+        'user': cred_res['db_user'],
+        'password': cred_res['db_pass'],
+        'host': 'localhost',
+        'port': '3306',
+    }).encode()
+    headers = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': str(len(payload)),
+        'X-W3Panel-Signon-Secret': _get_pma_signon_secret(),
+        'Host': request.get_host(),
+    }
+
+    for host, port in (('127.0.0.1', 8090), ('127.0.0.1', 80)):
+        conn = None
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=10)
+            conn.request('POST', '/phpmyadmin/w3p-signon.php', body=payload, headers=headers)
+            signon_resp = conn.getresponse()
+            signon_resp.read()
+            if signon_resp.status == 200:
+                for raw_cookie in (signon_resp.headers.get_all('Set-Cookie') or []):
+                    parsed = SimpleCookie()
+                    parsed.load(raw_cookie)
+                    for cname, morsel in parsed.items():
+                        resp.cookies[cname] = morsel.value
+                        resp.cookies[cname]['path'] = '/phpmyadmin'
+                        resp.cookies[cname]['httponly'] = True
+                        resp.cookies[cname]['samesite'] = 'Lax'
+                        if request.is_secure():
+                            resp.cookies[cname]['secure'] = True
+                break
+        except Exception:
+            pass
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     return resp
 
@@ -851,13 +1097,8 @@ def install_phpmyadmin() -> dict:
         if res.returncode != 0:
             return {'success': False, 'error': res.stderr or res.stdout or 'phpMyAdmin installation failed'}
 
-        pma_conf_dir = Path(os.environ.get('W3PANEL_PHPMYADMIN_CONF_DIR', '/etc/phpmyadmin')) / 'conf.d'
-        pma_override = """<?php
-$cfg['Servers'][1]['auth_type'] = 'cookie';
-$cfg['Servers'][1]['host'] = 'localhost';
-$cfg['Servers'][1]['AllowNoPassword'] = false;
-"""
-        _write_privileged_file(pma_conf_dir / '99-w3panel.php', pma_override)
+        if service_result := ensure_phpmyadmin_signon_configured():
+            pass
 
         web_res = configure_db_admin_webserver()
         if not web_res.get('success'):
@@ -896,11 +1137,13 @@ def configure_pgadmin4_runtime(admin_email: str = '', admin_password: str = '') 
     prefix = _priv_prefix()
     pg_dir = _get_pgadmin4_dir()
 
-    config_local = """import http.client
-from http.cookies import SimpleCookie
-import os
+    config_local = """import os
 
 SERVER_MODE = True
+DEFAULT_SERVER = '127.0.0.1'
+DEFAULT_SERVER_PORT = 5050
+PROXY_X_HOST_COUNT = 1
+PROXY_X_PREFIX_COUNT = 1
 DATA_DIR = '/var/lib/pgadmin'
 LOG_FILE = '/var/log/pgadmin/pgadmin4.log'
 SQLITE_PATH = os.path.join(DATA_DIR, 'pgadmin4.db')
@@ -918,41 +1161,54 @@ MASTER_PASSWORD_REQUIRED = False
     subprocess.run(prefix + ['chown', '-R', 'www-data:www-data', '/var/lib/pgadmin', '/var/log/pgadmin'], capture_output=True, timeout=5)
 
     # Pass credentials via 0600 script instead of CLI arguments or sudo -E (blocked without SETENV)
-    py_bin = shlex.quote(str(pg_dir / 'venv' / 'bin' / 'python'))
-    setup_py = shlex.quote(str(pg_dir / 'web' / 'setup.py'))
-    script_body = (
-        "#!/usr/bin/env bash\n"
-        "set -e\n"
-        f"export PGADMIN_SETUP_EMAIL={shlex.quote(email)}\n"
-        f"export PGADMIN_SETUP_PASSWORD={shlex.quote(password)}\n"
-        f"{py_bin} {setup_py} setup-db\n"
-    )
-    tmp_path = None
-    try:
-        fd, tmp_path = tempfile.mkstemp(prefix='w3panel-pg4-', suffix='.sh')
-        os.chmod(tmp_path, 0o600)
-        with os.fdopen(fd, 'w') as fh:
-            fh.write(script_body)
-        setup_res = subprocess.run(
-            prefix + ['/bin/bash', tmp_path],
-            capture_output=True,
-            text=True,
-            timeout=90,
+    db_file = Path('/var/lib/pgadmin/pgadmin4.db')
+    if not db_file.exists() or db_file.stat().st_size == 0:
+        py_bin = shlex.quote(str(pg_dir / 'venv' / 'bin' / 'python'))
+        setup_py = shlex.quote(str(pg_dir / 'web' / 'setup.py'))
+        script_body = (
+            "#!/usr/bin/env bash\n"
+            "set -e\n"
+            f"export PGADMIN_SETUP_EMAIL={shlex.quote(email)}\n"
+            f"export PGADMIN_SETUP_PASSWORD={shlex.quote(password)}\n"
+            f"{py_bin} {setup_py} setup-db\n"
         )
-        if setup_res.returncode != 0:
-            return {'success': False, 'error': setup_res.stderr or setup_res.stdout or 'pgAdmin4 database initialization failed'}
-    finally:
-        if tmp_path and Path(tmp_path).exists():
-            try:
-                Path(tmp_path).unlink()
-            except OSError:
-                pass
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(prefix='w3panel-pg4-', suffix='.sh')
+            os.chmod(tmp_path, 0o600)
+            with os.fdopen(fd, 'w') as fh:
+                fh.write(script_body)
+            setup_res = subprocess.run(
+                prefix + ['/bin/bash', tmp_path],
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+            if setup_res.returncode != 0:
+                return {'success': False, 'error': setup_res.stderr or setup_res.stdout or 'pgAdmin4 database initialization failed'}
+        finally:
+            if tmp_path and Path(tmp_path).exists():
+                try:
+                    Path(tmp_path).unlink()
+                except OSError:
+                    pass
 
     subprocess.run(prefix + ['chown', '-R', 'www-data:www-data', '/var/lib/pgadmin', '/var/log/pgadmin'], capture_output=True, timeout=5)
 
-    gunicorn_bin = str(pg_dir / 'venv' / 'bin' / 'gunicorn')
-    if not Path(gunicorn_bin).exists():
-        gunicorn_bin = '/usr/local/w3panel/venv/bin/gunicorn'
+    # Ensure WSGI runner executes strictly inside pgAdmin4's own venv (never W3Panel's venv)
+    pg_gunicorn = pg_dir / 'venv' / 'bin' / 'gunicorn'
+    pg_pip = pg_dir / 'venv' / 'bin' / 'pip'
+    if not pg_gunicorn.exists() and pg_pip.exists():
+        subprocess.run(prefix + [str(pg_pip), 'install', '-q', 'gunicorn'], capture_output=True, text=True, timeout=120)
+
+    pg_waitress = pg_dir / 'venv' / 'bin' / 'waitress-serve'
+    pg_python = pg_dir / 'venv' / 'bin' / 'python'
+    if pg_gunicorn.exists():
+        exec_start = f"{pg_gunicorn} --workers 1 --threads 25 --bind 127.0.0.1:5050 pgAdmin4:app"
+    elif pg_waitress.exists():
+        exec_start = f"{pg_waitress} --listen=127.0.0.1:5050 --threads=25 pgAdmin4:app"
+    else:
+        exec_start = f"{pg_python} {pg_dir}/web/pgAdmin4.py"
 
     unit_content = f"""[Unit]
 Description=pgAdmin 4 Web Service (W3Panel)
@@ -964,7 +1220,7 @@ User=www-data
 Group=www-data
 WorkingDirectory={pg_dir}/web
 Environment="SCRIPT_NAME=/pgadmin4"
-ExecStart={gunicorn_bin} --workers 1 --threads 25 --bind 127.0.0.1:5050 pgAdmin4:app
+ExecStart={exec_start}
 Restart=always
 RestartSec=5
 
@@ -977,13 +1233,45 @@ WantedBy=multi-user.target
     subprocess.run(prefix + ['systemctl', 'daemon-reload'], capture_output=True, timeout=10)
     start_res = subprocess.run(prefix + ['systemctl', 'enable', '--now', 'pgadmin4'], capture_output=True, text=True, timeout=15)
     if start_res.returncode != 0:
-        return {'success': False, 'error': start_res.stderr or start_res.stdout or 'Failed to start pgadmin4.service'}
+        j_res = subprocess.run(prefix + ['journalctl', '-u', 'pgadmin4', '-n', '15', '--no-pager'], capture_output=True, text=True, timeout=5)
+        detail = (start_res.stderr or start_res.stdout or '').strip()
+        if j_res.stdout:
+            detail = f"{detail}\n{j_res.stdout.strip()}".strip()
+        return {'success': False, 'error': detail or 'Failed to start pgadmin4.service'}
 
     web_res = configure_db_admin_webserver()
     if not web_res.get('success'):
         return {'success': False, 'error': web_res.get('error', 'Webserver configuration failed')}
 
     return {'success': True, 'email': email, 'password': password}
+
+
+def ensure_pgadmin4_service_ready(admin_email: str = '') -> dict:
+    """Repair missing/misconfigured pgadmin4.service and start it if inactive."""
+    pg_dir = _get_pgadmin4_dir()
+    if not (pg_dir / 'web' / 'pgAdmin4.py').exists():
+        return {'success': False, 'error': 'pgAdmin 4 web files not installed.'}
+
+    systemd_dir = Path(os.environ.get('W3PANEL_SYSTEMD_DIR', '/etc/systemd/system'))
+    unit_file = systemd_dir / 'pgadmin4.service'
+    needs_rewrite = not unit_file.exists()
+    if not needs_rewrite:
+        try:
+            unit_txt = unit_file.read_text(errors='ignore')
+            if '/usr/local/w3panel/' in unit_txt or '127.0.0.1:5050' not in unit_txt:
+                needs_rewrite = True
+        except Exception:
+            needs_rewrite = True
+
+    if needs_rewrite:
+        return configure_pgadmin4_runtime(admin_email=admin_email)
+
+    if not is_pgadmin4_running():
+        prefix = _priv_prefix()
+        res = subprocess.run(prefix + ['systemctl', 'start', 'pgadmin4'], capture_output=True, text=True, timeout=15)
+        if res.returncode != 0:
+            return {'success': False, 'error': res.stderr or res.stdout or 'Failed to start pgadmin4'}
+    return {'success': True}
 
 
 def install_pgadmin4(admin_email: str = '', admin_password: str = '') -> dict:

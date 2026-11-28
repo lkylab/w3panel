@@ -35,6 +35,16 @@ urlpatterns = [
     path('filemanager/', views.user_files, name='user_filemanager'),
     path('files/', views.user_files, name='user_files'),
     
+    # Email Accounts & Webmail
+    path('emails/', views.user_emails, name='user_emails'),
+    path('emails/<int:mailbox_id>/delete/', views.user_email_delete, name='user_email_delete'),
+    path('emails/<int:mailbox_id>/password/', views.user_email_change_password, name='user_email_change_password'),
+    path('emails/<int:mailbox_id>/webmail/', views.user_email_webmail_launch, name='user_email_webmail_launch'),
+    path('emails/forwarders/<int:forwarder_id>/delete/', views.user_email_forwarder_delete, name='user_email_forwarder_delete'),
+    path('emails/autoresponders/<int:ar_id>/delete/', views.user_email_autoresponder_delete, name='user_email_autoresponder_delete'),
+    path('emails/deliverability/repair/', views.user_email_deliverability_repair, name='user_email_deliverability_repair'),
+    path('webmail/', views.user_webmail, name='user_webmail'),
+    
     # FTP
     path('ftp/', views.user_ftp, name='user_ftp'),
     path('ftp/<int:ftp_id>/delete/', views.user_ftp_delete, name='user_ftp_delete'),
